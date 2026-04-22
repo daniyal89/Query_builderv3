@@ -1,23 +1,55 @@
 /**
- * connection.types.ts — TypeScript interfaces for the DuckDB connection workflow.
- *
- * Mirrors the backend's ConnectionRequest / ConnectionResponse Pydantic models.
+ * connection.types.ts â€” Shared connection interfaces for local DuckDB and Marcadose.
  */
 
-/** Payload sent to POST /api/duckdb/connect. */
+import type { TableMetadata } from "./schema.types";
+
+export type QueryEngine = "duckdb" | "oracle";
+
 export interface ConnectionRequest {
-  /** Absolute filesystem path to the target .duckdb file. */
   db_path: string;
 }
 
-/** Response from a connection attempt. */
 export interface ConnectionResponse {
-  /** Connection outcome: 'connected' or 'error'. */
   status: "connected" | "error";
-  /** Echo of the resolved database path. */
   db_path: string;
-  /** Number of user tables found in the database. */
   tables_count: number;
-  /** Human-readable status or error message. */
   message: string;
+}
+
+export interface OracleConnectionRequest {
+  host: string;
+  port: number;
+  sid: string;
+  username: string;
+  password: string;
+}
+
+export interface OracleConnectionResponse {
+  status: "connected" | "error";
+  tables_count: number;
+  message: string;
+  schema_name: string;
+}
+
+export interface MarcadoseCredentials {
+  host: string;
+  port: string;
+  sid: string;
+  username: string;
+  password: string;
+}
+
+export interface DuckdbConnectionState {
+  dbPath: string;
+  isConnected: boolean;
+  tables: TableMetadata[];
+}
+
+export interface MarcadoseConnectionState {
+  credentials: MarcadoseCredentials;
+  isConfigured: boolean;
+  isConnected: boolean;
+  tables: TableMetadata[];
+  schemaName: string;
 }

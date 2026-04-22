@@ -1,11 +1,21 @@
 /**
- * connectionApi.ts — API calls for DuckDB connection management.
+ * connectionApi.ts â€” API calls for local DuckDB and Marcadose connections.
  */
 
 import apiClient from "./client";
-import type { ConnectionRequest, ConnectionResponse } from "../types/connection.types";
+import type {
+  ConnectionRequest,
+  ConnectionResponse,
+  OracleConnectionRequest,
+  OracleConnectionResponse,
+} from "../types/connection.types";
 
-export async function connect(payload: ConnectionRequest): Promise<ConnectionResponse> {
+export async function connectDuckdb(payload: ConnectionRequest): Promise<ConnectionResponse> {
   const response = await apiClient.post<ConnectionResponse>("/duckdb/connect", payload);
+  return response.data;
+}
+
+export async function connectOracle(payload: OracleConnectionRequest): Promise<OracleConnectionResponse> {
+  const response = await apiClient.post<OracleConnectionResponse>("/oracle/connect", payload);
   return response.data;
 }

@@ -285,13 +285,37 @@ Query_builder/
 - [x] PyInstaller `.spec` file configured
 - [x] End-to-end build pipeline tested
 - [x] Single `.exe` produced and verified
+- [x] Series 1 complete: local Query Builder WHERE operator support expanded across backend + frontend UI
+- [x] Series 1 complete: filter UI now adapts operators by column type to stay simpler and more helpful
+- [x] Series 1 complete: local filter support now includes `NOT IN`, `NOT LIKE`, `BETWEEN`, `NOT BETWEEN`, `CONTAINS`, `NOT CONTAINS`, `STARTS WITH`, and `ENDS WITH`
+- [x] Series 1 complete: frontend production build verified after the operator slice
+- [x] Series 2 complete: separate `/query/local` and `/query/marcadose` frontend routes now exist
+- [x] Series 2 complete: `AppContext` now stores independent `duckdbConnection` and `marcadoseConnection` state
+- [x] Series 2 complete: Marcadose credential form with browser `localStorage` autofill is implemented
+- [x] Series 2 complete: navigation, header badges, and dashboard shortcuts now expose the dual-engine frontend shell
+- [x] Series 2 complete: frontend production build verified after the dual-engine shell slice
+- [x] Series 3 complete: backend Oracle support added with `python-oracledb` Thin mode connection handling
+- [x] Series 3 complete: Marcadose connection + schema endpoints implemented (`/api/oracle/connect`, `/api/oracle/tables`, `/api/oracle/tables/{name}/columns`)
+- [x] Series 3 complete: query execution is now engine-aware through the `engine` flag (`duckdb` or `oracle`)
+- [x] Series 3 complete: Marcadose route can connect, load schema metadata, and run read-only list queries through the shared query builder UI
+- [x] Series 3 complete: server-side read-only enforcement added for Marcadose / Oracle queries
+- [x] Series 3 complete: frontend production build verified after the Oracle slice
+- [ ] Dual-engine architecture is still partially implemented overall; Oracle list-query flow works, but advanced Marcadose features are still pending
+- [ ] Query Builder join composition UI / backend join translation is not implemented yet
+- [ ] Engine-specific SQL preview/edit/run workflow is not implemented yet
+- [ ] Direct SQL editor mode is not implemented yet
+- [ ] Local Excel-to-DuckDB table/view creation flow is not implemented yet
+- [ ] Expanded WHERE/filter operators still need broader Oracle/Marcadose validation against real production data
+- [ ] Marcadose report/pivot mode is not implemented yet; the UI currently keeps Oracle on `Fetch List`
 
 ---
 
 ## 6. Next Immediate Task
 
-* **Status:** Complete!
-* **Task:** The project pipeline, dashboard, build steps, and backend API are fully implemented and verified. You may run `main.py` directly, or compile the single executable using PyInstaller.
+* **Status:** Pending, Series 4 next
+* **Task:** Add SQL preview/edit/run and direct SQL mode for both engines.
+* **Scope:** Show generated SQL for the active builder, allow safe editing, add a manual SQL editor, keep builder/editor sync where possible, and enforce Marcadose read-only rules on manual SQL too.
+* **After Series 4:** Continue with joins and local Excel-to-table/view creation.
 * **Important:** Ensure you have dependencies installed by running: `pip install -r requirements.txt`.
 
 ---
@@ -321,3 +345,67 @@ The Query Builder operates in two strictly isolated modes:
 * **Mode 1: Fetch List:** Applies standard WHERE filters and returns raw tabular data.
 * **Mode 2: Generate Report (Pivot):** Operates like an Excel Pivot Table. The user configures `Rows`, `Columns`, `Values`, and an `Aggregation Function` (e.g., SUM, COUNT). The backend must use DuckDB's native `PIVOT` syntax or Pandas `pivot_table` to aggregate the data before returning it.
 * **Query Row Limits:** By default, the 'Fetch List' mode must limit results to 1000 rows to prevent browser UI freezing. Users can configure this limit. A limit of `0` means 'No Limit' (fetch all rows). The frontend table must use CSS scrolling (e.g., `overflow-y: auto` with a max height) to handle large datasets gracefully.
+
+## 11. Dual-Engine Architecture (DuckDB & Marcadose)
+* **Status:** Core dual-engine shell and Oracle list-query execution are implemented through Series 3.
+* **Independent Builders:** The dashboard must expose two fully independent Query Builders:
+  1. `Query Builder (Local)` for local `.duckdb` files.
+  2. `Query Builder (Marcadose)` for the remote Oracle database.
+* **Routing & State:** Implemented in the frontend shell. `/query/local` and `/query/marcadose` now exist, and the React `AppContext` stores independent `duckdbConnection` and `marcadoseConnection` state.
+* **Marcadose Credentials:** Implemented in the frontend shell. Oracle credentials are captured in a UI form (`host`, `port`, `sid`, `username`, `password`) and saved in browser `localStorage` only for auto-fill.
+* **Backend Oracle Engine:** Implemented for connection, schema loading, and read-only list-query execution. The backend now uses the `oracledb` Python package in Thin mode, and the `engine` discriminator (`'duckdb'` or `'oracle'`) routes query execution to the proper service.
+
+## 12. Query Builder Feature Expansion
+* **Join Support:** The Query Builder must support joins between tables/views within the active engine. The UI should allow users to pick source tables, join type, join keys, and output columns.
+* **Initial Join Scope:** Assume the first supported join types are `INNER`, `LEFT`, and `RIGHT`. `FULL` join is not in scope unless requested later.
+* **WHERE Operator Expansion:** The Query Builder must support a broader set of WHERE/filter operators than the current implementation.
+* **Type-Aware Operators:** To keep the UI simple and helpful, the operator list should depend on the selected column type and engine instead of showing every operator for every field.
+* **Expected Coverage:** Plan for common operators such as equality/inequality, comparison, `IN`, `NOT IN`, `LIKE`, `NOT LIKE`, `IS NULL`, `IS NOT NULL`, and range-style filters such as `BETWEEN` where appropriate.
+* **Friendly UI Mapping:** Text-friendly operators such as `contains`, `starts with`, and `ends with` may be exposed in the UI if they are translated safely to the correct engine SQL.
+* **Supported Usage:** This join functionality applies to both builders, but any generated SQL must respect the active engine dialect and permissions.
+* **Builder Output:** The visual builder must be able to translate the configured query into executable SQL for the selected engine.
+
+## 13. SQL Preview, Editing, and Direct Execution
+* **SQL Preview:** For every query built in the UI, the app must show the corresponding generated SQL.
+* **Engine-Specific SQL:** The SQL preview must match the active engine:
+  1. DuckDB SQL when using `Query Builder (Local)`.
+  2. Oracle/Marcadose SQL when using `Query Builder (Marcadose)`.
+* **Editable SQL:** Users must be able to customize the generated SQL before execution.
+* **Sync Behavior:** Visual-builder state and SQL-editor state should remain synced where safely possible.
+* **Fallback Behavior:** If edited SQL can no longer be reliably mapped back into the visual builder, the app should preserve the SQL and switch to a manual-SQL workflow instead of silently rewriting it.
+* **Direct SQL Mode:** Users must also be able to write SQL directly without using the visual builder.
+* **Execution:** The app must support running either:
+  1. SQL generated by the visual builder.
+  2. User-authored SQL entered directly in the editor.
+
+## 14. Local DuckDB Excel Import / Object Creation
+* **Excel as Source:** In the local DuckDB workflow, users must be able to select an Excel file (`.xlsx`, and if supported `.xls`) and use it as a source for creating a DuckDB table or view.
+* **Object Creation Scope:** This object creation capability is local-only and must never target Marcadose.
+* **Use Cases:** This feature is intended to let users quickly stage local data for further querying, joining, reporting, or enrichment inside DuckDB.
+
+## 15. Engine Permission Rules
+* **Marcadose is Read-Only:** Implemented server-side for current Oracle query execution. The Marcadose / Oracle builder allows read-only operations only.
+* **Forbidden on Marcadose:** Implemented server-side for current Oracle query execution. No create, replace, alter, drop, insert, update, delete, merge, truncate, or other write-side operations may be executed against Marcadose.
+* **Allowed on Local:** Local DuckDB may support broader write-side operations, including table/view creation and other local data-prep operations required by the dashboard workflow.
+* **Safety Requirement:** Implemented for current Oracle query execution. The backend enforces these rules server-side, not only in the frontend UI.
+
+## 16. Confirmed Decisions Before Implementation
+* **SQL Sync Model:** Keep the visual builder and SQL editor synced where possible. If the edited SQL cannot be safely represented by the builder model, switch to a manual-SQL workflow while preserving the user's query.
+* **Join Types:** Current working assumption is support for `INNER`, `LEFT`, and `RIGHT`. `FULL` join is not currently planned.
+* **Local Write Scope:** Local DuckDB direct SQL may allow broader write operations. Marcadose remains strictly read-only.
+* **UX Principle:** The product should stay simple, helpful, and approachable. Prefer clarity and guided workflows over a dense or overly technical UI.
+* **Schema/Data Awareness:** During implementation, inspect the actual local DuckDB schema and representative data so the app can better understand field formats, likely data types, and practical defaults for filters, joins, previews, and imports.
+
+## 17. Research-Based Recommended Capabilities To Consider
+* **Status:** Recommended from current query-builder / SQL-workbench research. These are not yet confirmed project requirements.
+* **Saved Queries:** Ability to save, load, rename, edit, and delete builder queries and manual SQL queries.
+* **Query History:** Show previously executed SQL and builder runs so users can reopen and rerun recent work.
+* **Step Preview:** Allow previewing intermediate results while building a query, not only final execution.
+* **Custom Expressions:** Support calculated columns / formula-style expressions in the builder without forcing users into manual SQL.
+* **Parameterized SQL:** Allow bind-style parameters / template variables so users can reuse the same query with different inputs.
+* **Schema Explorer + Autocomplete:** Provide searchable object/column browsing plus SQL editor autocomplete for tables, columns, and keywords.
+* **Explain / Validation Tools:** Add SQL validation, and for Oracle/Marcadose especially, an explain-plan style view before or after execution.
+* **Execution Controls:** Support cancel/stop for long-running queries and SQL formatting in the editor.
+* **Result Export:** Export query results to common formats such as CSV / XLSX / JSON.
+* **Reusable Query Sources:** Allow starting a new query from a saved query, model, metric, or local view to avoid rebuilding common logic.
+* **Shareability:** Optional saved-query links / permalink-style sharing may be useful later if multiple users will use the tool.

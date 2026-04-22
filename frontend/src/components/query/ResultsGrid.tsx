@@ -37,6 +37,17 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading }) =
 
   if (!result) return null;
 
+  if (result.columns.length === 0) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+        <h3 className="text-sm font-semibold text-gray-700">Execution Result</h3>
+        <p className="mt-2 text-sm text-gray-600">
+          {result.message || "Statement executed successfully."}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
       {/* Header bar */}
