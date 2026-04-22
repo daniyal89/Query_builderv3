@@ -1,5 +1,5 @@
 """
-merge_service.py — Business logic for multi-sheet merge and enrichment.
+merge_service.py - Business logic for multi-sheet merge and enrichment.
 """
 
 import duckdb
@@ -10,85 +10,66 @@ class MergeService:
     """Service to handle the data logic for the multi-sheet merge workflow."""
 
     @staticmethod
-    def process_enrichment(merged_df: pd.DataFrame, db_path: str, fetch_column: str) -> tuple[pd.DataFrame, dict]:
+    def process_enrichment(
+        merged_df: pd.DataFrame,
+        conn: duckdb.DuckDBPyConnection,
+        fetch_columns: list[str],
+        mapped_acct_id_col: str,
+        mapped_secondary_col: str,
+        secondary_key_type: str,
+    ) -> tuple[pd.DataFrame, dict]:
         """
-        Executes a SQL LEFT JOIN between the incoming dataframe and the DuckDB master table.
-        
-        Args:
-            merged_df: The Pandas DataFrame containing uploaded/resolved data.
-            db_path: Path to the DuckDB master database.
-            fetch_column: The column to extract from the master table.
-            
-        Returns:
-            Tuple of (enriched_dataframe, stats_dictionary).
+        Execute a SQL LEFT JOIN between the incoming dataframe and the DuckDB master table.
         """
-        # Standardize key columns to uppercase exact matches for the SQL query
-        col_map = {}
-        target_keys = ["DISCOM", "DIV_CODE"]
-        acct_id_aliases = ["ACC_ID", "ACCT_ID", "ACCOUNT_ID"]
-        
-        for c in merged_df.columns:
-            u_c = str(c).upper()
-            if u_c in target_keys:
-                col_map[c] = u_c
-            elif u_c in acct_id_aliases:
-                col_map[c] = "ACCT_ID"
-                
-        if col_map:
-            merged_df.rename(columns=col_map, inplace=True)
+        if mapped_acct_id_col not in merged_df.columns:
+            raise ValueError(
+                f"Mapped ACCT_ID column '{mapped_acct_id_col}' not found in uploaded file."
+            )
 
-        if "ACCT_ID" not in merged_df.columns:
-            raise ValueError("The uploaded data must contain an 'ACCT_ID' or equivalent column.")
+        if mapped_secondary_col not in merged_df.columns:
+            raise ValueError(
+                f"Mapped Secondary Key column '{mapped_secondary_col}' not found in uploaded file."
+            )
 
-        has_discom = "DISCOM" in merged_df.columns
-        has_div_code = "DIV_CODE" in merged_df.columns
-        
-        if not has_discom and not has_div_code:
-            raise ValueError("The uploaded data must contain either 'DISCOM' or 'DIV_CODE' to perform the join.")
+        join_clause = (
+            f'df."{mapped_acct_id_col}" = master.ACCT_ID AND '
+            f'df."{mapped_secondary_col}" = master.{secondary_key_type}'
+        )
+        fetch_cols_str = ", ".join([f'master."{column}"' for column in fetch_columns])
 
-        # Safely build conditional clauses depending on what exists in the df
-        discom_clause = "df.DISCOM = master.DISCOM" if has_discom else "1=0"
-        div_code_clause = "df.DIV_CODE = master.DIV_CODE" if has_div_code else "1=0"
-
-        # Open short-lived connection exclusively for this operation
-        conn = duckdb.connect(db_path, read_only=True)
         try:
-            # Register the pandas dataframe as a virtual table 'df'
-            conn.register('df', merged_df)
-            
-            # Execute LEFT JOIN
+            conn.register("df", merged_df)
+
             query = f"""
-                SELECT df.*, master."{fetch_column}"
+                SELECT df.*, {fetch_cols_str}
                 FROM df
                 LEFT JOIN master
-                ON df.ACCT_ID = master.ACCT_ID
-                AND ({discom_clause} OR {div_code_clause})
+                ON {join_clause}
             """
             result_df = conn.execute(query).df()
-            
-            # Calculate matching statistics using an INNER JOIN for the matched count
+
             matched_query = f"""
                 SELECT COUNT(*) FROM df
                 INNER JOIN master
-                ON df.ACCT_ID = master.ACCT_ID
-                AND ({discom_clause} OR {div_code_clause})
+                ON {join_clause}
             """
             matched_rows = int(conn.execute(matched_query).fetchone()[0])
             total_rows = len(result_df)
             unmatched_rows = total_rows - matched_rows
-            
+
             stats = {
                 "matched_rows": matched_rows,
                 "unmatched_rows": unmatched_rows,
-                "total_rows": total_rows
+                "total_rows": total_rows,
             }
-            
+
             return result_df, stats
-            
-        except duckdb.CatalogException as e:
-            if "master" in str(e):
-                raise ValueError("Target database does not contain a 'master' table.")
+        except duckdb.CatalogException as exc:
+            if "master" in str(exc):
+                raise ValueError("Target database does not contain a 'master' table.") from exc
             raise
         finally:
-            # DuckDB cleans up registered dataframes on close
-            conn.close()
+            try:
+                conn.unregister("df")
+            except Exception:
+                pass

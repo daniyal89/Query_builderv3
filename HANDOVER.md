@@ -271,13 +271,13 @@ Query_builder/
 - [x] Backend: DuckDB connection service (connect, list_tables, get_columns, execute)
 - [x] Backend: POST /api/duckdb/connect endpoint (implemented + E2E tested)
 - [x] Backend: GET /api/tables + GET /api/tables/{name}/columns endpoints (implemented + tested)
-- [x] Backend: Merge & enrichment endpoint stubs (upload-sheets, merge-sheets, enrich-data)
+- [x] Backend: Merge & enrichment upload parsing is implemented (`/api/upload-sheets`)
 - [x] Backend: Merge & enrichment Pydantic models (ConflictResolutionMap, etc.)
 - [x] Frontend: Merge & enrichment TypeScript interfaces (merge.types.ts)
 - [x] main.py: Uvicorn launch + port fallback + browser auto-open
 - [x] Backend: POST /api/query endpoint implemented
 - [x] Backend: POST /api/upload-csv endpoint implemented
-- [x] Backend: Merge service logic (upload-sheets, merge-sheets, enrich-data)
+- [x] Backend: MergeService.process_enrichment uses explicit uploaded-column mapping for the composite-key LEFT JOIN
 - [x] Frontend: Vite + React + TypeScript initialized (npm install)
 - [x] Frontend: Home Page (path input + connect)
 - [x] Frontend: Query Builder page
@@ -300,22 +300,28 @@ Query_builder/
 - [x] Series 3 complete: Marcadose route can connect, load schema metadata, and run read-only list queries through the shared query builder UI
 - [x] Series 3 complete: server-side read-only enforcement added for Marcadose / Oracle queries
 - [x] Series 3 complete: frontend production build verified after the Oracle slice
+- [x] Series 4 complete: engine-specific SQL preview endpoint and SQL editor panel are implemented for the active builder
+- [x] Series 4 complete: direct SQL/manual SQL mode is implemented for both local DuckDB and Marcadose
+- [x] Series 4 complete: builder/editor sync keeps the generated SQL in sync until the user detaches into manual SQL
+- [x] Series 4 complete: Marcadose read-only enforcement applies to manual SQL preview and execution paths
+- [x] Series 4 complete: frontend production build and local DuckDB preview/manual execution were verified after the SQL workflow slice
+- [x] Merge & Enrich wizard currently uses the simplified upload-to-enrich flow with explicit ACCT_ID / secondary-key mapping
+- [x] Frontend Merge & Enrich supports multi-column fetch selection from the `master` table during enrichment
 - [ ] Dual-engine architecture is still partially implemented overall; Oracle list-query flow works, but advanced Marcadose features are still pending
 - [ ] Query Builder join composition UI / backend join translation is not implemented yet
-- [ ] Engine-specific SQL preview/edit/run workflow is not implemented yet
-- [ ] Direct SQL editor mode is not implemented yet
 - [ ] Local Excel-to-DuckDB table/view creation flow is not implemented yet
 - [ ] Expanded WHERE/filter operators still need broader Oracle/Marcadose validation against real production data
 - [ ] Marcadose report/pivot mode is not implemented yet; the UI currently keeps Oracle on `Fetch List`
+- [ ] `merge-sheets` and the legacy conflict-resolution path still remain in the codebase but are not the primary working merge workflow
 
 ---
 
 ## 6. Next Immediate Task
 
-* **Status:** Pending, Series 4 next
-* **Task:** Add SQL preview/edit/run and direct SQL mode for both engines.
-* **Scope:** Show generated SQL for the active builder, allow safe editing, add a manual SQL editor, keep builder/editor sync where possible, and enforce Marcadose read-only rules on manual SQL too.
-* **After Series 4:** Continue with joins and local Excel-to-table/view creation.
+* **Status:** Series 4 complete
+* **Task:** Continue with join composition plus local Excel-to-DuckDB table/view creation.
+* **Scope:** Add visual join configuration for the active engine, translate it safely into engine-specific SQL, and add the local-only Excel staging/object-creation workflow.
+* **After This:** Broaden Marcadose validation on real data and revisit Oracle report mode if needed.
 * **Important:** Ensure you have dependencies installed by running: `pip install -r requirements.txt`.
 
 ---
@@ -330,10 +336,13 @@ Query_builder/
 * **React Router + SPA Fallback:** FastAPI must serve `index.html` for any non-`/api` route that doesn't match a static file — this enables client-side routing in the React app.
 
 ## 8. Strict Business Rules
-* **Master Table Keys:** The primary key for matching is ALWAYS a composite key. It must be either `(Acc_id, DISCOM)` OR `(Acc_id, DIV_CODE)`.
-* **Data Importer Flow:** 1. **Merge Phase:** User uploads multiple files/sheets. If columns conflict, prompt a UI to match or ignore them.
-  2. **Enrichment Phase:** User selects which column value they want to fetch from the Master Table.
-  3. **Export Phase:** Backend performs the join and returns a downloadable Excel/CSV file.
+* **Master Table Keys:** The primary key for matching is ALWAYS a composite key. It must be either `(ACCT_ID, DISCOM)` OR `(ACCT_ID, DIV_CODE)`. The user explicitly maps which uploaded columns correspond to those keys during enrichment.
+* **Merge & Enrich Flow (Current Working Path):**
+  1. **Upload Phase:** User uploads one or more CSV/Excel files. Backend parses columns and returns `UploadSheetsResponse` with detected column names.
+  2. **Enrichment Phase:** The current working wizard skips the legacy conflict-resolution path and goes straight to explicit key mapping. The user maps uploaded columns to `ACCT_ID` and a secondary key (`DISCOM` or `DIV_CODE`), then selects one or more `master` columns to fetch.
+  3. **Export Phase:** Backend performs a LEFT JOIN using the mapped composite key and returns a downloadable Excel file.
+* **Connection Reuse:** The enrichment endpoint reuses the active global DuckDB connection (`DuckDBService._conn`) instead of opening a second concurrent connection.
+* **Row Integrity:** The LEFT JOIN preserves every uploaded row even when no match is found in the `master` table.
 
 ## 9. Database Schema
 * **Local Database Path:** MUST be dynamically provided by the user via the frontend UI and passed to the backend API. DO NOT hardcode.
