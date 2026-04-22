@@ -1,41 +1,32 @@
-"""
-merge.py — Multi-sheet merge and enrichment endpoints.
-
-Implements the three-phase flow defined in HANDOVER.md §8:
-  POST /api/upload-sheets   → Parse uploaded files, detect columns & conflicts.
-  POST /api/merge-sheets    → Accept conflict resolution, produce merged dataset.
-  POST /api/enrich-data     → Join merged data against Master Table, return file.
-"""
-
+from collections import Counter
+import io
+import json
 from typing import List
+import uuid
 
-from fastapi import APIRouter, Depends, File, UploadFile
+import pandas as pd
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 
 from backend.api.deps import get_connected_db
 from backend.models.merge import (
     ConflictResolutionMap,
+    DetectedColumn,
     EnrichmentRequest,
     EnrichmentResponse,
     MergeSheetsResponse,
     UploadSheetsResponse,
 )
 from backend.services.duckdb_service import DuckDBService
+from backend.services.merge_service import MergeService
 
 router = APIRouter()
-
-
-# ───────────────────── Phase 1: Upload Sheets ─────────────────────
 
 
 @router.post(
     "/upload-sheets",
     response_model=UploadSheetsResponse,
     summary="Upload multiple files/sheets and detect columns",
-    description=(
-        "Accepts one or more Excel/CSV files via multipart upload. "
-        "Parses each file and sheet, extracts column headers with sample "
-        "values, and identifies columns that conflict across files."
-    ),
 )
 async def upload_sheets(
     files: List[UploadFile] = File(
@@ -43,25 +34,59 @@ async def upload_sheets(
     ),
     db: DuckDBService = Depends(get_connected_db),
 ) -> UploadSheetsResponse:
-    """Parse uploaded files and return detected columns with conflicts.
+    del db
 
-    Args:
-        files: List of uploaded files (multipart/form-data).
-        db: Injected DuckDBService for Master Table schema lookup.
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
 
-    Returns:
-        UploadSheetsResponse with file_ids, detected_columns, and conflicts.
+    file_ids: list[str] = []
+    all_columns: list[DetectedColumn] = []
+    col_name_counter: Counter = Counter()
 
-    Raises:
-        HTTPException 400: If no files are provided or files are invalid.
-        HTTPException 503: If no database is connected.
-    """
-    # TODO: Parse each file/sheet, extract headers + sample values,
-    #       identify conflicting column names, return response
-    pass
+    for uploaded_file in files:
+        file_id = str(uuid.uuid4())[:8]
+        file_ids.append(file_id)
+        filename = uploaded_file.filename or "unknown"
+        contents = await uploaded_file.read()
 
+        try:
+            if filename.lower().endswith(".csv"):
+                sheets = {"Sheet1": pd.read_csv(io.BytesIO(contents), nrows=100)}
+            elif filename.lower().endswith((".xls", ".xlsx")):
+                workbook = pd.ExcelFile(io.BytesIO(contents))
+                sheets = {
+                    name: pd.read_excel(workbook, sheet_name=name, nrows=100)
+                    for name in workbook.sheet_names
+                }
+            else:
+                raise ValueError(f"Unsupported file type: {filename}")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error reading {filename}: {exc}",
+            ) from exc
 
-# ───────────────────── Phase 2: Merge Sheets ─────────────────────
+        for sheet_name, dataframe in sheets.items():
+            for column in dataframe.columns:
+                column_name = str(column)
+                col_name_counter[column_name] += 1
+                samples = dataframe[column].dropna().astype(str).head(5).tolist()
+                all_columns.append(
+                    DetectedColumn(
+                        name=column_name,
+                        source_file=filename,
+                        source_sheet=sheet_name,
+                        sample_values=samples,
+                    )
+                )
+
+    conflicts = [name for name, count in col_name_counter.items() if count > 1]
+
+    return UploadSheetsResponse(
+        file_ids=file_ids,
+        detected_columns=all_columns,
+        conflicts=conflicts,
+    )
 
 
 @router.post(
@@ -78,101 +103,80 @@ async def merge_sheets(
     payload: ConflictResolutionMap,
     db: DuckDBService = Depends(get_connected_db),
 ) -> MergeSheetsResponse:
-    """Apply column conflict resolution and produce the merged dataset.
-
-    The ConflictResolutionMap must include resolutions for ALL detected
-    columns. The composite_key columns (e.g., Acc_id + DISCOM) must be
-    mapped — they cannot be ignored.
-
-    Args:
-        payload: ConflictResolutionMap with per-column resolution directives.
-        db: Injected DuckDBService.
-
-    Returns:
-        MergeSheetsResponse with merged_columns, row count, preview, and merge_id.
-
-    Raises:
-        HTTPException 400: If composite key columns are missing or ignored.
-        HTTPException 404: If any file_id from the upload step is not found.
-        HTTPException 503: If no database is connected.
-    """
+    del payload
+    del db
     # TODO: Load uploaded files by file_ids, apply resolutions,
-    #       concatenate into single DataFrame, store as temp table,
-    #       return merge_id + preview
+    # concatenate into a single DataFrame, store as temp table,
+    # and return merge_id plus preview.
     pass
 
-
-# ───────────────────── Phase 3: Enrich Data ─────────────────────
-
-from fastapi import Form
-from fastapi.responses import StreamingResponse
-import pandas as pd
-import io
-from backend.services.merge_service import MergeService
 
 @router.post(
     "/enrich-data",
     summary="Join uploaded data against the Master Table and produce downloadable Excel file",
     description=(
         "Performs a LEFT JOIN of the uploaded dataframe against the specified "
-        "Master Table using the composite key. Appends the requested fetch_column "
+        "Master Table using the composite key. Appends the requested fetch_columns "
         "and produces a downloadable Excel file with stats in the response headers."
     ),
 )
 async def enrich_data(
     file: UploadFile = File(..., description="The merged Excel or CSV file to enrich"),
     db_path: str = Form(..., description="Absolute path to the DuckDB file"),
-    fetch_column: str = Form(..., description="Column name to fetch from the Master Table"),
-    composite_key: str = Form(..., description="Composite key strategy (e.g. Acc_id+DISCOM)"),
+    fetch_columns: str = Form(
+        ..., description="JSON encoded array of column names to fetch from the Master Table"
+    ),
+    composite_key: str = Form(..., description="Secondary key strategy (e.g. DISCOM or DIV_CODE)"),
+    mapped_acct_id_col: str = Form(..., description="Uploaded column mapped to ACCT_ID"),
+    mapped_secondary_col: str = Form(..., description="Uploaded column mapped to secondary key"),
+    db: DuckDBService = Depends(get_connected_db),
 ) -> StreamingResponse:
-    """Join data against the Master Table and stream the output file.
-    
-    Accepts a direct file upload for now as Phase 2 merge saving is unimplemented.
-    Headers 'X-Matched-Rows' and 'X-Unmatched-Rows' are injected into the response.
-    """
     try:
-        # 1. Read file into Pandas DataFrame
-        filename = file.filename.lower()
+        try:
+            columns_to_fetch = json.loads(fetch_columns)
+        except json.JSONDecodeError as exc:
+            raise ValueError("fetch_columns must be a valid JSON array") from exc
+
+        filename = (file.filename or "").lower()
         contents = await file.read()
-        
+
         if filename.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(contents))
+            dataframe = pd.read_csv(io.BytesIO(contents))
         elif filename.endswith((".xls", ".xlsx")):
-            df = pd.read_excel(io.BytesIO(contents))
+            dataframe = pd.read_excel(io.BytesIO(contents))
         else:
             raise ValueError("Unsupported file format. Please upload CSV or Excel.")
 
-        # 2. Process enrichment logic
         result_df, stats = MergeService.process_enrichment(
-            merged_df=df,
-            db_path=db_path,
-            fetch_column=fetch_column
+            merged_df=dataframe,
+            conn=db._conn,
+            fetch_columns=columns_to_fetch,
+            mapped_acct_id_col=mapped_acct_id_col,
+            mapped_secondary_col=mapped_secondary_col,
+            secondary_key_type=composite_key,
         )
 
-        # 3. Convert enriched DataFrame to an Excel byte stream
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             result_df.to_excel(writer, index=False)
         output.seek(0)
-        
+
         headers = {
             "Content-Disposition": 'attachment; filename="enriched_data.xlsx"',
             "X-Matched-Rows": str(stats.get("matched_rows", 0)),
             "X-Unmatched-Rows": str(stats.get("unmatched_rows", 0)),
             "X-Total-Rows": str(stats.get("total_rows", 0)),
-            # Expose headers so the frontend Axios client can read them
-            "Access-Control-Expose-Headers": "X-Matched-Rows, X-Unmatched-Rows, X-Total-Rows, Content-Disposition"
+            "Access-Control-Expose-Headers": (
+                "X-Matched-Rows, X-Unmatched-Rows, X-Total-Rows, Content-Disposition"
+            ),
         }
 
         return StreamingResponse(
             output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers=headers
+            headers=headers,
         )
-        
-    except ValueError as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc

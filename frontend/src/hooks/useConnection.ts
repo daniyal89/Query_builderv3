@@ -1,15 +1,12 @@
 /**
- * useConnection.ts — Custom hook for DuckDB connection state management.
- *
- * Encapsulates the connection lifecycle: path input, connect action,
- * status tracking, and table list retrieval.
+ * useConnection.ts â€” Custom hook for local DuckDB connection state management.
  */
 
 import { useState } from "react";
-import type { TableMetadata } from "../types/schema.types";
-import { connect as connectApi } from "../api/connectionApi";
+import { connectDuckdb } from "../api/connectionApi";
 import { getTables } from "../api/schemaApi";
 import { useAppContext } from "../context/AppContext";
+import type { TableMetadata } from "../types/schema.types";
 
 export interface UseConnectionReturn {
   dbPath: string;
@@ -24,36 +21,35 @@ export interface UseConnectionReturn {
 
 export function useConnection(): UseConnectionReturn {
   const appCtx = useAppContext();
-  const [dbPath, setDbPathLocal] = useState<string>(appCtx.dbPath || "");
+  const [dbPath, setDbPathLocal] = useState<string>(appCtx.duckdbConnection.dbPath || "");
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Read live connection state from global context
-  const isConnected = appCtx.isConnected;
-  const tables = appCtx.tables;
+  const isConnected = appCtx.duckdbConnection.isConnected;
+  const tables = appCtx.duckdbConnection.tables;
 
   const setDbPath = (path: string) => {
     setDbPathLocal(path);
-    appCtx.setDbPath(path);
+    appCtx.setDuckdbPath(path);
   };
 
   const connect = async () => {
-    const path = dbPath || appCtx.dbPath;
+    const path = dbPath || appCtx.duckdbConnection.dbPath;
     if (!path) {
       setError("Please enter a valid DuckDB file path.");
       return;
     }
+
     setIsConnecting(true);
     setError(null);
     try {
-      await connectApi({ db_path: path });
-      const tablesData = await getTables();
-      // Update global context so all pages see the connection
-      appCtx.setConnected(true, tablesData);
-      appCtx.setDbPath(path);
+      await connectDuckdb({ db_path: path });
+      const tablesData = await getTables("duckdb");
+      appCtx.setDuckdbConnected(true, tablesData);
+      appCtx.setDuckdbPath(path);
     } catch (err: any) {
       setError(err?.response?.data?.detail || err.message || "Failed to connect to DuckDB");
-      appCtx.setConnected(false, []);
+      appCtx.setDuckdbConnected(false, []);
     } finally {
       setIsConnecting(false);
     }
@@ -61,8 +57,8 @@ export function useConnection(): UseConnectionReturn {
 
   const disconnect = () => {
     setDbPathLocal("");
-    appCtx.setConnected(false, []);
-    appCtx.setDbPath("");
+    appCtx.setDuckdbConnected(false, []);
+    appCtx.setDuckdbPath("");
     setError(null);
   };
 

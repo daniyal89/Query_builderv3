@@ -1,16 +1,15 @@
 /**
- * useMergeWizard.ts — React hook orchestrating the Merge and Enrichment UI state.
+ * useMergeWizard.ts - React hook orchestrating the Merge and Enrichment UI state.
  */
 
 // @ts-nocheck
 import { useState } from "react";
-import { uploadSheets, mergeSheets, enrichData } from "../api/mergeApi";
+import { enrichData, mergeSheets, uploadSheets } from "../api/mergeApi";
 import type {
-  MergeWizardState,
   ColumnResolution,
   CompositeKey,
   ConflictResolutionMap,
-  EnrichmentRequest
+  MergeWizardState,
 } from "../types/merge.types";
 
 export function useMergeWizard() {
@@ -29,15 +28,15 @@ export function useMergeWizard() {
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
     try {
       const result = await uploadSheets(files);
-      // Auto-initialize standard action to 'ignore' for all conflicts, or leave empty for user to decide
       const initialResolutions: ColumnResolution[] = [];
-      
+
       setState((prev) => ({
         ...prev,
-        step: "resolve",
+        step: "enrich",
         uploadResult: result,
         resolutions: initialResolutions,
         isLoading: false,
+        uploadedFile: files[0],
       }));
     } catch (err: any) {
       setState((prev) => ({
@@ -50,7 +49,7 @@ export function useMergeWizard() {
 
   const handleResolveConflicts = async (resolutions: ColumnResolution[], compositeKey: CompositeKey) => {
     if (!state.uploadResult) return;
-    
+
     setState((prev) => ({ ...prev, isLoading: true, error: null, resolutions, compositeKey }));
     try {
       const payload: ConflictResolutionMap = {
@@ -74,23 +73,32 @@ export function useMergeWizard() {
     }
   };
 
-  const handleEnrich = async (masterTable: string, fetchColumns: string[], outputFormat: "xlsx" | "csv", dbPath: string, mergedFile: File) => {
-    if (!state.compositeKey) return;
+  const handleEnrich = async (
+    masterTable: string,
+    fetchColumns: string[],
+    outputFormat: "xlsx" | "csv",
+    dbPath: string,
+    mergedFile: File,
+    mappedAcctIdCol: string,
+    mappedSecondaryCol: string,
+    secondaryColType: string
+  ) => {
+    void masterTable;
 
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
     try {
       const { blob, headers } = await enrichData(
         dbPath,
-        fetchColumns[0], // assume single fetch column for now
-        state.compositeKey,
-        mergedFile
+        fetchColumns,
+        secondaryColType,
+        mergedFile,
+        mappedAcctIdCol,
+        mappedSecondaryCol
       );
 
-      // Create blob download link
       const url = window.URL.createObjectURL(new Blob([blob]));
       const link = document.createElement("a");
       link.href = url;
-      // You can try to parse filename from the Content-Disposition header if available
       link.setAttribute("download", "enriched_data.xlsx");
       document.body.appendChild(link);
       link.click();
@@ -100,13 +108,12 @@ export function useMergeWizard() {
       const unmatched = parseInt(headers["x-unmatched-rows"] || "0", 10);
       const total = parseInt(headers["x-total-rows"] || "0", 10);
 
-      // Mock EnrichmentResponse for UI
       const mockResult = {
-        download_url: "#", // Handled manually above
+        download_url: "#",
         total_rows: total,
         matched_rows: matched,
         unmatched_rows: unmatched,
-        output_format: outputFormat
+        output_format: outputFormat,
       };
 
       setState((prev) => ({

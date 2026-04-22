@@ -1,19 +1,18 @@
 /**
- * HomePage.tsx — Landing page with DuckDB path input and table overview.
- *
- * Contains the PathInput component for entering a .duckdb file path,
- * a connect button, and after connection, the TableList showing all
- * discovered tables with their metadata.
+ * HomePage.tsx â€” Landing page with local DuckDB connection and route shortcuts.
  */
+
 import React, { useEffect } from "react";
+import { Link } from "react-router-dom";
 import { PathInput } from "../components/home/PathInput";
 import { TableList } from "../components/home/TableList";
+import { useAppContext } from "../context/AppContext";
 import { useConnection } from "../hooks/useConnection";
 
 export const HomePage: React.FC = () => {
   const { dbPath, setDbPath, connect, isConnecting, isConnected, tables, error } = useConnection();
+  const { marcadoseConnection } = useAppContext();
 
-  // Auto-connect if there's a cached path in localStorage
   useEffect(() => {
     if (dbPath && !isConnected && !isConnecting && !error) {
       connect();
@@ -22,13 +21,56 @@ export const HomePage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 py-12">
-      <div className="text-center max-w-3xl mx-auto mb-10 px-4">
-        <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight sm:text-5xl">
-          DuckDB <span className="text-indigo-600">Reconciliation Dashboard</span>
+      <div className="mx-auto mb-10 max-w-4xl px-4 text-center">
+        <h1 className="text-4xl font-extrabold tracking-tight text-gray-900 sm:text-5xl">
+          Query Builder <span className="text-indigo-600">Workspace</span>
         </h1>
         <p className="mt-4 text-lg text-gray-500">
-          Connect locally to your data warehouse engine to query tables, combine schemas, and run fast reporting.
+          Keep the local DuckDB workflow fast and simple while preparing a separate Marcadose route for read-only
+          Oracle queries.
         </p>
+      </div>
+
+      <div className="mx-auto mb-8 grid max-w-5xl grid-cols-1 gap-4 px-4 lg:grid-cols-2">
+        <div className="rounded-lg border border-indigo-100 bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">Local</p>
+          <h2 className="mt-2 text-xl font-semibold text-gray-900">Query Builder (Local)</h2>
+          <p className="mt-2 text-sm text-gray-500">
+            Connect to a `.duckdb` file, browse tables, and run the local builder today.
+          </p>
+          <Link to="/query/local" className="mt-4 inline-flex text-sm font-semibold text-indigo-600 hover:text-indigo-800">
+            Open local builder
+          </Link>
+        </div>
+
+        <div className="rounded-lg border border-blue-100 bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Remote</p>
+          <h2 className="mt-2 text-xl font-semibold text-gray-900">Query Builder (Marcadose)</h2>
+          <p className="mt-2 text-sm text-gray-500">
+            Save Oracle credentials in the browser now. Read-only Oracle execution lands in the next implementation
+            series.
+          </p>
+          <div className="mt-4 flex items-center justify-between gap-4">
+            <Link to="/query/marcadose" className="inline-flex text-sm font-semibold text-blue-600 hover:text-blue-800">
+              Open Marcadose setup
+            </Link>
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                marcadoseConnection.isConnected
+                  ? "bg-blue-100 text-blue-700"
+                  : marcadoseConnection.isConfigured
+                    ? "bg-sky-100 text-sky-700"
+                    : "bg-amber-100 text-amber-700"
+              }`}
+            >
+              {marcadoseConnection.isConnected
+                ? `Connected${marcadoseConnection.schemaName ? ` (${marcadoseConnection.schemaName})` : ""}`
+                : marcadoseConnection.isConfigured
+                  ? "Credentials saved"
+                  : "Setup needed"}
+            </span>
+          </div>
+        </div>
       </div>
 
       <PathInput
@@ -39,9 +81,7 @@ export const HomePage: React.FC = () => {
         error={error}
       />
 
-      {isConnected && (
-        <TableList tables={tables} />
-      )}
+      {isConnected && <TableList tables={tables} />}
     </div>
   );
 };

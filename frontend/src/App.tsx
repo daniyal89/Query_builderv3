@@ -1,26 +1,22 @@
 /**
- * App.tsx — Top-level route definitions.
- *
- * Maps:
- *   /        → HomePage
- *   /query   → QueryBuilderPage
- *   /import  → DataImporterPage
- *
- * All routes are wrapped in the PageShell layout component.
+ * App.tsx â€” Top-level route definitions.
  */
 
-import { Routes, Route } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import PageShell from "./components/layout/PageShell";
-import { HomePage } from "./pages/HomePage";
-import { QueryBuilderPage } from "./pages/QueryBuilderPage";
 import { DataImporterPage } from "./pages/DataImporterPage";
+import { HomePage } from "./pages/HomePage";
+import { MarcadoseQueryBuilderPage } from "./pages/MarcadoseQueryBuilderPage";
+import { QueryBuilderPage } from "./pages/QueryBuilderPage";
 
 function App() {
   return (
     <PageShell>
       <Routes>
         <Route path="/" element={<HomePage />} />
-        <Route path="/query" element={<QueryBuilderPage />} />
+        <Route path="/query" element={<Navigate to="/query/local" replace />} />
+        <Route path="/query/local" element={<QueryBuilderPage />} />
+        <Route path="/query/marcadose" element={<MarcadoseQueryBuilderPage />} />
         <Route path="/import" element={<DataImporterPage />} />
       </Routes>
     </PageShell>

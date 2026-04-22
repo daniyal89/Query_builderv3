@@ -1,11 +1,15 @@
 """
-connection.py — Pydantic schemas for the DuckDB connection workflow.
-
-Used by POST /api/duckdb/connect to validate the incoming file path
-and structure the response confirming connection status.
+connection.py â€” Pydantic schemas for local DuckDB and Marcadose Oracle connections.
 """
 
+from __future__ import annotations
+
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+EngineName = Literal["duckdb", "oracle"]
 
 
 class ConnectionRequest(BaseModel):
@@ -19,23 +23,32 @@ class ConnectionRequest(BaseModel):
 
 
 class ConnectionResponse(BaseModel):
-    """Response after a connection attempt."""
+    """Response after a DuckDB connection attempt."""
 
     status: str = Field(
         ...,
         description="Connection outcome: 'connected' or 'error'.",
         examples=["connected"],
     )
-    db_path: str = Field(
-        ...,
-        description="Echo of the resolved database path.",
-    )
-    tables_count: int = Field(
-        ...,
-        description="Number of user tables found in the database.",
-        ge=0,
-    )
-    message: str = Field(
-        default="",
-        description="Human-readable status or error message.",
-    )
+    db_path: str = Field(..., description="Echo of the resolved database path.")
+    tables_count: int = Field(..., description="Number of user tables found in the database.", ge=0)
+    message: str = Field(default="", description="Human-readable status or error message.")
+
+
+class OracleConnectionRequest(BaseModel):
+    """Incoming payload to establish a Marcadose Oracle connection."""
+
+    host: str = Field(..., description="Oracle database host name or IP.")
+    port: int = Field(default=1521, description="Listener port.", ge=1, le=65535)
+    sid: str = Field(..., description="Oracle SID for the Marcadose database.")
+    username: str = Field(..., description="Read-only Oracle username.")
+    password: str = Field(..., description="Oracle password.")
+
+
+class OracleConnectionResponse(BaseModel):
+    """Response after an Oracle connection attempt."""
+
+    status: str = Field(..., description="Connection outcome.")
+    tables_count: int = Field(..., description="Number of discovered tables/views.", ge=0)
+    message: str = Field(default="", description="Human-readable status or error message.")
+    schema_name: str = Field(..., description="Connected Oracle schema name.")
