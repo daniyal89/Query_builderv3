@@ -1,0 +1,19 @@
+/**
+ * index.css — Global styles, design tokens, and base typography.
+ *
+ * Defines the design system: CSS custom properties for colors, spacing,
+ * typography, border-radius, and shadows. Includes a CSS reset and
+ * base element styles.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+}
