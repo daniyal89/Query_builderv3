@@ -32,6 +32,7 @@ export type FilterOperator =
 /** Sort direction options. */
 export type SortDirection = "ASC" | "DESC";
 export type QuerySourceMode = "builder" | "manual";
+export type QueryExecutionMode = "builder" | "sql";
 
 /** A single WHERE-clause filter condition. */
 export interface FilterCondition {
@@ -101,7 +102,7 @@ export interface QueryState {
 /** Payload sent to POST /api/query. */
 export interface QueryPayload {
   engine: QueryEngine;
-  execution_mode?: QuerySourceMode;
+  execution_mode?: QueryExecutionMode;
   table: string;
   select: string[];
   filters: Omit<FilterCondition, "id">[];
@@ -118,7 +119,7 @@ export interface QueryPayload {
 
 export interface QueryPreview {
   sql: string;
-  source_mode: QuerySourceMode;
+  source_mode: QueryExecutionMode;
   can_sync_builder: boolean;
 }
 
@@ -147,7 +148,7 @@ export interface QueryResult {
   /** SQL text that was executed. */
   executed_sql: string;
   /** Execution source mode. */
-  source_mode: QuerySourceMode;
+  source_mode: QueryExecutionMode;
   /** Optional execution status message. */
   message: string;
 }

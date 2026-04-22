@@ -77,7 +77,8 @@ class QueryBuilderService:
             return f"'{value.isoformat(sep=' ', timespec='seconds')}'"
         if isinstance(value, (date, time)):
             return f"'{value.isoformat()}'"
-        return f"'{str(value).replace(\"'\", \"''\")}'"
+        escaped = str(value).replace("'", "''")
+        return f"'{escaped}'"
 
     @staticmethod
     def _replace_first(text: str, old: str, new: str) -> str:
