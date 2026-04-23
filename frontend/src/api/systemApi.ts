@@ -25,8 +25,12 @@ async function postForPath(
   return data.path ?? null;
 }
 
-export async function pickSystemFile(): Promise<string | null> {
-  return postForPath("/pick-file");
+export async function pickSystemFile(
+  fileType?: string,
+): Promise<string | null> {
+  return postForPath("/pick-file", {
+    file_type: fileType ?? null,
+  });
 }
 
 export async function pickSystemFolder(): Promise<string | null> {
@@ -35,8 +39,10 @@ export async function pickSystemFolder(): Promise<string | null> {
 
 export async function pickSystemSavePath(
   defaultFileName = "merged_output.csv",
+  extension?: string,
 ): Promise<string | null> {
   return postForPath("/pick-save-path", {
     default_file_name: defaultFileName,
+    extension: extension ?? null,
   });
 }

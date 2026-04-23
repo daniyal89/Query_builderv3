@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { startFtpDownload } from "../api/ftpApi";
 import { pickSystemFolder } from "../api/systemApi";
 import type { FTPDownloadProfile, FTPDownloadResponse } from "../types/ftp.types";
@@ -20,7 +20,11 @@ function getErrorMessage(error: unknown): string {
   return "FTP download failed.";
 }
 
-const PRESET_USERS: Record<string, string> = {
+const FORM_STORAGE_KEY = "ftp_download_form_state_v2";
+const PRESET_STORAGE_KEY = "ftp_download_preset_overrides_v2";
+const CUSTOM_PRESET_STORAGE_KEY = "ftp_download_custom_presets_v2";
+
+const DEFAULT_PRESET_USERS: Record<string, string> = {
   MVVNL: "mvftpreport",
   DVVNL: "dvftpreport",
   PVVNL: "pvftpreport",
@@ -28,18 +32,28 @@ const PRESET_USERS: Record<string, string> = {
   KESCO: "ksftpreport",
 };
 
-const MASTER_PRESET: FTPDownloadProfile[] = ["MVVNL", "DVVNL", "PVVNL", "PuVNL", "KESCO"].map((name) => ({
+const DEFAULT_PRESET_PASSWORDS: Record<string, string> = {
+  MVVNL: "Mvftp@321",
+  DVVNL: "Dvftp@321",
+  PVVNL: "Pvftp@321",
+  PuVNL: "Puftp@321",
+  KESCO: "Ksftp@321",
+};
+
+const DISCOM_ORDER = ["MVVNL", "DVVNL", "PVVNL", "PuVNL", "KESCO"];
+
+const DEFAULT_MASTER_PRESET: FTPDownloadProfile[] = DISCOM_ORDER.map((name) => ({
   name,
-  username: PRESET_USERS[name],
-  password: "",
+  username: DEFAULT_PRESET_USERS[name],
+  password: DEFAULT_PRESET_PASSWORDS[name],
   remote_dir: "/01-MASTER_DATA/{MONTH}/",
   local_subfolder: `{MONTH}/${name}`,
 }));
 
-const BILLED_PRESET: FTPDownloadProfile[] = ["MVVNL", "DVVNL", "PVVNL", "PuVNL", "KESCO"].map((name) => ({
+const DEFAULT_BILLED_PRESET: FTPDownloadProfile[] = DISCOM_ORDER.map((name) => ({
   name,
-  username: PRESET_USERS[name],
-  password: "",
+  username: DEFAULT_PRESET_USERS[name],
+  password: DEFAULT_PRESET_PASSWORDS[name],
   remote_dir: "/03_CSV_BILLED/{DATE}/",
   local_subfolder: `{MONTH}/{DATE}/${name}`,
 }));
@@ -52,21 +66,156 @@ const EMPTY_PROFILE: FTPDownloadProfile = {
   local_subfolder: "{PROFILE}",
 };
 
+type PageFormState = {
+  host: string;
+  port: number;
+  outputRoot: string;
+  fileSuffix: string;
+  maxWorkers: number;
+  maxRetries: number;
+  retryDelaySeconds: number;
+  timeoutSeconds: number;
+  passiveMode: boolean;
+  skipExisting: boolean;
+  profiles: FTPDownloadProfile[];
+};
+
+type PresetOverrides = {
+  master?: FTPDownloadProfile[];
+  billed?: FTPDownloadProfile[];
+};
+
+type CustomSavedPreset = {
+  id: string;
+  name: string;
+  profiles: FTPDownloadProfile[];
+};
+
+function cloneProfiles(items: FTPDownloadProfile[]): FTPDownloadProfile[] {
+  return items.map((item) => ({ ...item }));
+}
+
+function safeReadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function getStoredPresetOverrides(): PresetOverrides {
+  return safeReadJson<PresetOverrides>(PRESET_STORAGE_KEY, {});
+}
+
+function getMasterPreset(): FTPDownloadProfile[] {
+  const overrides = getStoredPresetOverrides();
+  return cloneProfiles(overrides.master && overrides.master.length > 0 ? overrides.master : DEFAULT_MASTER_PRESET);
+}
+
+function getBilledPreset(): FTPDownloadProfile[] {
+  const overrides = getStoredPresetOverrides();
+  return cloneProfiles(overrides.billed && overrides.billed.length > 0 ? overrides.billed : DEFAULT_BILLED_PRESET);
+}
+
+function getDefaultFormState(): PageFormState {
+  return {
+    host: "ftp.uppclonline.com",
+    port: 21,
+    outputRoot: "",
+    fileSuffix: ".gz",
+    maxWorkers: 3,
+    maxRetries: 3,
+    retryDelaySeconds: 5,
+    timeoutSeconds: 30,
+    passiveMode: true,
+    skipExisting: true,
+    profiles: getMasterPreset(),
+  };
+}
+
+function loadInitialFormState(): PageFormState {
+  const fallback = getDefaultFormState();
+  const saved = safeReadJson<Partial<PageFormState> | null>(FORM_STORAGE_KEY, null);
+  if (!saved) return fallback;
+
+  return {
+    host: typeof saved.host === "string" ? saved.host : fallback.host,
+    port: typeof saved.port === "number" ? saved.port : fallback.port,
+    outputRoot: typeof saved.outputRoot === "string" ? saved.outputRoot : fallback.outputRoot,
+    fileSuffix: typeof saved.fileSuffix === "string" ? saved.fileSuffix : fallback.fileSuffix,
+    maxWorkers: typeof saved.maxWorkers === "number" ? saved.maxWorkers : fallback.maxWorkers,
+    maxRetries: typeof saved.maxRetries === "number" ? saved.maxRetries : fallback.maxRetries,
+    retryDelaySeconds:
+      typeof saved.retryDelaySeconds === "number" ? saved.retryDelaySeconds : fallback.retryDelaySeconds,
+    timeoutSeconds: typeof saved.timeoutSeconds === "number" ? saved.timeoutSeconds : fallback.timeoutSeconds,
+    passiveMode: typeof saved.passiveMode === "boolean" ? saved.passiveMode : fallback.passiveMode,
+    skipExisting: typeof saved.skipExisting === "boolean" ? saved.skipExisting : fallback.skipExisting,
+    profiles:
+      Array.isArray(saved.profiles) && saved.profiles.length > 0
+        ? cloneProfiles(saved.profiles as FTPDownloadProfile[])
+        : fallback.profiles,
+  };
+}
+
+function loadCustomPresets(): CustomSavedPreset[] {
+  return safeReadJson<CustomSavedPreset[]>(CUSTOM_PRESET_STORAGE_KEY, []);
+}
+
 export const FtpDownloadPage: React.FC = () => {
-  const [host, setHost] = useState("ftp.uppclonline.com");
-  const [port, setPort] = useState(21);
-  const [outputRoot, setOutputRoot] = useState("");
-  const [fileSuffix, setFileSuffix] = useState(".gz");
-  const [maxWorkers, setMaxWorkers] = useState(3);
-  const [maxRetries, setMaxRetries] = useState(3);
-  const [retryDelaySeconds, setRetryDelaySeconds] = useState(5);
-  const [timeoutSeconds, setTimeoutSeconds] = useState(30);
-  const [passiveMode, setPassiveMode] = useState(true);
-  const [skipExisting, setSkipExisting] = useState(true);
-  const [profiles, setProfiles] = useState<FTPDownloadProfile[]>([{ ...EMPTY_PROFILE }]);
+  const initialState = useMemo(() => loadInitialFormState(), []);
+
+  const [host, setHost] = useState(initialState.host);
+  const [port, setPort] = useState(initialState.port);
+  const [outputRoot, setOutputRoot] = useState(initialState.outputRoot);
+  const [fileSuffix, setFileSuffix] = useState(initialState.fileSuffix);
+  const [maxWorkers, setMaxWorkers] = useState(initialState.maxWorkers);
+  const [maxRetries, setMaxRetries] = useState(initialState.maxRetries);
+  const [retryDelaySeconds, setRetryDelaySeconds] = useState(initialState.retryDelaySeconds);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(initialState.timeoutSeconds);
+  const [passiveMode, setPassiveMode] = useState(initialState.passiveMode);
+  const [skipExisting, setSkipExisting] = useState(initialState.skipExisting);
+  const [profiles, setProfiles] = useState<FTPDownloadProfile[]>(cloneProfiles(initialState.profiles));
+  const [customPresetName, setCustomPresetName] = useState("");
+  const [customPresets, setCustomPresets] = useState<CustomSavedPreset[]>(loadCustomPresets());
+  const [message, setMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<FTPDownloadResponse | null>(null);
+
+  useEffect(() => {
+    const formState: PageFormState = {
+      host,
+      port,
+      outputRoot,
+      fileSuffix,
+      maxWorkers,
+      maxRetries,
+      retryDelaySeconds,
+      timeoutSeconds,
+      passiveMode,
+      skipExisting,
+      profiles,
+    };
+    window.localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(formState));
+  }, [
+    host,
+    port,
+    outputRoot,
+    fileSuffix,
+    maxWorkers,
+    maxRetries,
+    retryDelaySeconds,
+    timeoutSeconds,
+    passiveMode,
+    skipExisting,
+    profiles,
+  ]);
+
+  useEffect(() => {
+    window.localStorage.setItem(CUSTOM_PRESET_STORAGE_KEY, JSON.stringify(customPresets));
+  }, [customPresets]);
 
   const canSubmit = useMemo(() => {
     const hasHost = host.trim() !== "";
@@ -89,18 +238,77 @@ export const FtpDownloadPage: React.FC = () => {
     );
   };
 
+  const replaceProfiles = (items: FTPDownloadProfile[], note?: string) => {
+    setProfiles(cloneProfiles(items));
+    if (note) setMessage(note);
+    setError(null);
+    setResult(null);
+  };
+
+  const savePresetOverride = (presetType: "master" | "billed") => {
+    const currentOverrides = getStoredPresetOverrides();
+    const nextOverrides: PresetOverrides = {
+      ...currentOverrides,
+      [presetType]: cloneProfiles(profiles),
+    };
+    window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(nextOverrides));
+    setMessage(`${presetType === "master" ? "Master" : "Billed"} preset saved locally on this system.`);
+  };
+
+  const resetPresetOverride = (presetType: "master" | "billed") => {
+    const currentOverrides = getStoredPresetOverrides();
+    const nextOverrides: PresetOverrides = { ...currentOverrides };
+    delete nextOverrides[presetType];
+    window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(nextOverrides));
+
+    if (presetType === "master") {
+      replaceProfiles(DEFAULT_MASTER_PRESET, "Master preset reset to default values.");
+    } else {
+      replaceProfiles(DEFAULT_BILLED_PRESET, "Billed preset reset to default values.");
+    }
+  };
+
+  const saveCustomPreset = () => {
+    const name = customPresetName.trim();
+    if (!name) {
+      setError("Enter a custom preset name first.");
+      return;
+    }
+
+    const presetId = name.toLowerCase().replace(/\s+/g, "-");
+    const nextPreset: CustomSavedPreset = {
+      id: presetId,
+      name,
+      profiles: cloneProfiles(profiles),
+    };
+
+    setCustomPresets((current) => {
+      const filtered = current.filter((item) => item.id !== presetId);
+      return [...filtered, nextPreset].sort((a, b) => a.name.localeCompare(b.name));
+    });
+    setMessage(`Custom preset "${name}" saved locally.`);
+    setError(null);
+  };
+
+  const deleteCustomPreset = (presetId: string) => {
+    setCustomPresets((current) => current.filter((item) => item.id !== presetId));
+    setMessage("Custom preset deleted.");
+  };
+
   const resetForm = () => {
-    setHost("ftp.uppclonline.com");
-    setPort(21);
-    setOutputRoot("");
-    setFileSuffix(".gz");
-    setMaxWorkers(3);
-    setMaxRetries(3);
-    setRetryDelaySeconds(5);
-    setTimeoutSeconds(30);
-    setPassiveMode(true);
-    setSkipExisting(true);
-    setProfiles([{ ...EMPTY_PROFILE }]);
+    const fallback = getDefaultFormState();
+    setHost(fallback.host);
+    setPort(fallback.port);
+    setOutputRoot(fallback.outputRoot);
+    setFileSuffix(fallback.fileSuffix);
+    setMaxWorkers(fallback.maxWorkers);
+    setMaxRetries(fallback.maxRetries);
+    setRetryDelaySeconds(fallback.retryDelaySeconds);
+    setTimeoutSeconds(fallback.timeoutSeconds);
+    setPassiveMode(fallback.passiveMode);
+    setSkipExisting(fallback.skipExisting);
+    setProfiles(cloneProfiles(fallback.profiles));
+    setMessage("Form reset. Latest saved presets are still kept locally.");
     setError(null);
     setResult(null);
   };
@@ -110,6 +318,7 @@ export const FtpDownloadPage: React.FC = () => {
 
     setIsLoading(true);
     setError(null);
+    setMessage(null);
     setResult(null);
 
     try {
@@ -140,26 +349,107 @@ export const FtpDownloadPage: React.FC = () => {
         <p className="text-sm font-semibold uppercase tracking-wide text-sky-600">Sidebar tool</p>
         <h1 className="mt-2 text-3xl font-bold text-gray-900">FTP Download</h1>
         <p className="mt-3 max-w-4xl text-sm text-gray-600">
-          Download all files from one or more FTP folders into a local output root. Use tokens exactly like your manual
-          scripts: <span className="font-mono">{`{DATE}`}</span>, <span className="font-mono">{`{MONTH}`}</span>,{" "}
-          <span className="font-mono">{`{PROFILE}`}</span>.
+          Master and Billed presets now include password values and can be updated locally for future use.
+          Current form values are also auto-saved on this machine.
         </p>
+
         <div className="mt-4 flex flex-wrap gap-3">
           <button
             type="button"
-            onClick={() => setProfiles(MASTER_PRESET.map((item) => ({ ...item })))}
+            onClick={() => replaceProfiles(getMasterPreset(), "Master preset loaded.")}
             className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-100"
           >
             Load Master preset
           </button>
           <button
             type="button"
-            onClick={() => setProfiles(BILLED_PRESET.map((item) => ({ ...item })))}
+            onClick={() => replaceProfiles(getBilledPreset(), "Billed preset loaded.")}
             className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
           >
             Load Billed preset
           </button>
+          <button
+            type="button"
+            onClick={() => savePresetOverride("master")}
+            className="rounded-lg border border-sky-200 bg-white px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-50"
+          >
+            Save current as Master
+          </button>
+          <button
+            type="button"
+            onClick={() => savePresetOverride("billed")}
+            className="rounded-lg border border-indigo-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"
+          >
+            Save current as Billed
+          </button>
+          <button
+            type="button"
+            onClick={() => resetPresetOverride("master")}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            Reset Master default
+          </button>
+          <button
+            type="button"
+            onClick={() => resetPresetOverride("billed")}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+          >
+            Reset Billed default
+          </button>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-bold text-gray-900">Custom saved presets</h2>
+        <div className="mt-4 flex flex-col gap-3 lg:flex-row">
+          <input
+            type="text"
+            value={customPresetName}
+            onChange={(event) => setCustomPresetName(event.target.value)}
+            placeholder="Example: Test FTP or Another Vendor"
+            className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-700 focus:border-sky-500 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={saveCustomPreset}
+            className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+          >
+            Save current as custom preset
+          </button>
+        </div>
+
+        {customPresets.length > 0 ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {customPresets.map((preset) => (
+              <div key={preset.id} className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-gray-900">{preset.name}</p>
+                    <p className="mt-1 text-xs text-gray-500">{preset.profiles.length} profile(s)</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => replaceProfiles(preset.profiles, `Custom preset "${preset.name}" loaded.`)}
+                      className="rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-50"
+                    >
+                      Load
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteCustomPreset(preset.id)}
+                      className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-gray-500">No custom preset saved yet.</p>
+        )}
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_1.35fr]">
@@ -333,7 +623,7 @@ export const FtpDownloadPage: React.FC = () => {
                       Password
                     </label>
                     <input
-                      type="password"
+                      type="text"
                       value={profile.password}
                       onChange={(event) => updateProfile(index, "password", event.target.value)}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none"
@@ -404,6 +694,12 @@ export const FtpDownloadPage: React.FC = () => {
         </div>
       </div>
 
+      {message && (
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 shadow-sm">
+          {message}
+        </div>
+      )}
+
       {error && (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 shadow-sm">
           <span className="font-semibold">Error:</span> {error}
@@ -452,9 +748,8 @@ export const FtpDownloadPage: React.FC = () => {
                     <p className="mt-1 break-all font-mono text-xs text-gray-500">{profileResult.remote_dir}</p>
                   </div>
                   <span
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      profileResult.failed_files > 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"
-                    }`}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${profileResult.failed_files > 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"
+                      }`}
                   >
                     {profileResult.failed_files > 0 ? "Completed with errors" : "Completed"}
                   </span>
