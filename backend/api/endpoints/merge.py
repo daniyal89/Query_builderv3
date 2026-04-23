@@ -12,8 +12,9 @@ from backend.api.deps import get_connected_db
 from backend.models.merge import (
     ConflictResolutionMap,
     DetectedColumn,
-    EnrichmentRequest,
     EnrichmentResponse,
+    FolderMergeRequest,
+    FolderMergeResponse,
     MergeSheetsResponse,
     UploadSheetsResponse,
 )
@@ -108,7 +109,26 @@ async def merge_sheets(
     # TODO: Load uploaded files by file_ids, apply resolutions,
     # concatenate into a single DataFrame, store as temp table,
     # and return merge_id plus preview.
-    pass
+    raise HTTPException(status_code=501, detail="Merge sheets flow is not implemented yet.")
+
+
+@router.post(
+    "/merge-folder",
+    response_model=FolderMergeResponse,
+    summary="Merge all supported files from a local folder and save the result",
+)
+def merge_folder(payload: FolderMergeRequest) -> FolderMergeResponse:
+    try:
+        result = MergeService.merge_folder(
+            source_folder=payload.source_folder,
+            output_path=payload.output_path,
+            include_subfolders=payload.include_subfolders,
+        )
+        return FolderMergeResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc
 
 
 @router.post(
@@ -123,6 +143,7 @@ async def merge_sheets(
 async def enrich_data(
     file: UploadFile = File(..., description="The merged Excel or CSV file to enrich"),
     db_path: str = Form(..., description="Absolute path to the DuckDB file"),
+    master_table: str = Form(..., description="DuckDB table to use as the enrichment source"),
     fetch_columns: str = Form(
         ..., description="JSON encoded array of column names to fetch from the Master Table"
     ),
@@ -131,6 +152,7 @@ async def enrich_data(
     mapped_secondary_col: str = Form(..., description="Uploaded column mapped to secondary key"),
     db: DuckDBService = Depends(get_connected_db),
 ) -> StreamingResponse:
+    del db_path
     try:
         try:
             columns_to_fetch = json.loads(fetch_columns)
@@ -150,6 +172,7 @@ async def enrich_data(
         result_df, stats = MergeService.process_enrichment(
             merged_df=dataframe,
             conn=db._conn,
+            master_table=master_table,
             fetch_columns=columns_to_fetch,
             mapped_acct_id_col=mapped_acct_id_col,
             mapped_secondary_col=mapped_secondary_col,

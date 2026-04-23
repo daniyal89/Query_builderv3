@@ -2,13 +2,17 @@
  * QueryBuilderWorkspace.tsx â€” Reusable query builder UI for local DuckDB and Marcadose.
  */
 
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { getColumns } from "../../api/schemaApi";
 import { useQueryBuilder } from "../../hooks/useQueryBuilder";
 import type { QueryEngine } from "../../types/connection.types";
 import type { TableMetadata } from "../../types/schema.types";
+import { buildColumnOptionsForQuery } from "../../utils/queryBuilderColumns";
 import { ColumnPicker } from "./ColumnPicker";
 import { FilterPanel } from "./FilterPanel";
+import { JoinComposer } from "./JoinComposer";
+import { LocalFileObjectCreator } from "./LocalFileObjectCreator";
 import { PivotControl } from "./PivotControl";
 import { ResultsGrid } from "./ResultsGrid";
 import { SortControl } from "./SortControl";
@@ -19,15 +23,21 @@ interface QueryBuilderWorkspaceProps {
   engine: QueryEngine;
   title: string;
   tables: TableMetadata[];
+  onLocalSchemaChanged?: () => Promise<unknown> | unknown;
 }
 
 export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   engine,
   title,
   tables,
+  onLocalSchemaChanged,
 }) => {
   const [searchParams] = useSearchParams();
   const initialTable = searchParams.get("table");
+  const [metadataTables, setMetadataTables] = useState<TableMetadata[]>(tables || []);
+  const [columnLoadError, setColumnLoadError] = useState<string | null>(null);
+  const loadingColumnTablesRef = useRef<Set<string>>(new Set());
+  const loadedColumnTablesRef = useRef<Set<string>>(new Set());
 
   const {
     state,
@@ -37,6 +47,12 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     updateFilter,
     removeFilter,
     setSort,
+    addJoin,
+    updateJoin,
+    removeJoin,
+    addJoinCondition,
+    updateJoinCondition,
+    removeJoinCondition,
     setMode,
     setPivotConfig,
     setLimitRows,
@@ -46,16 +62,72 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     executeQuery,
   } = useQueryBuilder(engine);
 
-  const activeTable = useMemo(
-    () => tables.find((table) => table.table_name === state.table),
-    [state.table, tables]
+  useEffect(() => {
+    setMetadataTables((previousTables) => {
+      const previousByName = new Map(previousTables.map((table) => [table.table_name, table]));
+      return (tables || []).map((table) => {
+        const previous = previousByName.get(table.table_name);
+        if (!previous || table.columns.length > 0) {
+          return table;
+        }
+        return { ...table, columns: previous.columns };
+      });
+    });
+  }, [tables]);
+
+  useEffect(() => {
+    if (engine !== "oracle") {
+      return;
+    }
+
+    const tableNames = [
+      state.table,
+      ...state.joins.map((join) => join.table),
+    ].filter((tableName) => tableName.trim() !== "");
+    const tableMap = new Map(metadataTables.map((table) => [table.table_name, table]));
+
+    tableNames.forEach((tableName) => {
+      const table = tableMap.get(tableName);
+      if (
+        !table ||
+        table.columns.length > 0 ||
+        loadingColumnTablesRef.current.has(tableName) ||
+        loadedColumnTablesRef.current.has(tableName)
+      ) {
+        return;
+      }
+
+      loadingColumnTablesRef.current.add(tableName);
+      setColumnLoadError(null);
+      getColumns(tableName, engine)
+        .then((columns) => {
+          loadedColumnTablesRef.current.add(tableName);
+          setMetadataTables((previousTables) =>
+            previousTables.map((candidate) =>
+              candidate.table_name === tableName ? { ...candidate, columns } : candidate
+            )
+          );
+        })
+        .catch((error: any) => {
+          setColumnLoadError(
+            error?.response?.data?.detail || error.message || `Failed to load columns for ${tableName}`
+          );
+        })
+        .finally(() => {
+          loadingColumnTablesRef.current.delete(tableName);
+        });
+    });
+  }, [engine, metadataTables, state.joins, state.table]);
+
+  const availableColumns = useMemo(
+    () => buildColumnOptionsForQuery(state.table, state.joins, metadataTables),
+    [state.table, state.joins, metadataTables]
   );
-  const availableColumns = activeTable?.columns ?? [];
+  const reportColumns = availableColumns;
   const availableColumnNames = useMemo(
-    () => availableColumns.map((column) => column.name),
-    [availableColumns]
+    () => reportColumns.map((column) => column.key),
+    [reportColumns]
   );
-  const reportModeDisabled = engine === "oracle";
   const shouldShowSelectTableHint =
     !state.table && state.sourceMode === "builder" && !state.sqlText.trim();
 
@@ -65,21 +137,15 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     }
   }, [initialTable, state.table, setTable]);
 
-  useEffect(() => {
-    if (reportModeDisabled && state.mode === "REPORT") {
-      setMode("LIST");
-    }
-  }, [reportModeDisabled, setMode, state.mode]);
-
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="mx-auto max-w-7xl">
-        <div className="mb-6 flex items-end justify-between">
-          <div>
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
             <h1 className="text-3xl font-bold text-gray-900">{title}</h1>
-            {reportModeDisabled && (
+            {engine === "oracle" && (
               <p className="mt-2 text-sm text-amber-700">
-                Report mode is not available for Marcadose yet. Use Fetch List or manual SQL for read-only Oracle
+                Marcadose is read-only. Fetch List, Generate Report, and manual SQL all run as SELECT-only Oracle
                 queries.
               </p>
             )}
@@ -98,26 +164,49 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
             </button>
             <button
               onClick={() => setMode("REPORT")}
-              disabled={reportModeDisabled}
               className={`rounded-md px-4 py-2 text-sm font-semibold transition ${
                 state.mode === "REPORT"
                   ? "bg-white text-gray-900 shadow"
                   : "text-gray-500 hover:text-gray-700"
-              } disabled:cursor-not-allowed disabled:opacity-50`}
+              }`}
             >
               Generate Report
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
-          <div className="lg:col-span-1">
-            <TableSelector tables={tables || []} activeTable={state.table} onSelect={setTable} />
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(360px,420px),minmax(0,1fr)]">
+          <div className="min-w-0">
+            {engine === "duckdb" && onLocalSchemaChanged && (
+              <LocalFileObjectCreator onCreated={onLocalSchemaChanged} />
+            )}
+
+            <TableSelector tables={metadataTables || []} activeTable={state.table} onSelect={setTable} />
+
+            {columnLoadError && (
+              <div className="mb-4 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {columnLoadError}
+              </div>
+            )}
+
+            {state.table && (
+              <JoinComposer
+                baseTable={state.table}
+                joins={state.joins}
+                tables={metadataTables}
+                onAddJoin={addJoin}
+                onUpdateJoin={updateJoin}
+                onRemoveJoin={removeJoin}
+                onAddCondition={addJoinCondition}
+                onUpdateCondition={updateJoinCondition}
+                onRemoveCondition={removeJoinCondition}
+              />
+            )}
 
             {state.table && state.mode === "LIST" && (
               <>
                 <ColumnPicker
-                  columns={availableColumnNames}
+                  columns={availableColumns}
                   selectedColumns={state.selectedColumns}
                   onToggleColumn={toggleColumn}
                 />
@@ -130,7 +219,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
                 />
                 <SortControl
                   sortRules={state.sort}
-                  columns={availableColumnNames}
+                  columns={availableColumns}
                   onChange={setSort}
                 />
                 <div className="mb-4 rounded border border-gray-200 bg-white p-4 shadow-sm">
@@ -149,7 +238,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
               </>
             )}
 
-            {state.table && state.mode === "REPORT" && !reportModeDisabled && (
+            {state.table && state.mode === "REPORT" && (
               <>
                 <PivotControl
                   columns={availableColumnNames}
@@ -158,7 +247,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
                 />
                 <FilterPanel
                   filters={state.filters}
-                  columns={availableColumns}
+                  columns={reportColumns}
                   onAddFilter={addFilter}
                   onUpdateFilter={updateFilter}
                   onRemoveFilter={removeFilter}
@@ -167,9 +256,10 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
             )}
           </div>
 
-          <div className="lg:col-span-3">
+          <div className="min-w-0">
             <SqlEditorPanel
               engine={engine}
+              queryMode={state.mode}
               sourceMode={state.sourceMode}
               sqlText={state.sqlText}
               generatedSql={state.generatedSql}

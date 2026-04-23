@@ -6,12 +6,12 @@
  */
 
 import React, { useMemo } from "react";
-import type { FilterCondition, FilterOperator } from "../../types/query.types";
-import type { ColumnDetail } from "../../types/schema.types";
+import type { FilterCondition, FilterOperator, QueryColumnOption } from "../../types/query.types";
+import { SearchableSelect } from "./SearchableSelect";
 
 interface FilterRowProps {
   condition: FilterCondition;
-  columns: ColumnDetail[];
+  columns: QueryColumnOption[];
   onChange: (id: string, updates: Partial<FilterCondition>) => void;
   onRemove: (id: string) => void;
 }
@@ -30,18 +30,23 @@ const TEXT_OPERATORS: FilterOperator[] = [
 ];
 const RANGE_OPERATORS: FilterOperator[] = [">", "<", ">=", "<=", "BETWEEN", "NOT BETWEEN", "IN", "NOT IN"];
 
-function getColumnFamily(dtype?: string): "text" | "number" | "date" | "boolean" | "other" {
-  const normalized = dtype?.toUpperCase() ?? "";
-  if (!normalized) return "other";
-  if (/(CHAR|TEXT|STRING|CLOB|VARCHAR|UUID|JSON)/.test(normalized)) return "text";
-  if (/(INT|DECIMAL|NUMERIC|DOUBLE|FLOAT|REAL|HUGEINT|BIGINT|SMALLINT|TINYINT)/.test(normalized)) return "number";
-  if (/(DATE|TIME|TIMESTAMP)/.test(normalized)) return "date";
-  if (/BOOL/.test(normalized)) return "boolean";
+function getColumnFamily(dtype?: string, columnName?: string): "text" | "number" | "date" | "boolean" | "other" {
+  const normalizedType = dtype?.toUpperCase() ?? "";
+  const normalizedName = columnName?.toUpperCase() ?? "";
+
+  // Check name first if it clearly indicates a date, because some DBs store dates as generic VARCHAR
+  if (/(DATE|TIME|TIMESTAMP)/.test(normalizedName)) return "date";
+
+  if (!normalizedType) return "other";
+  if (/(DATE|TIME|TIMESTAMP)/.test(normalizedType)) return "date";
+  if (/(CHAR|TEXT|STRING|CLOB|VARCHAR|UUID|JSON)/.test(normalizedType)) return "text";
+  if (/(INT|DECIMAL|NUMERIC|DOUBLE|FLOAT|REAL|HUGEINT|BIGINT|SMALLINT|TINYINT)/.test(normalizedType)) return "number";
+  if (/BOOL/.test(normalizedType)) return "boolean";
   return "other";
 }
 
-function getOperatorsForColumn(column?: ColumnDetail): FilterOperator[] {
-  const family = getColumnFamily(column?.dtype);
+function getOperatorsForColumn(column?: QueryColumnOption): FilterOperator[] {
+  const family = getColumnFamily(column?.dtype, column?.columnName || column?.label || column?.key);
   if (family === "text") return [...COMMON_OPERATORS, ...TEXT_OPERATORS];
   if (family === "number" || family === "date") return [...COMMON_OPERATORS, ...RANGE_OPERATORS];
   if (family === "boolean") return [...COMMON_OPERATORS, "IN", "NOT IN"];
@@ -67,8 +72,17 @@ function getValueHint(operator: FilterOperator): string | null {
 
 export const FilterRow: React.FC<FilterRowProps> = ({ condition, columns, onChange, onRemove }) => {
   const selectedColumn = useMemo(
-    () => columns.find((column) => column.name === condition.column),
+    () => columns.find((column) => column.key === condition.column),
     [columns, condition.column]
+  );
+  const columnOptions = useMemo(
+    () =>
+      columns.map((column) => ({
+        value: column.key,
+        label: column.label,
+        description: column.dtype,
+      })),
+    [columns]
   );
   const availableOperators = useMemo(
     () => getOperatorsForColumn(selectedColumn),
@@ -78,8 +92,12 @@ export const FilterRow: React.FC<FilterRowProps> = ({ condition, columns, onChan
   const needsValue = !NO_VALUE_OPERATORS.includes(operator);
   const hint = getValueHint(operator);
 
+  const isDate = getColumnFamily(selectedColumn?.dtype, selectedColumn?.columnName || selectedColumn?.label || selectedColumn?.key) === "date";
+  const isSingleValue = !operator.includes("BETWEEN") && !operator.includes("IN");
+  const inputType = isDate && isSingleValue ? "date" : "text";
+
   const handleColumnChange = (columnName: string) => {
-    const nextColumn = columns.find((column) => column.name === columnName);
+    const nextColumn = columns.find((column) => column.key === columnName);
     const nextOperators = getOperatorsForColumn(nextColumn);
     const nextOperator = nextOperators.includes(condition.operator) ? condition.operator : nextOperators[0];
     onChange(condition.id, {
@@ -109,19 +127,15 @@ export const FilterRow: React.FC<FilterRowProps> = ({ condition, columns, onChan
         </button>
       </div>
 
-      <select
+      <SearchableSelect
         value={condition.column}
-        onChange={(e) => handleColumnChange(e.target.value)}
-        className="mb-2 w-full rounded border border-gray-300 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
-      >
-        <option value="">-- Column --</option>
-        {columns.map((column) => (
-          <option key={column.name} value={column.name}>
-            {column.name}
-            {column.dtype ? ` (${column.dtype})` : ""}
-          </option>
-        ))}
-      </select>
+        options={columnOptions}
+        onChange={handleColumnChange}
+        placeholder="-- Column --"
+        searchPlaceholder="Search filter columns..."
+        emptyMessage="No filter columns match your search."
+        className="mb-2"
+      />
 
       <select
         value={operator}
@@ -137,13 +151,39 @@ export const FilterRow: React.FC<FilterRowProps> = ({ condition, columns, onChan
 
       {needsValue && (
         <>
-          <input
-            type="text"
-            value={condition.value ?? ""}
-            onChange={(e) => onChange(condition.id, { value: e.target.value })}
-            className="w-full rounded border border-gray-300 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            placeholder={getValuePlaceholder(operator)}
-          />
+          {isDate && (operator === "BETWEEN" || operator === "NOT BETWEEN") ? (
+            <div className="flex items-center gap-2 w-full">
+              <input
+                type="date"
+                value={(condition.value ?? "").split(",")[0]?.trim() ?? ""}
+                onChange={(e) => {
+                  const parts = (condition.value ?? "").split(",");
+                  const end = parts.length > 1 ? parts[1].trim() : "";
+                  onChange(condition.id, { value: `${e.target.value}, ${end}` });
+                }}
+                className="w-full rounded border border-gray-300 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <span className="text-gray-500 text-xs">to</span>
+              <input
+                type="date"
+                value={(condition.value ?? "").split(",")[1]?.trim() ?? ""}
+                onChange={(e) => {
+                  const parts = (condition.value ?? "").split(",");
+                  const start = parts.length > 0 ? parts[0].trim() : "";
+                  onChange(condition.id, { value: `${start}, ${e.target.value}` });
+                }}
+                className="w-full rounded border border-gray-300 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+          ) : (
+            <input
+              type={inputType}
+              value={condition.value ?? ""}
+              onChange={(e) => onChange(condition.id, { value: e.target.value })}
+              className="w-full rounded border border-gray-300 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              placeholder={getValuePlaceholder(operator)}
+            />
+          )}
           {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
         </>
       )}

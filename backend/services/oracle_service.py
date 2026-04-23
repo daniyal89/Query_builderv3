@@ -20,8 +20,6 @@ READ_ONLY_KEYWORDS = re.compile(
 )
 FOR_UPDATE_PATTERN = re.compile(r"\bFOR\s+UPDATE\b", re.IGNORECASE)
 LEADING_COMMENT_PATTERN = re.compile(r"^\s*(--.*?$|/\*.*?\*/\s*)*", re.DOTALL | re.MULTILINE)
-
-
 class OracleService:
     """Singleton service managing a single Oracle connection in Thin mode."""
 
@@ -64,7 +62,7 @@ class OracleService:
 
             self._schema_name = payload.username.strip().upper()
             self._connection_label = f"{payload.host.strip()}:{payload.port}/{payload.sid.strip()}"
-            return len(self._fetch_object_names_unlocked())
+            return 0
 
     def disconnect(self) -> None:
         with self._lock:
@@ -81,22 +79,20 @@ class OracleService:
         self._ensure_connected()
         with self._lock:
             object_names = self._fetch_object_names_unlocked()
-            results: list[TableMetadata] = []
-            for name in object_names:
-                results.append(
-                    TableMetadata(
-                        table_name=name,
-                        columns=self._fetch_columns_unlocked(name),
-                        row_count=0,
-                    )
+            return [
+                TableMetadata(
+                    table_name=name,
+                    columns=[],
+                    row_count=0,
                 )
-            return results
+                for name in object_names
+            ]
 
     def get_columns(self, table_name: str) -> list[ColumnDetail]:
         self._ensure_connected()
         normalized = table_name.strip().upper()
         with self._lock:
-            existing = self._fetch_object_names_unlocked()
+            existing = {name.upper() for name in self._fetch_object_names_unlocked()}
             if normalized not in existing:
                 raise ValueError(f"Table or view '{table_name}' does not exist in schema '{self._schema_name}'.")
             return self._fetch_columns_unlocked(normalized)
@@ -155,28 +151,143 @@ class OracleService:
         try:
             cursor.execute(
                 """
-                SELECT object_name
-                FROM user_objects
-                WHERE object_type IN ('TABLE', 'VIEW')
-                ORDER BY object_name
-                """
+                SELECT object_label
+                FROM (
+                    SELECT object_name AS object_label, 0 AS sort_group
+                    FROM user_objects
+                    WHERE object_type IN ('TABLE', 'VIEW')
+
+                    UNION
+
+                    SELECT owner || '.' || object_name AS object_label, 1 AS sort_group
+                    FROM all_objects
+                    WHERE object_type IN ('TABLE', 'VIEW')
+                      AND owner <> :1
+                      AND owner NOT IN (
+                          'SYS', 'SYSTEM', 'XDB', 'CTXSYS', 'MDSYS', 'ORDSYS', 'WMSYS', 'OUTLN',
+                          'DBSNMP', 'OLAPSYS', 'LBACSYS', 'DVSYS', 'AUDSYS', 'GSMADMIN_INTERNAL'
+                      )
+                      AND owner NOT LIKE 'APEX_%'
+                      AND owner NOT LIKE 'FLOWS_%'
+
+                    UNION
+
+                    SELECT synonym_name AS object_label, 2 AS sort_group
+                    FROM user_synonyms syn
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM all_objects obj
+                        WHERE obj.owner = syn.table_owner
+                          AND obj.object_name = syn.table_name
+                          AND obj.object_type IN ('TABLE', 'VIEW')
+                    )
+
+                    UNION
+
+                    SELECT synonym_name AS object_label, 3 AS sort_group
+                    FROM all_synonyms syn
+                    WHERE syn.owner = 'PUBLIC'
+                      AND syn.table_owner NOT IN (
+                          'SYS', 'SYSTEM', 'XDB', 'CTXSYS', 'MDSYS', 'ORDSYS', 'WMSYS', 'OUTLN',
+                          'DBSNMP', 'OLAPSYS', 'LBACSYS', 'DVSYS', 'AUDSYS', 'GSMADMIN_INTERNAL'
+                      )
+                      AND syn.table_owner NOT LIKE 'APEX_%'
+                      AND syn.table_owner NOT LIKE 'FLOWS_%'
+                      AND EXISTS (
+                        SELECT 1
+                        FROM all_objects obj
+                        WHERE obj.owner = syn.table_owner
+                          AND obj.object_name = syn.table_name
+                          AND obj.object_type IN ('TABLE', 'VIEW')
+                      )
+                )
+                GROUP BY object_label
+                ORDER BY MIN(sort_group), object_label
+                """,
+                [self._schema_name],
             )
             return [row[0] for row in cursor.fetchall()]
         finally:
             cursor.close()
 
+    def _resolve_object_unlocked(self, table_name: str) -> tuple[str, str]:
+        assert self._conn is not None
+        normalized = table_name.strip().upper()
+        cursor = self._conn.cursor()
+        try:
+            if "." in normalized:
+                owner, object_name = normalized.split(".", 1)
+                cursor.execute(
+                    """
+                    SELECT owner, object_name
+                    FROM all_objects
+                    WHERE owner = :1
+                      AND object_name = :2
+                      AND object_type IN ('TABLE', 'VIEW')
+                    """,
+                    [owner, object_name],
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0], row[1]
+
+            cursor.execute(
+                """
+                SELECT owner, object_name
+                FROM all_objects
+                WHERE owner = :1
+                  AND object_name = :2
+                  AND object_type IN ('TABLE', 'VIEW')
+                """,
+                [self._schema_name, normalized],
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0], row[1]
+
+            cursor.execute(
+                """
+                SELECT table_owner, table_name
+                FROM user_synonyms
+                WHERE synonym_name = :1
+                """,
+                [normalized],
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0], row[1]
+
+            cursor.execute(
+                """
+                SELECT table_owner, table_name
+                FROM all_synonyms
+                WHERE owner = 'PUBLIC'
+                  AND synonym_name = :1
+                """,
+                [normalized],
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0], row[1]
+        finally:
+            cursor.close()
+
+        raise ValueError(f"Table, view, or synonym '{table_name}' does not exist in schema '{self._schema_name}'.")
+
     def _fetch_columns_unlocked(self, table_name: str) -> list[ColumnDetail]:
         assert self._conn is not None
+        owner, object_name = self._resolve_object_unlocked(table_name)
         cursor = self._conn.cursor()
         try:
             cursor.execute(
                 """
                 SELECT column_name, data_type, nullable
-                FROM user_tab_columns
-                WHERE table_name = :1
+                FROM all_tab_columns
+                WHERE owner = :1
+                  AND table_name = :2
                 ORDER BY column_id
                 """,
-                [table_name],
+                [owner, object_name],
             )
             return [
                 ColumnDetail(name=row[0], dtype=row[1], nullable=(row[2] == "Y"))

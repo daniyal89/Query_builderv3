@@ -36,6 +36,7 @@ FilterOperator = Literal[
 ]
 
 QueryExecutionMode = Literal["builder", "sql"]
+JoinType = Literal["INNER", "LEFT", "RIGHT"]
 
 
 class FilterCondition(BaseModel):
@@ -54,6 +55,35 @@ class SortClause(BaseModel):
 
     column: str = Field(..., description="Column name to sort by.")
     direction: Literal["ASC", "DESC"] = Field(default="ASC", description="Sort direction.")
+
+
+class JoinCondition(BaseModel):
+    """A single equality predicate within a JOIN clause."""
+
+    left_column: str = Field(..., description="Qualified column on the left side of the join.")
+    right_column: str = Field(..., description="Qualified column on the joined table side.")
+
+    @model_validator(mode="after")
+    def validate_columns(self) -> "JoinCondition":
+        if not self.left_column.strip() or not self.right_column.strip():
+            raise ValueError("Each join condition needs both a left column and a joined-table column.")
+        return self
+
+
+class JoinClause(BaseModel):
+    """A JOIN clause attached to the query builder payload."""
+
+    table: str = Field(..., description="Target table or view to join.")
+    join_type: JoinType = Field(default="INNER", description="Supported join type.")
+    conditions: list[JoinCondition] = Field(default_factory=list, description="Equality predicates combined with AND.")
+
+    @model_validator(mode="after")
+    def validate_join(self) -> "JoinClause":
+        if not self.table.strip():
+            raise ValueError("Each join needs a target table.")
+        if not self.conditions:
+            raise ValueError("Each join needs at least one matching column pair.")
+        return self
 
 
 class AggregateRule(BaseModel):
@@ -90,6 +120,7 @@ class QueryPayload(BaseModel):
         description="List of WHERE-clause conditions (ANDed together).",
     )
     sort: list[SortClause] = Field(default_factory=list, description="List of ORDER BY clauses.")
+    joins: list[JoinClause] = Field(default_factory=list, description="Ordered joins applied to the base table.")
     limit_rows: int = Field(default=1000, description="Maximum rows to return. 0 means unlimited.", ge=0)
     offset: int = Field(default=0, description="Number of rows to skip for pagination.", ge=0)
     mode: Literal["LIST", "REPORT"] = Field(default="LIST", description="Operation mode of the query builder.")
@@ -104,6 +135,12 @@ class QueryPayload(BaseModel):
             raise ValueError("table is required when execution_mode='builder'.")
         if self.execution_mode == "sql" and not (self.sql or "").strip():
             raise ValueError("sql is required when execution_mode='sql'.")
+        if self.execution_mode == "builder":
+            seen_tables = {self.table.strip()}
+            for join in self.joins:
+                if join.table in seen_tables:
+                    raise ValueError("Each joined table can only be used once in the visual builder.")
+                seen_tables.add(join.table)
         return self
 
 

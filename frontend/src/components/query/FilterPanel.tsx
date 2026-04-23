@@ -13,13 +13,12 @@
  */
 
 import React from "react";
-import type { FilterCondition } from "../../types/query.types";
-import type { ColumnDetail } from "../../types/schema.types";
+import type { FilterCondition, QueryColumnOption } from "../../types/query.types";
 import { FilterRow } from "./FilterRow";
 
 interface FilterPanelProps {
   filters: FilterCondition[];
-  columns: ColumnDetail[];
+  columns: QueryColumnOption[];
   onAddFilter: () => void;
   onUpdateFilter: (id: string, updates: Partial<FilterCondition>) => void;
   onRemoveFilter: (id: string) => void;

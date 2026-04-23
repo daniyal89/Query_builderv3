@@ -85,6 +85,21 @@ async def execute_query(
                 message="Statement executed successfully." if not columns else "",
             )
 
+        if payload.mode == "REPORT":
+            report_sql, params = QueryBuilderService.build_report_sql(payload)
+            _, aggregate_rows, _ = service.execute(report_sql, params)
+            columns, rows = QueryBuilderService.pivot_report_rows(payload, aggregate_rows)
+            executed_sql = QueryBuilderService.render_sql(report_sql, params, payload.engine)
+            return QueryResult(
+                columns=columns,
+                rows=rows,
+                total=len(rows),
+                truncated=False,
+                executed_sql=executed_sql,
+                source_mode="builder",
+                message="Report generated successfully." if not columns else "",
+            )
+
         data_sql, params = QueryBuilderService.build_sql(payload)
         count_sql, count_params = QueryBuilderService.build_count_sql(payload)
         columns, rows, _ = service.execute(data_sql, params)

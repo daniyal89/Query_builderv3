@@ -1,5 +1,5 @@
 /**
- * merge.types.ts - TypeScript interfaces for the multi-sheet merge and enrichment flow.
+ * merge.types.ts - TypeScript interfaces for merge and enrichment flows.
  */
 
 export type CompositeKey = "Acc_id+DISCOM" | "Acc_id+DIV_CODE";
@@ -36,6 +36,21 @@ export interface MergeSheetsResponse {
   total_rows: number;
   preview_rows: Record<string, unknown>[];
   merge_id: string;
+}
+
+export interface FolderMergeRequest {
+  source_folder: string;
+  output_path: string;
+  include_subfolders: boolean;
+}
+
+export interface FolderMergeResponse {
+  output_path: string;
+  output_format: OutputFormat;
+  total_files: number;
+  merged_items: number;
+  total_rows: number;
+  total_columns: number;
 }
 
 export interface EnrichmentRequest {

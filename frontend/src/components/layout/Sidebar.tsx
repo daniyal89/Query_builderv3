@@ -28,6 +28,9 @@ export const Sidebar: React.FC = () => {
         <NavLink to="/import" className={linkClassName}>
           Merge & Enrich
         </NavLink>
+        <NavLink to="/ftp-download" className={linkClassName}>
+          FTP Download
+        </NavLink>
       </nav>
     </aside>
   );

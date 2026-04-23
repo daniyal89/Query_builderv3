@@ -15,11 +15,15 @@ function getColumnsPath(engine: QueryEngine, tableName: string): string {
 }
 
 export async function getTables(engine: QueryEngine = "duckdb"): Promise<TableMetadata[]> {
-  const response = await apiClient.get<TableMetadata[]>(getTablesPath(engine));
+  const response = await apiClient.get<TableMetadata[]>(getTablesPath(engine), {
+    timeout: engine === "oracle" ? 120_000 : undefined,
+  });
   return response.data;
 }
 
 export async function getColumns(tableName: string, engine: QueryEngine = "duckdb"): Promise<ColumnDetail[]> {
-  const response = await apiClient.get<ColumnDetail[]>(getColumnsPath(engine, tableName));
+  const response = await apiClient.get<ColumnDetail[]>(getColumnsPath(engine, tableName), {
+    timeout: engine === "oracle" ? 120_000 : undefined,
+  });
   return response.data;
 }

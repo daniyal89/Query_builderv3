@@ -31,8 +31,18 @@ export type FilterOperator =
 
 /** Sort direction options. */
 export type SortDirection = "ASC" | "DESC";
+export type JoinType = "INNER" | "LEFT" | "RIGHT";
 export type QuerySourceMode = "builder" | "manual";
 export type QueryExecutionMode = "builder" | "sql";
+
+export interface QueryColumnOption {
+  key: string;
+  label: string;
+  tableName: string;
+  columnName: string;
+  dtype: string;
+  nullable: boolean;
+}
 
 /** A single WHERE-clause filter condition. */
 export interface FilterCondition {
@@ -54,6 +64,19 @@ export interface SortClause {
   direction: SortDirection;
 }
 
+export interface JoinCondition {
+  id: string;
+  leftColumn: string;
+  rightColumn: string;
+}
+
+export interface JoinClause {
+  id: string;
+  table: string;
+  joinType: JoinType;
+  conditions: JoinCondition[];
+}
+
 /**
  * UI state for the visual query builder page.
  *
@@ -69,6 +92,8 @@ export interface QueryState {
   filters: FilterCondition[];
   /** Active sort directives applied in order. */
   sort: SortClause[];
+  /** Join clauses applied to the base table. */
+  joins: JoinClause[];
   /** Columns to GROUP BY. */
   groupBy: string[];
   /** Aggregate functions applied to columns. */
@@ -107,6 +132,14 @@ export interface QueryPayload {
   select: string[];
   filters: Omit<FilterCondition, "id">[];
   sort: SortClause[];
+  joins: Array<{
+    table: string;
+    join_type: JoinType;
+    conditions: Array<{
+      left_column: string;
+      right_column: string;
+    }>;
+  }>;
   limit_rows: number;
   offset: number;
   mode: "LIST" | "REPORT";

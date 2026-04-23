@@ -12,6 +12,27 @@ import type {
   MergeWizardState,
 } from "../types/merge.types";
 
+function getRequestErrorMessage(err: any, fallback: string, operation: "upload" | "merge" | "enrich"): string {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) {
+    return detail;
+  }
+
+  const message = typeof err?.message === "string" ? err.message : "";
+  const isTimeout = err?.code === "ECONNABORTED" || /timeout/i.test(message);
+  if (isTimeout) {
+    if (operation === "enrich") {
+      return "Enrichment is taking longer than expected. Large files and Excel output can take a few minutes, so please retry and wait for the export to finish.";
+    }
+    if (operation === "upload") {
+      return "Upload analysis is taking longer than expected. Please retry and give the file more time to process.";
+    }
+    return "This request is taking longer than expected. Please retry and allow more time for processing.";
+  }
+
+  return message || fallback;
+}
+
 export function useMergeWizard() {
   const [state, setState] = useState<MergeWizardState>({
     step: "upload",
@@ -42,7 +63,7 @@ export function useMergeWizard() {
       setState((prev) => ({
         ...prev,
         isLoading: false,
-        error: err?.response?.data?.detail || err.message || "Failed to upload sheets",
+        error: getRequestErrorMessage(err, "Failed to upload sheets", "upload"),
       }));
     }
   };
@@ -68,7 +89,7 @@ export function useMergeWizard() {
       setState((prev) => ({
         ...prev,
         isLoading: false,
-        error: err?.response?.data?.detail || err.message || "Failed to merge sheets",
+        error: getRequestErrorMessage(err, "Failed to merge sheets", "merge"),
       }));
     }
   };
@@ -83,12 +104,11 @@ export function useMergeWizard() {
     mappedSecondaryCol: string,
     secondaryColType: string
   ) => {
-    void masterTable;
-
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
     try {
       const { blob, headers } = await enrichData(
         dbPath,
+        masterTable,
         fetchColumns,
         secondaryColType,
         mergedFile,
@@ -126,7 +146,7 @@ export function useMergeWizard() {
       setState((prev) => ({
         ...prev,
         isLoading: false,
-        error: err?.response?.data?.detail || err.message || "Failed to enrich data",
+        error: getRequestErrorMessage(err, "Failed to enrich data", "enrich"),
       }));
     }
   };

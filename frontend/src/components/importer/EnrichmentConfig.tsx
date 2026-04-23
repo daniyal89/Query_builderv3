@@ -1,6 +1,7 @@
 // @ts-nocheck
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useConnection } from "../../hooks/useConnection";
+import { pickSystemFile } from "../../api/systemApi";
 import type { OutputFormat, UploadSheetsResponse } from "../../types/merge.types";
 
 interface EnrichmentConfigProps {
@@ -25,17 +26,48 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
   onSubmit,
   isLoading,
 }) => {
-  const { tables } = useConnection();
+  const {
+    dbPath,
+    setDbPath,
+    tables,
+    isConnected,
+    isConnecting,
+    error: connectionError,
+    connect,
+  } = useConnection();
   const [masterTable, setMasterTable] = useState<string>("master");
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("xlsx");
-  const [dbPath, setDbPath] = useState<string>("C:\\Users\\aimld\\uppcl_latest.duckdb");
   const [mappedAcctIdCol, setMappedAcctIdCol] = useState<string>("");
   const [mappedSecondaryCol, setMappedSecondaryCol] = useState<string>("");
   const [secondaryColType, setSecondaryColType] = useState<"DISCOM" | "DIV_CODE">("DISCOM");
   const [columnsToFetch, setColumnsToFetch] = useState<string[]>([]);
+  const [didAutoLoadOnMount, setDidAutoLoadOnMount] = useState(false);
 
   const availableMasterColumns =
     tables?.find((table) => table.table_name === masterTable)?.columns.map((column) => column.name) || [];
+
+  useEffect(() => {
+    if (tables.length === 0) return;
+
+    const hasSelectedTable = tables.some((table) => table.table_name === masterTable);
+    if (hasSelectedTable) return;
+
+    const preferredTable = tables.find((table) => table.table_name.toLowerCase() === "master") ?? tables[0];
+    setMasterTable(preferredTable.table_name);
+  }, [masterTable, tables]);
+
+  useEffect(() => {
+    setColumnsToFetch((prev) => prev.filter((column) => availableMasterColumns.includes(column)));
+  }, [availableMasterColumns]);
+
+  useEffect(() => {
+    if (didAutoLoadOnMount) return;
+    setDidAutoLoadOnMount(true);
+
+    if (dbPath && !isConnected && !isConnecting) {
+      void connect();
+    }
+  }, [connect, dbPath, didAutoLoadOnMount, isConnected, isConnecting]);
 
   const handleToggleFetchColumn = (column: string) => {
     setColumnsToFetch((prev) =>
@@ -94,18 +126,68 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
       </div>
 
       <div className="mb-6">
-        <label className="mb-1 block text-sm font-medium text-gray-700">Local DuckDB File Path</label>
-        <input
-          type="text"
-          value={dbPath}
-          onChange={(event) => setDbPath(event.target.value)}
-          className="w-full rounded border border-gray-300 p-2 font-mono text-sm"
-          placeholder="e.g., C:\\Users\\aimld\\uppcl_latest.duckdb"
-        />
+        <div className="mb-1 flex items-center justify-between gap-3">
+          <label className="block text-sm font-medium text-gray-700">Local DuckDB File Path</label>
+          <span className={`text-xs font-medium ${isConnected ? "text-green-700" : "text-gray-500"}`}>
+            {isConnected ? "Connected and ready to load master columns" : "Disconnected"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-3 md:flex-row">
+          <div className="flex w-full gap-2 md:w-auto md:flex-1">
+            <input
+              type="text"
+              value={dbPath}
+              onChange={(event) => setDbPath(event.target.value)}
+              className="w-full rounded border border-gray-300 p-2 font-mono text-sm"
+              placeholder="e.g., C:\\Users\\aimld\\your_data.duckdb"
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                const path = await pickSystemFile("duckdb");
+                if (path) setDbPath(path);
+              }}
+              className="rounded border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 whitespace-nowrap"
+            >
+              Browse...
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => void connect()}
+            disabled={isConnecting || !dbPath}
+            className="rounded border border-indigo-200 px-4 py-2 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isConnecting ? "Loading..." : isConnected ? "Reload Master Columns" : "Connect & Load Columns"}
+          </button>
+        </div>
+        {connectionError && <p className="mt-2 text-sm text-red-600">{connectionError}</p>}
+        {!connectionError && (
+          <p className="mt-2 text-sm text-gray-500">
+            The master-column list is loaded from the DuckDB file path above.
+          </p>
+        )}
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-8 border-t border-gray-200 pt-6 md:grid-cols-2">
         <div>
+          <div className="mb-4">
+            <label className="mb-1 block text-sm font-medium text-gray-700">Source Table In DuckDB *</label>
+            <select
+              value={masterTable}
+              onChange={(event) => setMasterTable(event.target.value)}
+              className="w-full rounded border border-gray-300 p-2 text-sm"
+              disabled={!isConnected || tables.length === 0}
+            >
+              {tables.length === 0 && <option value="">-- Connect DuckDB First --</option>}
+              {tables.map((table) => (
+                <option key={table.table_name} value={table.table_name}>
+                  {table.table_name} ({table.columns.length} columns)
+                </option>
+              ))}
+            </select>
+          </div>
+
           <h4 className="mb-3 font-semibold text-gray-800">Key Mapping (Uploaded File)</h4>
           <div className="mb-4">
             <label className="mb-1 block text-sm font-medium text-gray-700">Map to ACCT_ID *</label>
@@ -168,7 +250,9 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
           <div className="h-48 overflow-y-auto rounded border border-gray-300 bg-gray-50 p-3">
             {availableMasterColumns.length === 0 ? (
               <p className="text-sm italic text-gray-500">
-                No columns found. Please ensure the database is connected.
+                {isConnected
+                  ? "No columns found for the selected DuckDB table. Choose another table if needed."
+                  : "No columns found. Connect the DuckDB file above to load the selected table schema."}
               </p>
             ) : (
               availableMasterColumns.map((column) => (
@@ -198,12 +282,16 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
           !mappedSecondaryCol ||
           columnsToFetch.length === 0 ||
           !dbPath ||
-          !uploadedFile
+          !uploadedFile ||
+          !isConnected
         }
         className="mt-4 w-full rounded bg-indigo-600 px-4 py-3 font-bold text-white shadow transition hover:bg-indigo-700 disabled:opacity-50"
       >
         {isLoading ? "Enriching Data..." : "Enrich & Generate File"}
       </button>
+      <p className="mt-3 text-sm text-gray-500">
+        Large files or wide Excel exports can take a few minutes to process and download.
+      </p>
     </div>
   );
 };

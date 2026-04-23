@@ -7,6 +7,38 @@ import { MultiFileDropZone } from "./MultiFileDropZone";
 export const MergeWizard: React.FC = () => {
   const { state, handleUpload, handleResolveConflicts, handleEnrich, resetWizard } = useMergeWizard();
 
+  const handleDownload = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (!state.enrichResult) return;
+
+    try {
+      if ("showSaveFilePicker" in window) {
+        const response = await fetch(state.enrichResult.download_url);
+        const blob = await response.blob();
+        // @ts-ignore
+        const handle = await window.showSaveFilePicker({
+          suggestedName: "enriched_data.xlsx",
+          types: [{ description: "Excel File", accept: { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        setTimeout(() => resetWizard(), 1000);
+        return;
+      }
+    } catch (err: any) {
+      if (err.name !== "AbortError") console.error(err);
+      if (err.name === "AbortError") return;
+    }
+
+    // Fallback
+    const a = document.createElement("a");
+    a.href = state.enrichResult.download_url;
+    a.download = "enriched_data.xlsx";
+    a.click();
+    setTimeout(() => resetWizard(), 3000);
+  };
+
   return (
     <div className="merge-wizard mx-auto w-full max-w-5xl p-4">
       <h2 className="mb-2 text-2xl font-bold">Merge & Enrichment Pipeline</h2>
@@ -60,9 +92,8 @@ export const MergeWizard: React.FC = () => {
           </p>
           <a
             href={state.enrichResult.download_url}
-            className="relative inline-block rounded-full bg-indigo-600 px-8 py-3 text-lg text-white shadow-md transition hover:bg-indigo-700"
-            download
-            onClick={() => setTimeout(() => resetWizard(), 3000)}
+            className="relative inline-block rounded-full bg-indigo-600 px-8 py-3 text-lg text-white shadow-md transition hover:bg-indigo-700 cursor-pointer"
+            onClick={handleDownload}
           >
             Download Export
           </a>

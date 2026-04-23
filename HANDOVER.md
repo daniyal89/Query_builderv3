@@ -188,7 +188,7 @@ Query_builder/
 | `TableMetadata`      | `table_name: str, columns: list[ColumnDetail], row_count: int` | Schema introspection result  |
 | `ColumnDetail`       | `name: str, dtype: str, nullable: bool`          | Individual column descriptor |
 | `MasterTable`        | `source_table: str, row_index: int, data: dict`  | Schema-agnostic row record   |
-| `QueryPayload`      | `table: str, select: list, filters: list, sort: list, limit: int` | Structured query definition  |
+| `QueryPayload`      | `table: str, select: list, joins: list, filters: list, sort: list, limit: int` | Structured query definition  |
 | `QueryResult`       | `columns: list[str], rows: list[list], total: int` | Query execution response     |
 | `CSVMappingPayload` | `file_id: str, target_table: str, column_map: list` | CSV → DuckDB column mapping  |
 | `ImportResult`      | `rows_inserted: int, errors: list[str]`          | Import outcome summary       |
@@ -209,10 +209,18 @@ Query_builder/
 
 | Interface            | Key Fields                                       | Purpose                        |
 |----------------------|--------------------------------------------------|--------------------------------|
-| `QueryState`         | `selectedColumns, filters[], sortBy, limit`      | Tracks query builder UI state  |
+| `QueryState`         | `selectedColumns, joins[], filters[], sortBy, limit`      | Tracks query builder UI state  |
 | `FilterCondition`    | `column: string, operator: string, value: string` | Single WHERE clause condition  |
 | `CSVPreview`         | `headers: string[], rows: string[][], rowCount`  | Parsed CSV preview data        |
 | `ColumnMapping`      | `csvColumn: string, dbColumn: string, skip: boolean` | Per-column mapping decision    |
+
+#### Query Builder Join Interfaces (NEW)
+
+| Interface                | Key Fields                                                | Purpose                              |
+|--------------------------|-----------------------------------------------------------|--------------------------------------|
+| `JoinClause`             | `table, joinType, conditions[]`                           | Ordered join definition in builder state |
+| `JoinCondition`          | `leftColumn, rightColumn`                                 | One equality pair inside a join      |
+| `QueryColumnOption`      | `key, label, tableName, columnName, dtype`                | Qualified `table.column` option for joined builders |
 
 #### Merge & Enrichment Interfaces (NEW)
 
@@ -305,11 +313,24 @@ Query_builder/
 - [x] Series 4 complete: builder/editor sync keeps the generated SQL in sync until the user detaches into manual SQL
 - [x] Series 4 complete: Marcadose read-only enforcement applies to manual SQL preview and execution paths
 - [x] Series 4 complete: frontend production build and local DuckDB preview/manual execution were verified after the SQL workflow slice
-- [x] Merge & Enrich wizard currently uses the simplified upload-to-enrich flow with explicit ACCT_ID / secondary-key mapping
-- [x] Frontend Merge & Enrich supports multi-column fetch selection from the `master` table during enrichment
+- [x] Series 5 first slice complete: visual join composition is implemented for the active builder in `Fetch List` mode
+- [x] Series 5 first slice complete: join-aware SQL preview/execution/count translation now supports ordered `INNER`, `LEFT`, and `RIGHT` joins with one or more equality conditions
+- [x] Series 5 first slice complete: joined-query column selection, filtering, and sorting now use qualified `table.column` references across DuckDB and Oracle builders
+- [x] Series 5 first slice complete: backend join translation tests were added and passing (`tests/backend/test_query_builder_service.py`)
+- [x] Series 5 first slice complete: frontend production build was re-verified after the join slice
+- [x] Series 5 UX follow-up complete: the select-column checklist now supports inline search for large schemas
+- [x] Series 5 UX follow-up complete: each filter row now supports searching the column dropdown before selecting a field
+- [x] Series 6 Merge & Enrich hardening complete: the current UI supports `.csv`, `.xlsx`, and `.xls` uploads
+- [x] Series 6 Merge & Enrich hardening complete: the current UI is now a single-file upload-to-enrich workflow
+- [x] Series 6 Merge & Enrich hardening complete: upload/enrich requests use a much longer timeout and clearer timeout messaging for large files
+- [x] Series 6 Merge & Enrich hardening complete: the enrich screen can reconnect DuckDB from its path field and load columns inline
+- [x] Series 6 Merge & Enrich hardening complete: enrichment no longer hardcodes `master`; the user can choose the DuckDB source table and the backend joins against that selected table
+- [x] Series 7 Local Quality of Life: Local Excel-to-DuckDB table/view creation flow is implemented and integrated in the UI
+- [x] Series 7 Local Quality of Life: Added native OS file dialogs (via tkinter) for browsing to local DuckDB and data files in the UI
+- [x] Series 7 Local Quality of Life: Updated data export to use `showSaveFilePicker` allowing custom filename and folder selection
+- [x] Series 7 Local Quality of Life: Updated filter UI to use native browser calendar inputs for date columns
 - [ ] Dual-engine architecture is still partially implemented overall; Oracle list-query flow works, but advanced Marcadose features are still pending
-- [ ] Query Builder join composition UI / backend join translation is not implemented yet
-- [ ] Local Excel-to-DuckDB table/view creation flow is not implemented yet
+- [ ] Query Builder join support is only partially complete: `Fetch List` joins work, but report-mode joins, repeated same-table aliasing, and broader production validation are still pending
 - [ ] Expanded WHERE/filter operators still need broader Oracle/Marcadose validation against real production data
 - [ ] Marcadose report/pivot mode is not implemented yet; the UI currently keeps Oracle on `Fetch List`
 - [ ] `merge-sheets` and the legacy conflict-resolution path still remain in the codebase but are not the primary working merge workflow
@@ -318,10 +339,10 @@ Query_builder/
 
 ## 6. Next Immediate Task
 
-* **Status:** Series 4 complete
-* **Task:** Continue with join composition plus local Excel-to-DuckDB table/view creation.
-* **Scope:** Add visual join configuration for the active engine, translate it safely into engine-specific SQL, and add the local-only Excel staging/object-creation workflow.
-* **After This:** Broaden Marcadose validation on real data and revisit Oracle report mode if needed.
+* **Status:** Series 7 Local Quality of Life enhancements complete (file pickers, date calendars, native save dialogs, local object creation).
+* **Task:** Continue closing the remaining dual-engine/query-builder gaps.
+* **Scope:** Revisit report-mode joins, repeated-table aliasing, and broader Marcadose validation on production-like data. Also, implement Marcadose pivot/report mode.
+* **After This:** Decide whether to retain/remove the legacy `merge-sheets` path, and consider saved-query/query-history features.
 * **Important:** Ensure you have dependencies installed by running: `pip install -r requirements.txt`.
 
 ---
@@ -353,6 +374,7 @@ Query_builder/
 The Query Builder operates in two strictly isolated modes:
 * **Mode 1: Fetch List:** Applies standard WHERE filters and returns raw tabular data.
 * **Mode 2: Generate Report (Pivot):** Operates like an Excel Pivot Table. The user configures `Rows`, `Columns`, `Values`, and an `Aggregation Function` (e.g., SUM, COUNT). The backend must use DuckDB's native `PIVOT` syntax or Pandas `pivot_table` to aggregate the data before returning it.
+* **Join Scope:** Visual joins are available in both `Fetch List` and `Generate Report`; report fields use qualified joined column references.
 * **Query Row Limits:** By default, the 'Fetch List' mode must limit results to 1000 rows to prevent browser UI freezing. Users can configure this limit. A limit of `0` means 'No Limit' (fetch all rows). The frontend table must use CSS scrolling (e.g., `overflow-y: auto` with a max height) to handle large datasets gracefully.
 
 ## 11. Dual-Engine Architecture (DuckDB & Marcadose)
@@ -365,14 +387,14 @@ The Query Builder operates in two strictly isolated modes:
 * **Backend Oracle Engine:** Implemented for connection, schema loading, and read-only list-query execution. The backend now uses the `oracledb` Python package in Thin mode, and the `engine` discriminator (`'duckdb'` or `'oracle'`) routes query execution to the proper service.
 
 ## 12. Query Builder Feature Expansion
-* **Join Support:** The Query Builder must support joins between tables/views within the active engine. The UI should allow users to pick source tables, join type, join keys, and output columns.
-* **Initial Join Scope:** Assume the first supported join types are `INNER`, `LEFT`, and `RIGHT`. `FULL` join is not in scope unless requested later.
+* **Join Support Status:** The first join slice is implemented for both builders in `Fetch List`. Users can add ordered joins, choose `INNER` / `LEFT` / `RIGHT`, configure one or more equality key pairs, and then select/filter/sort by qualified `table.column` fields.
+* **Current Join Limits:** `FULL` join is not in scope, and the visual builder currently allows each joined table only once (no repeated-table aliasing yet).
 * **WHERE Operator Expansion:** The Query Builder must support a broader set of WHERE/filter operators than the current implementation.
 * **Type-Aware Operators:** To keep the UI simple and helpful, the operator list should depend on the selected column type and engine instead of showing every operator for every field.
 * **Expected Coverage:** Plan for common operators such as equality/inequality, comparison, `IN`, `NOT IN`, `LIKE`, `NOT LIKE`, `IS NULL`, `IS NOT NULL`, and range-style filters such as `BETWEEN` where appropriate.
 * **Friendly UI Mapping:** Text-friendly operators such as `contains`, `starts with`, and `ends with` may be exposed in the UI if they are translated safely to the correct engine SQL.
 * **Supported Usage:** This join functionality applies to both builders, but any generated SQL must respect the active engine dialect and permissions.
-* **Builder Output:** The visual builder must be able to translate the configured query into executable SQL for the selected engine.
+* **Builder Output:** Implemented for the current join slice. The visual builder now translates the configured joins into executable engine-specific SQL and matching count SQL for the selected engine.
 
 ## 13. SQL Preview, Editing, and Direct Execution
 * **SQL Preview:** For every query built in the UI, the app must show the corresponding generated SQL.
@@ -388,9 +410,10 @@ The Query Builder operates in two strictly isolated modes:
   2. User-authored SQL entered directly in the editor.
 
 ## 14. Local DuckDB Excel Import / Object Creation
-* **Excel as Source:** In the local DuckDB workflow, users must be able to select an Excel file (`.xlsx`, and if supported `.xls`) and use it as a source for creating a DuckDB table or view.
+* **Excel/CSV as Source:** Implemented in the local DuckDB query builder. Users can enter a full local `.csv`, `.tsv`, or `.xlsx` path and create a DuckDB table or view from it.
 * **Object Creation Scope:** This object creation capability is local-only and must never target Marcadose.
 * **Use Cases:** This feature is intended to let users quickly stage local data for further querying, joining, reporting, or enrichment inside DuckDB.
+* **DuckDB XLSX Limit:** DuckDB supports `.xlsx` through the `excel` extension; legacy `.xls` should be saved as `.xlsx` or CSV first.
 
 ## 15. Engine Permission Rules
 * **Marcadose is Read-Only:** Implemented server-side for current Oracle query execution. The Marcadose / Oracle builder allows read-only operations only.
@@ -400,9 +423,12 @@ The Query Builder operates in two strictly isolated modes:
 
 ## 16. Confirmed Decisions Before Implementation
 * **SQL Sync Model:** Keep the visual builder and SQL editor synced where possible. If the edited SQL cannot be safely represented by the builder model, switch to a manual-SQL workflow while preserving the user's query.
-* **Join Types:** Current working assumption is support for `INNER`, `LEFT`, and `RIGHT`. `FULL` join is not currently planned.
+* **Join Types:** The current implemented builder supports `INNER`, `LEFT`, and `RIGHT`. `FULL` join is not currently planned.
+* **Join Ordering Rule:** Later joins may reference the base table or earlier joins on the left side of the join predicate. The joined table itself must stay on the right side of each join condition in the current builder model.
+* **Repeated Table Aliasing:** Not implemented in the visual builder yet. If the same table must be joined multiple times, that currently requires manual SQL.
 * **Local Write Scope:** Local DuckDB direct SQL may allow broader write operations. Marcadose remains strictly read-only.
 * **UX Principle:** The product should stay simple, helpful, and approachable. Prefer clarity and guided workflows over a dense or overly technical UI.
+* **Large Selectors:** Any table/column selector with more than 20 options should expose inline search before selection.
 * **Schema/Data Awareness:** During implementation, inspect the actual local DuckDB schema and representative data so the app can better understand field formats, likely data types, and practical defaults for filters, joins, previews, and imports.
 
 ## 17. Research-Based Recommended Capabilities To Consider

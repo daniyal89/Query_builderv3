@@ -6,13 +6,19 @@ Thread safety is handled via a threading.Lock since DuckDB connections
 are not safe to share across threads.
 """
 
+import re
 import threading
 from pathlib import Path
 from typing import Any, Optional
 
 import duckdb
 
+from backend.models.local_object import FileObjectRequest
 from backend.models.schema import TableMetadata, ColumnDetail
+
+
+VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SUPPORTED_SOURCE_EXTENSIONS = {".csv", ".tsv", ".xlsx"}
 
 
 class DuckDBService:
@@ -85,8 +91,8 @@ class DuckDBService:
                 self._db_path = None
                 raise RuntimeError(f"Failed to open DuckDB database: {exc}") from exc
 
-            # Return the number of user tables
-            tables = self._fetch_table_names()
+            # Return the number of user tables/views
+            tables = self._fetch_table_entries_unlocked()
             return len(tables)
 
     def disconnect(self) -> None:
@@ -115,12 +121,12 @@ class DuckDBService:
         self._ensure_connected()
 
         with self._lock:
-            table_names = self._fetch_table_names()
+            table_entries = self._fetch_table_entries_unlocked()
             result: list[TableMetadata] = []
 
-            for name in table_names:
+            for name, table_type in table_entries:
                 columns = self._fetch_columns_unlocked(name)
-                row_count = self._fetch_row_count_unlocked(name)
+                row_count = self._fetch_row_count_unlocked(name) if table_type == "BASE TABLE" else 0
                 result.append(
                     TableMetadata(
                         table_name=name,
@@ -184,6 +190,46 @@ class DuckDBService:
 
             return columns, [list(row) for row in rows], len(rows)
 
+    def create_object_from_file(self, payload: FileObjectRequest) -> TableMetadata:
+        """Create a local DuckDB table or view from a CSV/TSV/XLSX file."""
+
+        self._ensure_connected()
+        object_name = payload.object_name.strip()
+        if not VALID_OBJECT_NAME.fullmatch(object_name):
+            raise ValueError("Object name must start with a letter/underscore and contain only letters, numbers, and underscores.")
+
+        source_path = Path(payload.file_path).expanduser().resolve()
+        if not source_path.exists() or not source_path.is_file():
+            raise ValueError(f"Source file does not exist: {source_path}")
+
+        extension = source_path.suffix.lower()
+        if extension == ".xls":
+            raise ValueError("DuckDB supports .xlsx files, but not legacy .xls files. Save as .xlsx or CSV first.")
+        if extension not in SUPPORTED_SOURCE_EXTENSIONS:
+            raise ValueError("Supported file types are .csv, .tsv, and .xlsx.")
+
+        object_type = payload.object_type.upper()
+        with self._lock:
+            assert self._conn is not None
+            existing = set(self._fetch_table_names())
+            if object_name in existing and not payload.replace:
+                raise ValueError(f"Local object '{object_name}' already exists. Enable Replace to overwrite it.")
+
+            relation_sql = self._build_file_relation_sql(
+                source_path=source_path,
+                header=payload.header,
+                sheet_name=payload.sheet_name,
+            )
+            object_sql = self._quote_identifier(object_name)
+            if payload.replace:
+                self._conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
+                self._conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+            self._conn.execute(f"CREATE {object_type} {object_sql} AS SELECT * FROM {relation_sql}")
+
+            columns = self._fetch_columns_unlocked(object_name)
+            row_count = self._fetch_row_count_unlocked(object_name) if object_type == "TABLE" else 0
+            return TableMetadata(table_name=object_name, columns=columns, row_count=row_count)
+
     # ──────────────────────────── Private helpers ────────────────────────────
 
     def _ensure_connected(self) -> None:
@@ -191,18 +237,61 @@ class DuckDBService:
         if self._conn is None:
             raise RuntimeError("No database connected. Call connect() first.")
 
-    def _fetch_table_names(self) -> list[str]:
-        """Return a list of user table names from the current connection.
+    def _quote_identifier(self, identifier: str) -> str:
+        return f'"{identifier.replace(chr(34), chr(34) * 2)}"'
+
+    def _sql_string_literal(self, value: str) -> str:
+        return f"'{value.replace(chr(39), chr(39) * 2)}'"
+
+    def _fetch_table_entries_unlocked(self) -> list[tuple[str, str]]:
+        """Return user table/view names and types from the current connection.
 
         Must be called while holding self._lock.
         """
         assert self._conn is not None
         result = self._conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'main' AND table_type = 'BASE TABLE' "
+            "SELECT table_name, table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_type IN ('BASE TABLE', 'VIEW') "
             "ORDER BY table_name"
         )
-        return [row[0] for row in result.fetchall()]
+        return [(row[0], row[1]) for row in result.fetchall()]
+
+    def _fetch_table_names(self) -> list[str]:
+        """Return user table/view names from the current connection."""
+
+        return [name for name, _ in self._fetch_table_entries_unlocked()]
+
+    def _load_excel_extension_unlocked(self) -> None:
+        assert self._conn is not None
+        try:
+            self._conn.execute("LOAD excel")
+        except duckdb.Error:
+            try:
+                self._conn.execute("INSTALL excel")
+                self._conn.execute("LOAD excel")
+            except duckdb.Error as exc:
+                raise RuntimeError(
+                    "DuckDB could not load the excel extension required for .xlsx files. "
+                    "Check internet access for extension install, or use CSV."
+                ) from exc
+
+    def _build_file_relation_sql(self, source_path: Path, header: bool, sheet_name: str | None) -> str:
+        extension = source_path.suffix.lower()
+        path_sql = self._sql_string_literal(str(source_path))
+        header_sql = "true" if header else "false"
+
+        if extension == ".csv":
+            return f"read_csv_auto({path_sql}, header = {header_sql})"
+        if extension == ".tsv":
+            return f"read_csv_auto({path_sql}, delim = '\t', header = {header_sql})"
+        if extension == ".xlsx":
+            self._load_excel_extension_unlocked()
+            options = [f"header = {header_sql}"]
+            if sheet_name and sheet_name.strip():
+                options.append(f"sheet = {self._sql_string_literal(sheet_name.strip())}")
+            return f"read_xlsx({path_sql}, {', '.join(options)})"
+
+        raise ValueError("Supported file types are .csv, .tsv, and .xlsx.")
 
     def _fetch_columns_unlocked(self, table_name: str) -> list[ColumnDetail]:
         """Return column details for a table.
@@ -237,7 +326,7 @@ class DuckDBService:
         assert self._conn is not None
         # Use identifier quoting to prevent SQL injection on table names
         result = self._conn.execute(
-            f'SELECT COUNT(*) FROM "{table_name}"'
+            f"SELECT COUNT(*) FROM {self._quote_identifier(table_name)}"
         )
         count = result.fetchone()
         return count[0] if count else 0

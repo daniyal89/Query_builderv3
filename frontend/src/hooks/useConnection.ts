@@ -17,6 +17,7 @@ export interface UseConnectionReturn {
   error: string | null;
   connect: () => Promise<void>;
   disconnect: () => void;
+  refreshTables: () => Promise<TableMetadata[]>;
 }
 
 export function useConnection(): UseConnectionReturn {
@@ -55,10 +56,14 @@ export function useConnection(): UseConnectionReturn {
     }
   };
 
+  const refreshTables = async () => {
+    const tablesData = await getTables("duckdb");
+    appCtx.setDuckdbConnected(true, tablesData);
+    return tablesData;
+  };
+
   const disconnect = () => {
-    setDbPathLocal("");
     appCtx.setDuckdbConnected(false, []);
-    appCtx.setDuckdbPath("");
     setError(null);
   };
 
@@ -71,5 +76,6 @@ export function useConnection(): UseConnectionReturn {
     error,
     connect,
     disconnect,
+    refreshTables,
   };
 }

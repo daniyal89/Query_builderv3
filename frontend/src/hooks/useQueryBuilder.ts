@@ -6,6 +6,8 @@ import { executeQuery as executeQueryApi, previewQuery as previewQueryApi } from
 import type { QueryEngine } from "../types/connection.types";
 import type {
   FilterCondition,
+  JoinClause,
+  JoinCondition,
   PivotConfig,
   QueryPayload,
   QueryResult,
@@ -13,9 +15,17 @@ import type {
   QueryState,
   SortClause,
 } from "../types/query.types";
+import { getReferencedTable } from "../utils/queryBuilderColumns";
 
 const genId = () => Math.random().toString(36).substring(2, 11);
 const NO_VALUE_OPERATORS = ["IS NULL", "IS NOT NULL"];
+const createJoinCondition = (): JoinCondition => ({ id: genId(), leftColumn: "", rightColumn: "" });
+const createJoin = (): JoinClause => ({
+  id: genId(),
+  table: "",
+  joinType: "INNER",
+  conditions: [createJoinCondition()],
+});
 
 interface QueryBuilderState extends QueryState {
   result: QueryResult | null;
@@ -29,6 +39,12 @@ export interface UseQueryBuilderReturn {
   updateFilter: (id: string, updates: Partial<FilterCondition>) => void;
   removeFilter: (id: string) => void;
   setSort: (sort: SortClause[]) => void;
+  addJoin: () => void;
+  updateJoin: (id: string, updates: Partial<Pick<JoinClause, "table" | "joinType">>) => void;
+  removeJoin: (id: string) => void;
+  addJoinCondition: (joinId: string) => void;
+  updateJoinCondition: (joinId: string, conditionId: string, updates: Partial<JoinCondition>) => void;
+  removeJoinCondition: (joinId: string, conditionId: string) => void;
   toggleGroupBy: (col: string) => void;
   setAggregate: (column: string, func: "SUM" | "COUNT" | "AVG" | "MIN" | "MAX") => void;
   removeAggregate: (column: string) => void;
@@ -47,6 +63,7 @@ const initialState: QueryBuilderState = {
   selectedColumns: [],
   filters: [],
   sort: [],
+  joins: [],
   groupBy: [],
   aggregates: [],
   limitRows: 1000,
@@ -78,6 +95,53 @@ function getValidFilters(filters: FilterCondition[]): Omit<FilterCondition, "id"
     .map(({ id, ...rest }) => rest);
 }
 
+function getJoinPayloads(state: QueryBuilderState): QueryPayload["joins"] {
+  return state.joins
+    .filter((join) => join.table.trim() !== "")
+    .map((join) => ({
+      table: join.table,
+      join_type: join.joinType,
+      conditions: join.conditions.map((condition) => ({
+        left_column: condition.leftColumn,
+        right_column: condition.rightColumn,
+      })),
+    }));
+}
+
+function pruneRemovedTableReferences(
+  state: QueryBuilderState,
+  removedTables: Set<string>
+): QueryBuilderState {
+  if (removedTables.size === 0) {
+    return state;
+  }
+
+  const hasRemovedTable = (columnRef: string) => {
+    const tableName = getReferencedTable(columnRef);
+    return !!tableName && removedTables.has(tableName);
+  };
+
+  return {
+    ...state,
+    selectedColumns: state.selectedColumns.filter((column) => !hasRemovedTable(column)),
+    filters: state.filters.filter((filter) => !hasRemovedTable(filter.column)),
+    sort: state.sort.filter((sort) => !hasRemovedTable(sort.column)),
+    joins: state.joins
+      .filter((join) => !removedTables.has(join.table))
+      .map((join) => ({
+        ...join,
+        conditions:
+          join.conditions.length > 0
+            ? join.conditions.map((condition) => ({
+                ...condition,
+                leftColumn: hasRemovedTable(condition.leftColumn) ? "" : condition.leftColumn,
+                rightColumn: hasRemovedTable(condition.rightColumn) ? "" : condition.rightColumn,
+              }))
+            : [createJoinCondition()],
+      })),
+  };
+}
+
 function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine): QueryPayload {
   return {
     execution_mode: "builder",
@@ -86,6 +150,7 @@ function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine): Que
     select: state.selectedColumns,
     filters: getValidFilters(state.filters),
     sort: state.sort,
+    joins: getJoinPayloads(state),
     group_by: state.groupBy,
     aggregates: state.aggregates,
     limit_rows: state.limitRows,
@@ -163,6 +228,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     state.selectedColumns,
     state.filters,
     state.sort,
+    state.joins,
     state.groupBy,
     state.aggregates,
     state.limitRows,
@@ -213,6 +279,113 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
 
   const setSort = useCallback((sort: SortClause[]) => {
     setState((prev) => ({ ...prev, sort }));
+  }, []);
+
+  const addJoin = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      joins: [...prev.joins, createJoin()],
+    }));
+  }, []);
+
+  const updateJoin = useCallback(
+    (id: string, updates: Partial<Pick<JoinClause, "table" | "joinType">>) => {
+      setState((prev) => {
+        const currentJoin = prev.joins.find((join) => join.id === id);
+        if (!currentJoin) {
+          return prev;
+        }
+
+        const tableChanged = updates.table !== undefined && updates.table !== currentJoin.table;
+        const nextState: QueryBuilderState = {
+          ...prev,
+          joins: prev.joins.map((join) => {
+            if (join.id !== id) {
+              return join;
+            }
+            if (!tableChanged) {
+              return { ...join, ...updates };
+            }
+            return {
+              ...join,
+              ...updates,
+              conditions: [createJoinCondition()],
+            };
+          }),
+        };
+
+        if (!tableChanged || !currentJoin.table) {
+          return nextState;
+        }
+
+        return pruneRemovedTableReferences(nextState, new Set([currentJoin.table]));
+      });
+    },
+    []
+  );
+
+  const removeJoin = useCallback((id: string) => {
+    setState((prev) => {
+      const removedJoin = prev.joins.find((join) => join.id === id);
+      const nextState: QueryBuilderState = {
+        ...prev,
+        joins: prev.joins.filter((join) => join.id !== id),
+      };
+
+      if (!removedJoin?.table) {
+        return nextState;
+      }
+
+      return pruneRemovedTableReferences(nextState, new Set([removedJoin.table]));
+    });
+  }, []);
+
+  const addJoinCondition = useCallback((joinId: string) => {
+    setState((prev) => ({
+      ...prev,
+      joins: prev.joins.map((join) =>
+        join.id === joinId
+          ? { ...join, conditions: [...join.conditions, createJoinCondition()] }
+          : join
+      ),
+    }));
+  }, []);
+
+  const updateJoinCondition = useCallback(
+    (joinId: string, conditionId: string, updates: Partial<JoinCondition>) => {
+      setState((prev) => ({
+        ...prev,
+        joins: prev.joins.map((join) =>
+          join.id === joinId
+            ? {
+                ...join,
+                conditions: join.conditions.map((condition) =>
+                  condition.id === conditionId ? { ...condition, ...updates } : condition
+                ),
+              }
+            : join
+        ),
+      }));
+    },
+    []
+  );
+
+  const removeJoinCondition = useCallback((joinId: string, conditionId: string) => {
+    setState((prev) => ({
+      ...prev,
+      joins: prev.joins.map((join) => {
+        if (join.id !== joinId) {
+          return join;
+        }
+        if (join.conditions.length === 1) {
+          return { ...join, conditions: [createJoinCondition()] };
+        }
+        return {
+          ...join,
+          conditions: join.conditions.filter((condition) => condition.id !== conditionId),
+        };
+      }),
+    }));
   }, []);
 
   const toggleGroupBy = useCallback((column: string) => {
@@ -336,6 +509,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
             select: [],
             filters: [],
             sort: [],
+            joins: [],
             limit_rows: state.limitRows,
             offset: state.offset,
             mode: "LIST",
@@ -375,6 +549,12 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     updateFilter,
     removeFilter,
     setSort,
+    addJoin,
+    updateJoin,
+    removeJoin,
+    addJoinCondition,
+    updateJoinCondition,
+    removeJoinCondition,
     toggleGroupBy,
     setAggregate,
     removeAggregate,

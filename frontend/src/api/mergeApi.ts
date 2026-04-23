@@ -1,13 +1,17 @@
 /**
- * mergeApi.ts - API calls for the multi-sheet merge and enrichment workflow.
+ * mergeApi.ts - API calls for merge workflows.
  */
 
 import apiClient from "./client";
 import type {
   ConflictResolutionMap,
+  FolderMergeRequest,
+  FolderMergeResponse,
   MergeSheetsResponse,
   UploadSheetsResponse,
 } from "../types/merge.types";
+
+const LONG_RUNNING_TIMEOUT_MS = 10 * 60_000;
 
 export async function uploadSheets(files: File[]): Promise<UploadSheetsResponse> {
   const formData = new FormData();
@@ -19,6 +23,7 @@ export async function uploadSheets(files: File[]): Promise<UploadSheetsResponse>
     headers: {
       "Content-Type": "multipart/form-data",
     },
+    timeout: LONG_RUNNING_TIMEOUT_MS,
   });
   return response.data;
 }
@@ -28,17 +33,26 @@ export async function mergeSheets(payload: ConflictResolutionMap): Promise<Merge
   return response.data;
 }
 
+export async function mergeFolder(payload: FolderMergeRequest): Promise<FolderMergeResponse> {
+  const response = await apiClient.post<FolderMergeResponse>("/merge-folder", payload, {
+    timeout: LONG_RUNNING_TIMEOUT_MS,
+  });
+  return response.data;
+}
+
 export async function enrichData(
   dbPath: string,
+  masterTable: string,
   fetchColumns: string[],
   compositeKey: string,
   file: File,
   mappedAcctIdCol: string,
   mappedSecondaryCol: string
-): Promise<{ blob: Blob; headers: any }> {
+): Promise<{ blob: Blob; headers: Record<string, string> }> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("db_path", dbPath);
+  formData.append("master_table", masterTable);
   formData.append("fetch_columns", JSON.stringify(fetchColumns));
   formData.append("composite_key", compositeKey);
   formData.append("mapped_acct_id_col", mappedAcctIdCol);
@@ -47,10 +61,11 @@ export async function enrichData(
   const response = await apiClient.post("/enrich-data", formData, {
     headers: { "Content-Type": "multipart/form-data" },
     responseType: "blob",
+    timeout: LONG_RUNNING_TIMEOUT_MS,
   });
 
   return {
-    blob: response.data,
-    headers: response.headers,
+    blob: response.data as Blob,
+    headers: response.headers as Record<string, string>,
   };
 }

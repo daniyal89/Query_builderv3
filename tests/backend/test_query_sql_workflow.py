@@ -42,7 +42,7 @@ def test_query_preview_returns_builder_sql_for_duckdb() -> None:
     body = response.json()
     assert body["source_mode"] == "builder"
     assert body["can_sync_builder"] is True
-    assert body["sql"] == 'SELECT "id", "name" FROM "employees" LIMIT 5'
+    assert body["sql"] == 'SELECT t0."id", t0."name" FROM "employees" t0 LIMIT 5'
 
 
 def test_query_execution_runs_manual_sql_for_duckdb() -> None:

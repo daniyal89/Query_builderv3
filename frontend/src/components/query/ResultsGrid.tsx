@@ -9,12 +9,30 @@ interface ResultsGridProps {
   isLoading: boolean;
 }
 
-function downloadCSV(result: QueryResult) {
+async function downloadCSV(result: QueryResult) {
   const escape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const header = result.columns.join(",");
   const rows = result.rows.map((row) => row.map(escape).join(","));
   const csv = [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+
+  try {
+    if ("showSaveFilePicker" in window) {
+      // @ts-ignore
+      const handle = await window.showSaveFilePicker({
+        suggestedName: "query_results.csv",
+        types: [{ description: "CSV File", accept: { "text/csv": [".csv"] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    }
+  } catch (err: any) {
+    if (err.name !== "AbortError") console.error("Failed to save file using picker:", err);
+    return;
+  }
+
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -61,7 +79,7 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading }) =
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => downloadCSV(result)}
+            onClick={() => void downloadCSV(result)}
             className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium bg-green-600 text-white rounded hover:bg-green-700 transition"
           >
             ↓ CSV

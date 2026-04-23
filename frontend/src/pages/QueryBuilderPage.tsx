@@ -7,7 +7,14 @@ import { QueryBuilderWorkspace } from "../components/query/QueryBuilderWorkspace
 import { useConnection } from "../hooks/useConnection";
 
 export const QueryBuilderPage: React.FC = () => {
-  const { tables } = useConnection();
+  const { tables, refreshTables } = useConnection();
 
-  return <QueryBuilderWorkspace engine="duckdb" title="Query Builder (Local)" tables={tables} />;
+  return (
+    <QueryBuilderWorkspace
+      engine="duckdb"
+      title="Query Builder (Local)"
+      tables={tables}
+      onLocalSchemaChanged={refreshTables}
+    />
+  );
 };

@@ -16,6 +16,8 @@ export async function connectDuckdb(payload: ConnectionRequest): Promise<Connect
 }
 
 export async function connectOracle(payload: OracleConnectionRequest): Promise<OracleConnectionResponse> {
-  const response = await apiClient.post<OracleConnectionResponse>("/oracle/connect", payload);
+  const response = await apiClient.post<OracleConnectionResponse>("/oracle/connect", payload, {
+    timeout: 120_000,
+  });
   return response.data;
 }

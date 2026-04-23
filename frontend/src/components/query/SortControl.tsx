@@ -10,19 +10,25 @@
  */
 
 import React from "react";
-import type { SortClause } from "../../types/query.types";
+import type { QueryColumnOption, SortClause } from "../../types/query.types";
+import { SearchableSelect } from "./SearchableSelect";
 
 interface SortControlProps {
   sortRules: SortClause[];
-  columns: string[];
+  columns: QueryColumnOption[];
   onChange: (sortRules: SortClause[]) => void;
 }
 
 export const SortControl: React.FC<SortControlProps> = ({ sortRules, columns, onChange }) => {
   const currentSort = sortRules[0] || { column: "", direction: "ASC" };
 
-  const handleColumnChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const col = e.target.value;
+  const columnOptions = columns.map((column) => ({
+    value: column.key,
+    label: column.label,
+    description: column.dtype,
+  }));
+
+  const handleColumnChange = (col: string) => {
     if (!col) onChange([]);
     else onChange([{ column: col, direction: currentSort.direction }]);
   };
@@ -35,22 +41,21 @@ export const SortControl: React.FC<SortControlProps> = ({ sortRules, columns, on
   return (
     <div className="bg-white p-4 border border-gray-200 rounded shadow-sm mb-4">
       <h3 className="font-semibold text-gray-700 mb-2">Order By</h3>
-      <div className="flex space-x-2">
-        <select
+      <div className="flex flex-wrap gap-2">
+        <SearchableSelect
           value={currentSort.column}
           onChange={handleColumnChange}
-          className="border border-gray-300 rounded p-2 flex-grow"
-        >
-          <option value="">None</option>
-          {columns.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
+          options={columnOptions}
+          placeholder="None"
+          searchPlaceholder="Search order-by columns..."
+          emptyMessage="No order-by columns match your search."
+          className="min-w-0 flex-1"
+        />
         <select
           value={currentSort.direction}
           onChange={handleDirectionChange}
           disabled={!currentSort.column}
-          className="border border-gray-300 rounded p-2"
+          className="rounded border border-gray-300 p-2"
         >
           <option value="ASC">Ascending</option>
           <option value="DESC">Descending</option>

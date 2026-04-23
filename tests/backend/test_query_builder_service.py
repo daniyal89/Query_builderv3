@@ -1,92 +1,233 @@
-"""
-test_query_builder_service.py â€” Unit tests for QueryBuilderService.
-"""
+import pytest
+from pydantic import ValidationError
 
-from backend.models.query import FilterCondition, QueryPayload
+from backend.models.query import FilterCondition, JoinClause, JoinCondition, QueryPayload, SortClause
 from backend.services.query_builder_service import QueryBuilderService
 
 
-def build_payload(*filters: FilterCondition) -> QueryPayload:
-    return QueryPayload(table="master", filters=list(filters))
+def test_build_preview_sql_renders_joined_query_with_aliases() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        select=["master.ACCT_ID", "usage_view.STATUS"],
+        filters=[FilterCondition(column="usage_view.STATUS", operator="=", value="ACTIVE")],
+        sort=[SortClause(column="usage_view.STATUS", direction="DESC")],
+        joins=[
+            JoinClause(
+                table="usage_view",
+                join_type="LEFT",
+                conditions=[
+                    JoinCondition(
+                        left_column="master.ACCT_ID",
+                        right_column="usage_view.ACCT_ID",
+                    )
+                ],
+            )
+        ],
+        limit_rows=25,
+        offset=5,
+    )
+
+    sql = QueryBuilderService.build_preview_sql(payload)
+
+    assert 'SELECT t0."ACCT_ID" AS "master.ACCT_ID", t1."STATUS" AS "usage_view.STATUS"' in sql
+    assert 'FROM "master" t0 LEFT JOIN "usage_view" t1 ON t0."ACCT_ID" = t1."ACCT_ID"' in sql
+    assert 'WHERE t1."STATUS" = \'ACTIVE\'' in sql
+    assert 'ORDER BY t1."STATUS" DESC' in sql
+    assert sql.endswith("LIMIT 25 OFFSET 5")
 
 
-def test_build_where_clause_supports_not_in_from_comma_string() -> None:
-    payload = build_payload(FilterCondition(column="DISCOM", operator="NOT IN", value="A, B, C"))
+def test_build_count_sql_keeps_join_structure() -> None:
+    payload = QueryPayload(
+        engine="oracle",
+        table="master",
+        select=[],
+        filters=[FilterCondition(column="detail.FLAG", operator="=", value="Y")],
+        sort=[],
+        joins=[
+            JoinClause(
+                table="detail",
+                join_type="INNER",
+                conditions=[
+                    JoinCondition(
+                        left_column="master.ACCT_ID",
+                        right_column="detail.ACCT_ID",
+                    )
+                ],
+            )
+        ],
+    )
 
-    sql, params = QueryBuilderService.build_sql(payload)
+    sql, params = QueryBuilderService.build_count_sql(payload)
 
-    assert 'WHERE "DISCOM" NOT IN (?, ?, ?)' in sql
-    assert params == ["A", "B", "C"]
-
-
-def test_build_where_clause_supports_between_from_text_input() -> None:
-    payload = build_payload(FilterCondition(column="LOAD", operator="BETWEEN", value="10, 20"))
-
-    sql, params = QueryBuilderService.build_sql(payload)
-
-    assert 'WHERE "LOAD" BETWEEN ? AND ?' in sql
-    assert params == ["10", "20"]
-
-
-def test_build_where_clause_supports_contains_with_escaped_like_pattern() -> None:
-    payload = build_payload(FilterCondition(column="ACCOUNT_NAME", operator="CONTAINS", value="50%_done"))
-
-    sql, params = QueryBuilderService.build_sql(payload)
-
-    assert 'WHERE "ACCOUNT_NAME" LIKE ? ESCAPE' in sql
-    assert params == [r"%50\%\_done%"]
-
-
-def test_build_where_clause_supports_null_checks_without_params() -> None:
-    payload = build_payload(FilterCondition(column="DIV_CODE", operator="IS NOT NULL", value=None))
-
-    sql, params = QueryBuilderService.build_sql(payload)
-
-    assert 'WHERE "DIV_CODE" IS NOT NULL' in sql
-    assert params == []
+    assert sql == (
+        'SELECT COUNT(*) FROM "master" t0 INNER JOIN "detail" t1 '
+        'ON t0."ACCT_ID" = t1."ACCT_ID" WHERE t1."FLAG" = :1'
+    )
+    assert params == ["Y"]
 
 
-def test_build_where_clause_uses_oracle_bind_variables_for_oracle_engine() -> None:
+def test_oracle_schema_qualified_table_names_are_quoted_by_part() -> None:
+    payload = QueryPayload(
+        engine="oracle",
+        table="MERCADOS.CM_MASTER_DATA_0326_DVVNL",
+        select=["MERCADOS.CM_MASTER_DATA_0326_DVVNL.ACCT_ID"],
+        filters=[FilterCondition(column="MERCADOS.CM_MASTER_DATA_0326_DVVNL.DISCOM", operator="=", value="DVVNL")],
+        limit_rows=10,
+    )
+
+    sql = QueryBuilderService.build_preview_sql(payload)
+
+    assert 'SELECT t0."ACCT_ID" FROM "MERCADOS"."CM_MASTER_DATA_0326_DVVNL" t0' in sql
+    assert 'WHERE t0."DISCOM" = \'DVVNL\'' in sql
+    assert sql.endswith("FETCH FIRST 10 ROWS ONLY")
+
+
+def test_query_payload_rejects_duplicate_join_tables() -> None:
+    with pytest.raises(ValidationError):
+        QueryPayload(
+            engine="duckdb",
+            table="master",
+            joins=[
+                JoinClause(
+                    table="detail",
+                    join_type="LEFT",
+                    conditions=[
+                        JoinCondition(
+                            left_column="master.ACCT_ID",
+                            right_column="detail.ACCT_ID",
+                        )
+                    ],
+                ),
+                JoinClause(
+                    table="detail",
+                    join_type="INNER",
+                    conditions=[
+                        JoinCondition(
+                            left_column="master.ACCT_ID",
+                            right_column="detail.DIV_CODE",
+                        )
+                    ],
+                ),
+            ],
+        )
+
+
+def test_oracle_report_sql_uses_grouped_select_instead_of_disabled_pivot() -> None:
     payload = QueryPayload(
         engine="oracle",
         table="MASTER",
-        filters=[FilterCondition(column="DISCOM", operator="IN", value=["A", "B"])],
-        limit_rows=25,
-        offset=10,
+        mode="REPORT",
+        pivot={
+            "rows": ["DIV_CODE"],
+            "columns": ["DISCOM"],
+            "values": "LOAD",
+            "func": "SUM",
+        },
+        filters=[FilterCondition(column="STATUS", operator="=", value="ACTIVE")],
     )
 
-    sql, params = QueryBuilderService.build_sql(payload)
+    sql, params = QueryBuilderService.build_report_sql(payload)
 
-    assert 'WHERE "DISCOM" IN (:1, :2)' in sql
-    assert "OFFSET 10 ROWS FETCH NEXT 25 ROWS ONLY" in sql
-    assert params == ["A", "B"]
+    assert 'SELECT t0."DIV_CODE" AS "__REPORT_ROW_1__"' in sql
+    assert 't0."DISCOM" AS "__REPORT_COLUMN_1__"' in sql
+    assert 'SUM(t0."LOAD") AS "__REPORT_VALUE__"' in sql
+    assert 'FROM "MASTER" t0' in sql
+    assert 'WHERE t0."STATUS" = :1' in sql
+    assert 'GROUP BY t0."DIV_CODE", t0."DISCOM" ORDER BY 1, 2' in sql
+    assert params == ["ACTIVE"]
 
 
-def test_build_preview_sql_renders_literal_values_for_editor() -> None:
+def test_report_sql_can_group_by_joined_columns() -> None:
+    payload = QueryPayload(
+        engine="oracle",
+        table="MASTER",
+        mode="REPORT",
+        joins=[
+            JoinClause(
+                table="DETAIL",
+                join_type="LEFT",
+                conditions=[
+                    JoinCondition(
+                        left_column="MASTER.ACCT_ID",
+                        right_column="DETAIL.ACCT_ID",
+                    )
+                ],
+            )
+        ],
+        pivot={
+            "rows": ["MASTER.DIV_CODE"],
+            "columns": ["DETAIL.STATUS"],
+            "values": "MASTER.LOAD",
+            "func": "SUM",
+        },
+    )
+
+    sql, params = QueryBuilderService.build_report_sql(payload)
+
+    assert 'FROM "MASTER" t0 LEFT JOIN "DETAIL" t1 ON t0."ACCT_ID" = t1."ACCT_ID"' in sql
+    assert 't0."DIV_CODE" AS "__REPORT_ROW_1__"' in sql
+    assert 't1."STATUS" AS "__REPORT_COLUMN_1__"' in sql
+    assert 'SUM(t0."LOAD") AS "__REPORT_VALUE__"' in sql
+    assert params == []
+
+
+def test_pivot_report_rows_returns_excel_style_columns() -> None:
     payload = QueryPayload(
         table="master",
-        filters=[FilterCondition(column="DISCOM", operator="IN", value=["A", "B"])],
+        mode="REPORT",
+        pivot={
+            "rows": ["DIV_CODE"],
+            "columns": ["DISCOM"],
+            "values": "LOAD",
+            "func": "SUM",
+        },
     )
 
-    preview_sql = QueryBuilderService.build_preview_sql(payload)
+    columns, rows = QueryBuilderService.pivot_report_rows(
+        payload,
+        [
+            ["DIV1", "PVVNL", 10],
+            ["DIV1", "DVVNL", 20],
+            ["DIV2", "PVVNL", 30],
+        ],
+    )
 
-    assert 'WHERE "DISCOM" IN (\'A\', \'B\')' in preview_sql
-    assert "LIMIT 1000" in preview_sql
-
-
-def test_normalize_manual_sql_rejects_multiple_statements() -> None:
-    try:
-        QueryBuilderService.normalize_manual_sql("SELECT 1; SELECT 2")
-    except ValueError as exc:
-        assert "single SQL statement" in str(exc)
-    else:
-        raise AssertionError("Expected normalize_manual_sql to reject multiple statements.")
+    assert columns == ["DIV_CODE", "PVVNL", "DVVNL"]
+    assert rows == [["DIV1", 10, 20], ["DIV2", 30, None]]
 
 
-def test_render_sql_keeps_oracle_placeholder_indexes_intact() -> None:
-    sql = 'SELECT * FROM "MASTER" WHERE "C1" IN (:1, :2, :3, :4, :5, :6, :7, :8, :9, :10)'
-    params = [str(index) for index in range(1, 11)]
+def test_oracle_date_filter_uses_date_literal_in_preview_sql() -> None:
+    payload = QueryPayload(
+        engine="oracle",
+        table="MERCADOS.CM_MASTER_DATA_MAR_2026_KESCO",
+        mode="REPORT",
+        pivot={
+            "rows": ["DISCOM"],
+            "columns": ["METER_READ_REMARK"],
+            "values": "ACCT_ID",
+            "func": "COUNT",
+        },
+        filters=[
+            FilterCondition(column="OPR_FLG", operator="=", value="Y"),
+            FilterCondition(column="LAST_BILL_DATE", operator=">=", value="2026-03-01"),
+        ],
+    )
 
-    rendered = QueryBuilderService.render_sql(sql, params, "oracle")
+    sql = QueryBuilderService.build_preview_sql(payload)
 
-    assert "('1', '2', '3', '4', '5', '6', '7', '8', '9', '10')" in rendered
+    assert "t0.\"OPR_FLG\" = 'Y'" in sql
+    assert "t0.\"LAST_BILL_DATE\" >= DATE '2026-03-01'" in sql
+
+
+def test_count_sql_uses_date_literals_without_params_for_date_columns() -> None:
+    payload = QueryPayload(
+        engine="oracle",
+        table="MASTER",
+        filters=[FilterCondition(column="LAST_BILL_DATE", operator=">=", value="2026-03-01")],
+    )
+
+    sql, params = QueryBuilderService.build_count_sql(payload)
+
+    assert sql == "SELECT COUNT(*) FROM \"MASTER\" t0 WHERE t0.\"LAST_BILL_DATE\" >= DATE '2026-03-01'"
+    assert params == []

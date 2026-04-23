@@ -5,6 +5,8 @@ Covers the three-phase flow defined in HANDOVER.md §8 (Strict Business Rules):
   1. Upload Sheets  → detect columns across files
   2. Merge Sheets   → resolve column conflicts via ConflictResolutionMap
   3. Enrich Data    → join against the Master Table on composite key
+
+Also includes the local folder merge flow used by the sidebar import page.
 """
 
 from typing import Any, Literal, Optional
@@ -68,9 +70,7 @@ class ConflictResolutionMap(BaseModel):
     present in the resolved output for the enrichment phase to work.
     """
 
-    file_ids: list[str] = Field(
-        ..., description="File identifiers from the upload step."
-    )
+    file_ids: list[str] = Field(..., description="File identifiers from the upload step.")
     resolutions: list[ColumnResolution] = Field(
         ..., description="One resolution entry per detected column across all files."
     )
@@ -96,18 +96,41 @@ class MergeSheetsResponse(BaseModel):
     )
 
 
+# ─────────────────────── Sidebar folder merge flow ───────────────────────────
+
+
+class FolderMergeRequest(BaseModel):
+    """Request payload for local recursive folder merge."""
+
+    source_folder: str = Field(..., description="Folder containing files to merge.")
+    output_path: str = Field(..., description="Absolute path for the merged output file.")
+    include_subfolders: bool = Field(
+        default=True,
+        description="Whether to scan all nested subfolders recursively.",
+    )
+
+
+class FolderMergeResponse(BaseModel):
+    """Response for the local folder merge operation."""
+
+    output_path: str = Field(..., description="Absolute path of the saved merged file.")
+    output_format: Literal["csv", "xlsx"] = Field(..., description="Saved output format.")
+    total_files: int = Field(..., ge=0, description="Number of source files discovered.")
+    merged_items: int = Field(
+        ..., ge=0, description="Number of merged datasets, including individual Excel sheets."
+    )
+    total_rows: int = Field(..., ge=0, description="Total rows written to the merged output.")
+    total_columns: int = Field(..., ge=0, description="Total columns written to the merged output.")
+
+
 # ─────────────────────── Phase 3: Enrich Data ────────────────────────────────
 
 
 class EnrichmentRequest(BaseModel):
     """Payload for POST /api/enrich-data — specifies what to fetch from the Master Table."""
 
-    merge_id: str = Field(
-        ..., description="Identifier of the merged dataset from the merge step."
-    )
-    master_table: str = Field(
-        ..., description="Name of the DuckDB Master Table to join against."
-    )
+    merge_id: str = Field(..., description="Identifier of the merged dataset from the merge step.")
+    master_table: str = Field(..., description="Name of the DuckDB Master Table to join against.")
     composite_key: Literal["Acc_id+DISCOM", "Acc_id+DIV_CODE"] = Field(
         ..., description="Which composite key to use for the join."
     )
@@ -125,9 +148,7 @@ class EnrichmentRequest(BaseModel):
 class EnrichmentResponse(BaseModel):
     """Response from POST /api/enrich-data after the join is complete."""
 
-    download_url: str = Field(
-        ..., description="Relative URL to download the enriched output file."
-    )
+    download_url: str = Field(..., description="Relative URL to download the enriched output file.")
     total_rows: int = Field(..., description="Total rows in the output file.", ge=0)
     matched_rows: int = Field(..., description="Rows that found a match in the Master Table.", ge=0)
     unmatched_rows: int = Field(..., description="Rows with no Master Table match.", ge=0)

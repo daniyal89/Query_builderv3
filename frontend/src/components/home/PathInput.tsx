@@ -6,6 +6,7 @@
  * file extension check).
  */
 import React from "react";
+import { pickSystemFile } from "../../api/systemApi";
 
 interface PathInputProps {
   value: string;
@@ -37,6 +38,16 @@ export const PathInput: React.FC<PathInputProps> = ({
             disabled={isConnecting}
           />
         </div>
+        <button
+          onClick={async () => {
+            const path = await pickSystemFile("duckdb");
+            if (path) onChange(path);
+          }}
+          disabled={isConnecting}
+          className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded disabled:opacity-50 transition-colors whitespace-nowrap"
+        >
+          Browse...
+        </button>
         <button
           onClick={onConnect}
           disabled={isConnecting || !value.trim()}

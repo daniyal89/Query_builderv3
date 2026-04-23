@@ -31,7 +31,7 @@ async def connect_to_oracle(
     return OracleConnectionResponse(
         status="connected",
         tables_count=tables_count,
-        message=f"Connected to Marcadose. Found {tables_count} table(s)/view(s).",
+        message="Connected to Marcadose. Tables and views will load separately.",
         schema_name=oracle.schema_name,
     )
 

@@ -2,8 +2,11 @@ import React from "react";
 import type { QueryEngine } from "../../types/connection.types";
 import type { QuerySourceMode } from "../../types/query.types";
 
+type QueryMode = "LIST" | "REPORT";
+
 interface SqlEditorPanelProps {
   engine: QueryEngine;
+  queryMode: QueryMode;
   sourceMode: QuerySourceMode;
   sqlText: string;
   generatedSql: string;
@@ -31,6 +34,7 @@ function getStatusText(sourceMode: QuerySourceMode, isSqlDetached: boolean): str
 
 export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
   engine,
+  queryMode,
   sourceMode,
   sqlText,
   generatedSql,
@@ -47,6 +51,7 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
 }) => {
   const canResetFromBuilder = generatedSql.trim().length > 0;
   const canRunManual = sqlText.trim().length > 0;
+  const builderRunLabel = queryMode === "REPORT" ? "Generate Report" : "Run Builder SQL";
 
   return (
     <div className="mb-6 rounded-lg border border-gray-200 bg-white shadow-sm">
@@ -107,7 +112,11 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
             {isPreviewLoading ? "Refreshing SQL preview..." : "Editable SQL"}
           </span>
           <span className="text-xs text-gray-400">
-            {sourceMode === "builder" ? "Run uses builder output" : "Run uses editor text"}
+            {sourceMode === "builder"
+              ? queryMode === "REPORT"
+                ? "Run generates report output"
+                : "Run uses builder output"
+              : "Run uses editor text"}
           </span>
         </div>
 
@@ -143,7 +152,7 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
               disabled={isRunning || (sourceMode === "builder" ? !canRunBuilder : !canRunManual)}
               className="rounded bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {isRunning ? "Running..." : sourceMode === "builder" ? "Run Builder SQL" : "Run Manual SQL"}
+              {isRunning ? "Running..." : sourceMode === "builder" ? builderRunLabel : "Run Manual SQL"}
             </button>
           </div>
         </div>
