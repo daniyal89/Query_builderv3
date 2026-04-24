@@ -12,7 +12,7 @@ const linkClassName = ({ isActive }: { isActive: boolean }) =>
 
 export const Sidebar: React.FC = () => {
   return (
-    <aside className="flex h-full w-72 flex-col border-r border-slate-800 bg-slate-900 text-white shadow-lg">
+    <aside className="flex h-full w-72 flex-col overflow-y-auto border-r border-slate-800 bg-slate-900 text-white shadow-lg">
       <div className="p-6">
         <h2 className="text-2xl font-extrabold tracking-tight">Query Builder</h2>
         <p className="mt-2 text-sm text-slate-400">Local DuckDB plus Marcadose workspace shell.</p>
