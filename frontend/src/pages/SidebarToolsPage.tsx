@@ -1,6 +1,20 @@
 import React, { useState } from "react";
 import { runBuildDuckDb, runCsvToParquet } from "../api/sidebarToolsApi";
 
+interface FieldProps {
+  label: string;
+  help: string;
+  children: React.ReactNode;
+}
+
+const Field: React.FC<FieldProps> = ({ label, help, children }) => (
+  <div className="space-y-1">
+    <label className="block text-sm font-semibold text-slate-700">{label}</label>
+    {children}
+    <p className="text-xs text-slate-500">{help}</p>
+  </div>
+);
+
 export const SidebarToolsPage: React.FC = () => {
   const [buildForm, setBuildForm] = useState({
     db_path: "./monthly.duckdb",
@@ -19,6 +33,24 @@ export const SidebarToolsPage: React.FC = () => {
   const [parquetMessage, setParquetMessage] = useState("");
   const [isBuildRunning, setIsBuildRunning] = useState(false);
   const [isParquetRunning, setIsParquetRunning] = useState(false);
+  const [statusNote, setStatusNote] = useState("Use labels below and fill full paths before running.");
+
+  const applyUppclPreset = () => {
+    setBuildForm({
+      db_path: "G:/MASTER/uppcl_latest.duckdb",
+      input_path: "G:/MASTER_PARQUET/MAR_2026/**/*.parquet",
+      object_name: "master",
+      object_type: "TABLE",
+      replace: true,
+      month_label: "MAR_2026",
+    });
+    setParquetForm({
+      input_path: "G:/MASTER/MAR_2026/*.csv.gz",
+      output_path: "G:/MASTER_PARQUET/MAR_2026/master.parquet",
+      compression: "snappy",
+    });
+    setStatusNote("UPPCL preset applied. Adjust month/path values if needed.");
+  };
 
   const runBuild = async () => {
     setIsBuildRunning(true);
@@ -51,31 +83,56 @@ export const SidebarToolsPage: React.FC = () => {
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-2xl font-semibold text-slate-900">Sidebar-6 Data Tools</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Use these scripts to build DuckDB objects for older/current month files and to convert CSV/GZ files to
-          Parquet.
+          Use these tools to run Step-1 (CSV/GZ → Parquet) and Step-2 (Build DuckDB table/view). All fields below
+          are now explicitly labeled so users can understand what each input means.
         </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={applyUppclPreset}
+            className="rounded border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          >
+            Apply UPPCL default paths
+          </button>
+          <span className="inline-flex items-center rounded bg-blue-50 px-3 py-1.5 text-xs text-blue-700">
+            {statusNote}
+          </span>
+        </div>
       </div>
 
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">1) Build DuckDB Table or View</h2>
         <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>build_duckdb.py</code></p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <input className="rounded border p-2" placeholder="DB path" value={buildForm.db_path} onChange={(e) => setBuildForm((p) => ({ ...p, db_path: e.target.value }))} />
-          <input className="rounded border p-2" placeholder="Input path / glob" value={buildForm.input_path} onChange={(e) => setBuildForm((p) => ({ ...p, input_path: e.target.value }))} />
-          <input className="rounded border p-2" placeholder="Object name" value={buildForm.object_name} onChange={(e) => setBuildForm((p) => ({ ...p, object_name: e.target.value }))} />
-          <select className="rounded border p-2" value={buildForm.object_type} onChange={(e) => setBuildForm((p) => ({ ...p, object_type: e.target.value as "TABLE" | "VIEW" }))}>
-            <option value="TABLE">TABLE</option>
-            <option value="VIEW">VIEW</option>
-          </select>
-          <input className="rounded border p-2" placeholder="Month label (optional)" value={buildForm.month_label} onChange={(e) => setBuildForm((p) => ({ ...p, month_label: e.target.value }))} />
-          <label className="flex items-center gap-2 rounded border p-2 text-sm">
-            <input type="checkbox" checked={buildForm.replace} onChange={(e) => setBuildForm((p) => ({ ...p, replace: e.target.checked }))} />
-            Replace existing
-          </label>
+          <Field label="DuckDB file path" help="Full target .duckdb file path. Example: G:/MASTER/uppcl_latest.duckdb">
+            <input className="w-full rounded border p-2" value={buildForm.db_path} onChange={(e) => setBuildForm((p) => ({ ...p, db_path: e.target.value }))} />
+          </Field>
+          <Field label="Input parquet/csv path or glob" help="Supports wildcards. Example: G:/MASTER_PARQUET/MAR_2026/**/*.parquet">
+            <input className="w-full rounded border p-2" value={buildForm.input_path} onChange={(e) => setBuildForm((p) => ({ ...p, input_path: e.target.value }))} />
+          </Field>
+          <Field label="Object name in DuckDB" help="Target table/view name. Example: master or master_MAR_2026">
+            <input className="w-full rounded border p-2" value={buildForm.object_name} onChange={(e) => setBuildForm((p) => ({ ...p, object_name: e.target.value }))} />
+          </Field>
+          <Field label="Object type" help="Choose TABLE for materialized data, VIEW for virtual query object.">
+            <select className="w-full rounded border p-2" value={buildForm.object_type} onChange={(e) => setBuildForm((p) => ({ ...p, object_type: e.target.value as "TABLE" | "VIEW" }))}>
+              <option value="TABLE">TABLE</option>
+              <option value="VIEW">VIEW</option>
+            </select>
+          </Field>
+          <Field label="Month label (optional)" help="Used in success message only. Example: MAR_2026">
+            <input className="w-full rounded border p-2" value={buildForm.month_label} onChange={(e) => setBuildForm((p) => ({ ...p, month_label: e.target.value }))} />
+          </Field>
+          <Field label="Replace existing object" help="If checked, existing table/view with same name is dropped first.">
+            <label className="flex items-center gap-2 rounded border p-2 text-sm">
+              <input type="checkbox" checked={buildForm.replace} onChange={(e) => setBuildForm((p) => ({ ...p, replace: e.target.checked }))} />
+              Replace existing
+            </label>
+          </Field>
         </div>
         <button onClick={runBuild} disabled={isBuildRunning} className="mt-3 rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
           {isBuildRunning ? "Running..." : "Run Build DuckDB"}
         </button>
+        <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python build_duckdb.py --db "${buildForm.db_path}" --input "${buildForm.input_path}" --object-name ${buildForm.object_name} --object-type ${buildForm.object_type}${buildForm.replace ? " --replace" : ""}${buildForm.month_label ? ` --month-label ${buildForm.month_label}` : ""}`}</pre>
         {buildMessage && <p className="mt-2 text-sm text-slate-700">{buildMessage}</p>}
       </div>
 
@@ -83,13 +140,20 @@ export const SidebarToolsPage: React.FC = () => {
         <h2 className="text-lg font-semibold text-slate-900">2) Convert CSV/GZ to Parquet</h2>
         <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>csv_to_prequat.py</code></p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <input className="rounded border p-2 md:col-span-2" placeholder="Input CSV/GZ path or glob" value={parquetForm.input_path} onChange={(e) => setParquetForm((p) => ({ ...p, input_path: e.target.value }))} />
-          <input className="rounded border p-2 md:col-span-2" placeholder="Output parquet file path" value={parquetForm.output_path} onChange={(e) => setParquetForm((p) => ({ ...p, output_path: e.target.value }))} />
-          <input className="rounded border p-2" placeholder="Compression" value={parquetForm.compression} onChange={(e) => setParquetForm((p) => ({ ...p, compression: e.target.value }))} />
+          <Field label="Input CSV/GZ path or glob" help="Example: G:/MASTER/MAR_2026/*.csv.gz">
+            <input className="w-full rounded border p-2 md:col-span-2" value={parquetForm.input_path} onChange={(e) => setParquetForm((p) => ({ ...p, input_path: e.target.value }))} />
+          </Field>
+          <Field label="Output parquet file path" help="Example: G:/MASTER_PARQUET/MAR_2026/master.parquet">
+            <input className="w-full rounded border p-2 md:col-span-2" value={parquetForm.output_path} onChange={(e) => setParquetForm((p) => ({ ...p, output_path: e.target.value }))} />
+          </Field>
+          <Field label="Compression codec" help="Recommended: snappy or zstd">
+            <input className="w-full rounded border p-2" value={parquetForm.compression} onChange={(e) => setParquetForm((p) => ({ ...p, compression: e.target.value }))} />
+          </Field>
         </div>
         <button onClick={runParquet} disabled={isParquetRunning} className="mt-3 rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60">
           {isParquetRunning ? "Running..." : "Run CSV → Parquet"}
         </button>
+        <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_prequat.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}`}</pre>
         {parquetMessage && <p className="mt-2 text-sm text-slate-700">{parquetMessage}</p>}
       </div>
     </div>
