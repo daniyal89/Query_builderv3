@@ -44,6 +44,9 @@ export const Sidebar: React.FC = () => {
           <NavLink to="/ftp-download" className={linkClassName}>
             FTP Download
           </NavLink>
+          <NavLink to="/sidebar-6-tools" className={linkClassName}>
+            Sidebar-6 Tools
+          </NavLink>
           <NavLink to="/drive-upload-master" className={linkClassName}>
             Upload master in Drive
           </NavLink>
