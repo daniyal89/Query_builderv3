@@ -861,3 +861,170 @@ The selected month and DISCOM are used to generate Marcadose master table names 
 MERCADOS.CM_master_data_<month_tag>_<DISCOM>
 
 backend/services/marcadose_union_service.py
+## 19. Latest Update — Security Guardrails, Query Productivity, and Sidebar-6 Tooling
+
+This section documents all additions merged after the previous handover revision so future developers and AI agents can understand what exists, why it was added, and where to modify it safely.
+
+### 19.1 Why these changes were introduced
+
+The changes were introduced for three reasons:
+
+1. **Backend safety hardening**
+   - reduce misuse of local filesystem path inputs
+   - limit oversized manual SQL input
+   - prevent accidentally huge row fetches in query responses
+
+2. **Query builder productivity**
+   - users needed fast reuse of common query configurations
+   - users needed lightweight visibility of recently executed queries
+
+3. **Operations/dev tooling in UI**
+   - expose script-based data engineering workflows directly from sidebar navigation
+   - provide copy-ready command examples for non-developer operators
+
+### 19.2 New backend safety layer
+
+#### New utility module
+- **File:** `backend/utils/path_safety.py`
+- **Purpose:** central reusable path normalization and defensive validation.
+- **Functions:**
+  - `sanitize_local_path_input(value, field_name)`
+    - trims user input
+    - removes wrapping quotes
+    - expands env vars and user-home aliases
+    - rejects empty input
+  - `validate_relative_subpath(value, field_name)`
+    - ensures relative-only subpath usage
+    - blocks path traversal segments (`..`) and malformed empty parts
+
+#### Models now using path validators
+- `backend/models/local_object.py`
+  - validates `FileObjectRequest.file_path`
+- `backend/models/ftp_download.py`
+  - validates `FTPDownloadRequest.output_root`
+  - validates `FTPDownloadProfile.local_subfolder` as safe relative subfolder
+- `backend/models/google_drive.py`
+  - validates auth optional file paths (`oauth_client_json_path`, `token_json_path`, `service_account_json_path`)
+  - validates `DriveUploadRequest.local_folder`
+  - validates `DriveDownloadRequest.output_folder`
+
+### 19.3 Query execution guardrails
+
+#### Manual SQL length cap
+- **File:** `backend/api/endpoints/query.py`
+- Added `MAX_SQL_TEXT_LENGTH = 50000`.
+- Applied in both endpoints:
+  - `POST /api/query/preview`
+  - `POST /api/query`
+- Behavior:
+  - oversized SQL now returns HTTP 400 with explicit max-length message.
+
+#### Result size cap
+- **File:** `backend/models/query.py`
+- `QueryPayload.limit_rows` now enforces upper bound `le=50000`.
+- This prevents very large accidental builder/manual fetches.
+
+### 19.4 Query Builder saved workflows
+
+#### Saved Query + History feature
+- **Primary UI file:** `frontend/src/components/query/QueryBuilderWorkspace.tsx`
+- Added:
+  - save current query configuration
+  - load saved query configuration
+  - delete saved query
+  - query execution history panel
+  - history insertion after successful run
+- LocalStorage keys:
+  - `qb:saved-queries:v1`
+  - `qb:query-history:v1`
+
+#### Hook support for loading state
+- **File:** `frontend/src/hooks/useQueryBuilder.ts`
+- Added `applyState(nextState)` API to restore state from saved data.
+- This is used by the workspace saved-query loader.
+
+### 19.5 Sidebar-6 tooling feature (new page and scripts)
+
+A new sidebar feature was added for operational scripts requested by the project owner.
+
+#### New scripts
+1. **`build_duckdb.py`**
+   - Purpose: create DuckDB TABLE/VIEW from CSV, GZ CSV, or Parquet.
+   - Supports:
+     - target DB file path
+     - input file path/glob
+     - object name/type
+     - replace mode
+     - optional month label for run logs
+
+2. **`csv_to_prequat.py`**
+   - Purpose: convert CSV or CSV.GZ inputs into Parquet output.
+   - Supports:
+     - input path/glob
+     - output parquet path
+     - compression option
+
+> Note: filename intentionally kept as `csv_to_prequat.py` to match stakeholder-requested naming.
+
+#### New UI page
+- **File:** `frontend/src/pages/SidebarToolsPage.tsx`
+- Route: `/sidebar-6-tools`
+- Shows copy-ready command examples for both scripts.
+- Designed as operator instruction page (not a backend job runner).
+
+#### Routing/navigation updates
+- **File:** `frontend/src/App.tsx`
+  - added route for `/sidebar-6-tools`.
+- **File:** `frontend/src/components/layout/Sidebar.tsx`
+  - added sidebar link: **Sidebar-6 Tools**.
+- **File:** `frontend/src/components/layout/Header.tsx`
+  - added title mapping: **Sidebar-6 Data Tools**.
+
+### 19.6 UI system refresh from this update cycle
+
+- **File:** `frontend/src/index.css`
+- Added global design tokens for:
+  - primary/hover colors
+  - surface/background/text/border semantic colors
+  - success/warning/error accents
+- Added global box-sizing and improved base typography baseline.
+
+### 19.7 Operational developer notes
+
+1. If users report invalid-path errors in FTP/Drive/local object creation:
+   - check validator behavior in `backend/utils/path_safety.py`
+   - verify whether value should be absolute (`output_root`, `local_folder`, etc.) or relative (`local_subfolder`)
+
+2. If users report SQL rejected due size:
+   - review `MAX_SQL_TEXT_LENGTH` in `backend/api/endpoints/query.py`
+
+3. If users report query result truncation/limit validation errors:
+   - review `QueryPayload.limit_rows` in `backend/models/query.py`
+
+4. If users report saved query data mismatch:
+   - verify localStorage keys and serialization in `QueryBuilderWorkspace.tsx`
+   - verify state restore behavior in `useQueryBuilder.ts` `applyState`
+
+5. If users ask where Sidebar-6 script examples are:
+   - route `/sidebar-6-tools`
+   - page component `SidebarToolsPage.tsx`
+   - scripts in repo root: `build_duckdb.py`, `csv_to_prequat.py`
+
+### 19.8 Build/verification commands for this update
+
+From repo root:
+
+```bash
+# Frontend compile check
+cd frontend
+npm run build
+
+# Script help checks
+cd ..
+python build_duckdb.py --help
+python csv_to_prequat.py --help
+```
+
+### 19.9 Security note
+
+A GitHub PAT was used during remote push from agent workflow. Always rotate/revoke exposed tokens and avoid storing PATs in shell history, scripts, or remotes.
