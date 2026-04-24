@@ -14,6 +14,7 @@ from backend.services.query_builder_service import QueryBuilderService
 from backend.services.marcadose_union_service import MarcadoseUnionService
 
 router = APIRouter()
+MAX_SQL_TEXT_LENGTH = 50000
 
 
 def _select_engine_service(
@@ -51,6 +52,11 @@ async def preview_query(
     try:
         if payload.execution_mode == "sql":
             sql = QueryBuilderService.normalize_manual_sql(payload.sql or "")
+            if len(sql) > MAX_SQL_TEXT_LENGTH:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"SQL text exceeds max length of {MAX_SQL_TEXT_LENGTH} characters.",
+                )
             if payload.engine == "oracle":
                 sql = MarcadoseUnionService.apply(sql, payload.marcadose_union)
                 OracleService.ensure_read_only_sql(sql)
@@ -80,6 +86,11 @@ async def execute_query(
 
         if payload.execution_mode == "sql":
             executed_sql = QueryBuilderService.normalize_manual_sql(payload.sql or "")
+            if len(executed_sql) > MAX_SQL_TEXT_LENGTH:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"SQL text exceeds max length of {MAX_SQL_TEXT_LENGTH} characters.",
+                )
             if payload.engine == "oracle":
                 executed_sql = MarcadoseUnionService.apply(executed_sql, payload.marcadose_union)
 

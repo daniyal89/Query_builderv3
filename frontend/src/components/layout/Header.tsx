@@ -24,10 +24,10 @@ export const Header: React.FC = () => {
   const { disconnect: disconnectMarcadose } = useMarcadoseConnection();
 
   return (
-    <header className="flex items-center justify-between bg-white px-6 py-4 shadow">
+    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4 shadow-sm">
       <div className="flex items-center space-x-4">
         <h1
-          className="max-w-sm overflow-hidden text-ellipsis whitespace-nowrap text-lg font-semibold text-gray-800"
+          className="max-w-sm overflow-hidden text-ellipsis whitespace-nowrap text-lg font-semibold text-slate-800"
           title={getPageTitle(location.pathname, duckdbConnection.dbPath)}
         >
           {getPageTitle(location.pathname, duckdbConnection.dbPath)}
@@ -37,12 +37,12 @@ export const Header: React.FC = () => {
       <div className="flex flex-wrap items-center justify-end gap-3">
         <span
           className={`inline-flex items-center space-x-2 rounded-full px-3 py-1 text-sm font-medium ${
-            duckdbConnection.isConnected ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"
+            duckdbConnection.isConnected ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"
           }`}
         >
           <span
             className={`h-2 w-2 rounded-full ${
-              duckdbConnection.isConnected ? "animate-pulse bg-green-500" : "bg-gray-400"
+              duckdbConnection.isConnected ? "animate-pulse bg-emerald-500" : "bg-slate-400"
             }`}
           ></span>
           <span>
@@ -55,7 +55,7 @@ export const Header: React.FC = () => {
             marcadoseConnection.isConnected
               ? "bg-blue-100 text-blue-800"
               : marcadoseConnection.isConfigured
-                ? "bg-sky-100 text-sky-800"
+                ? "bg-cyan-100 text-cyan-800"
                 : "bg-amber-100 text-amber-700"
           }`}
         >
@@ -64,7 +64,7 @@ export const Header: React.FC = () => {
               marcadoseConnection.isConnected
                 ? "bg-blue-500"
                 : marcadoseConnection.isConfigured
-                  ? "bg-sky-500"
+                  ? "bg-cyan-500"
                   : "bg-amber-500"
             }`}
           ></span>
@@ -81,7 +81,7 @@ export const Header: React.FC = () => {
         {duckdbConnection.isConnected && (
           <button
             onClick={disconnect}
-            className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 transition hover:text-red-800"
+            className="rounded border border-rose-200 px-2 py-1 text-xs text-rose-600 transition hover:bg-rose-50 hover:text-rose-800"
           >
             Disconnect Local
           </button>
@@ -90,7 +90,7 @@ export const Header: React.FC = () => {
         {marcadoseConnection.isConnected && (
           <button
             onClick={disconnectMarcadose}
-            className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-700 transition hover:text-blue-900"
+            className="rounded border border-blue-200 px-2 py-1 text-xs text-blue-700 transition hover:bg-blue-50 hover:text-blue-900"
           >
             Disconnect Marcadose
           </button>

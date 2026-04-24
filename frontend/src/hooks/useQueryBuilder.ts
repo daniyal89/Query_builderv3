@@ -80,6 +80,7 @@ export interface UseQueryBuilderReturn {
   setSourceMode: (mode: QuerySourceMode) => void;
   updateSqlText: (sql: string) => void;
   resetSqlToBuilder: () => void;
+  applyState: (nextState: Partial<QueryState>) => void;
   executeQuery: () => Promise<QueryResult | undefined>;
   reset: () => void;
 }
@@ -550,6 +551,17 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     }));
   }, []);
 
+  const applyState = useCallback((nextState: Partial<QueryState>) => {
+    setState((prev) => ({
+      ...prev,
+      ...nextState,
+      error: null,
+      previewError: null,
+      isLoading: false,
+      isPreviewLoading: false,
+    }));
+  }, []);
+
   const executeQuery = useCallback(async () => {
     const isBuilderMode = state.sourceMode === "builder";
 
@@ -648,6 +660,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     setSourceMode,
     updateSqlText,
     resetSqlToBuilder,
+    applyState,
     executeQuery,
     reset,
   };

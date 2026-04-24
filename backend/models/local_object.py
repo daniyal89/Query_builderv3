@@ -3,8 +3,10 @@
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from pydantic import field_validator
 
 from backend.models.schema import TableMetadata
+from backend.utils.path_safety import sanitize_local_path_input
 
 
 class FileObjectRequest(BaseModel):
@@ -16,6 +18,11 @@ class FileObjectRequest(BaseModel):
     replace: bool = Field(default=False, description="Replace the object if it already exists.")
     header: bool = Field(default=True, description="Treat the first row as headers.")
     sheet_name: str | None = Field(default=None, description="Optional worksheet name for XLSX files.")
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str) -> str:
+        return sanitize_local_path_input(value, "file_path")
 
 
 class FileObjectResponse(BaseModel):
