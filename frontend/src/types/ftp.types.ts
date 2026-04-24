@@ -31,13 +31,24 @@ export interface FTPProfileResult {
   errors: string[];
 }
 
-export interface FTPDownloadResponse {
+export interface FTPDownloadStartResponse {
+  job_id: string;
+  status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
+}
+
+export interface FTPDownloadStatusResponse {
+  job_id: string;
+  status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   host: string;
   output_root: string;
+  current_profile?: string | null;
   total_profiles: number;
   total_files_found: number;
   total_downloaded_files: number;
   total_skipped_files: number;
   total_failed_files: number;
   profile_results: FTPProfileResult[];
+  error_message?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
 }

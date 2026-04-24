@@ -1,5 +1,5 @@
 """
-query.py â€” Engine-aware query execution endpoint.
+query.py — Engine-aware query execution endpoint.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from backend.models.query import QueryPayload, QueryPreview, QueryResult
 from backend.services.duckdb_service import DuckDBService
 from backend.services.oracle_service import OracleService
 from backend.services.query_builder_service import QueryBuilderService
+from backend.services.marcadose_union_service import MarcadoseUnionService
 
 router = APIRouter()
 
@@ -51,10 +52,14 @@ async def preview_query(
         if payload.execution_mode == "sql":
             sql = QueryBuilderService.normalize_manual_sql(payload.sql or "")
             if payload.engine == "oracle":
+                sql = MarcadoseUnionService.apply(sql, payload.marcadose_union)
                 OracleService.ensure_read_only_sql(sql)
             return QueryPreview(sql=sql, source_mode="sql", can_sync_builder=False)
 
         sql = QueryBuilderService.build_preview_sql(payload)
+        if payload.engine == "oracle":
+            sql = MarcadoseUnionService.apply(sql, payload.marcadose_union)
+            OracleService.ensure_read_only_sql(sql)
         return QueryPreview(sql=sql, source_mode="builder", can_sync_builder=True)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -72,9 +77,23 @@ async def execute_query(
 ) -> QueryResult:
     try:
         service: DuckDBService | OracleService = _select_engine_service(payload, duckdb, oracle)
+
         if payload.execution_mode == "sql":
             executed_sql = QueryBuilderService.normalize_manual_sql(payload.sql or "")
+            if payload.engine == "oracle":
+                executed_sql = MarcadoseUnionService.apply(executed_sql, payload.marcadose_union)
+
             columns, rows, total = service.execute(executed_sql)
+
+            if (
+                payload.engine == "oracle"
+                and payload.mode == "REPORT"
+                and payload.marcadose_union
+                and payload.marcadose_union.add_grand_total
+            ):
+                rows = MarcadoseUnionService.append_grand_total(columns, rows)
+                total = len(rows)
+
             return QueryResult(
                 columns=columns,
                 rows=rows,
@@ -87,9 +106,26 @@ async def execute_query(
 
         if payload.mode == "REPORT":
             report_sql, params = QueryBuilderService.build_report_sql(payload)
-            _, aggregate_rows, _ = service.execute(report_sql, params)
+
+            if payload.engine == "oracle":
+                executed_sql = MarcadoseUnionService.apply(
+                    QueryBuilderService.render_sql(report_sql, params, payload.engine),
+                    payload.marcadose_union,
+                )
+                _, aggregate_rows, _ = service.execute(executed_sql)
+            else:
+                _, aggregate_rows, _ = service.execute(report_sql, params)
+                executed_sql = QueryBuilderService.render_sql(report_sql, params, payload.engine)
+
             columns, rows = QueryBuilderService.pivot_report_rows(payload, aggregate_rows)
-            executed_sql = QueryBuilderService.render_sql(report_sql, params, payload.engine)
+
+            if (
+                payload.engine == "oracle"
+                and payload.marcadose_union
+                and payload.marcadose_union.add_grand_total
+            ):
+                rows = MarcadoseUnionService.append_grand_total(columns, rows)
+
             return QueryResult(
                 columns=columns,
                 rows=rows,
@@ -102,10 +138,24 @@ async def execute_query(
 
         data_sql, params = QueryBuilderService.build_sql(payload)
         count_sql, count_params = QueryBuilderService.build_count_sql(payload)
-        columns, rows, _ = service.execute(data_sql, params)
-        _, count_rows, _ = service.execute(count_sql, count_params)
+
+        if payload.engine == "oracle":
+            executed_sql = MarcadoseUnionService.apply(
+                QueryBuilderService.render_sql(data_sql, params, payload.engine),
+                payload.marcadose_union,
+            )
+            executed_count_sql = MarcadoseUnionService.build_total_count_sql(
+                QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
+                payload.marcadose_union,
+            )
+            columns, rows, _ = service.execute(executed_sql)
+            _, count_rows, _ = service.execute(executed_count_sql)
+        else:
+            columns, rows, _ = service.execute(data_sql, params)
+            _, count_rows, _ = service.execute(count_sql, count_params)
+            executed_sql = QueryBuilderService.render_sql(data_sql, params, payload.engine)
+
         total = count_rows[0][0] if count_rows else 0
-        executed_sql = QueryBuilderService.render_sql(data_sql, params, payload.engine)
 
         return QueryResult(
             columns=columns,

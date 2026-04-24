@@ -4,14 +4,6 @@ from backend.models.connection import ConnectionRequest, ConnectionResponse
 from backend.models.schema import TableMetadata, ColumnDetail, MasterTable
 from backend.models.query import QueryPayload, QueryResult, FilterCondition
 from backend.models.importer import CSVMappingPayload, ImportResult
-
-from backend.models.ftp_download import (
-    FTPDownloadProfile,
-    FTPDownloadRequest,
-    FTPDownloadResponse,
-    FTPProfileResult,
-)
-
 from backend.models.merge import (
     ConflictResolutionMap,
     ColumnResolution,
@@ -20,6 +12,13 @@ from backend.models.merge import (
     EnrichmentResponse,
     MergeSheetsResponse,
     UploadSheetsResponse,
+)
+from backend.models.ftp_download import (
+    FTPDownloadProfile,
+    FTPDownloadRequest,
+    FTPDownloadStartResponse,
+    FTPDownloadStatusResponse,
+    FTPProfileResult,
 )
 
 __all__ = [
@@ -33,10 +32,6 @@ __all__ = [
     "FilterCondition",
     "CSVMappingPayload",
     "ImportResult",
-    "FTPDownloadProfile",
-    "FTPDownloadRequest",
-    "FTPDownloadResponse",
-    "FTPProfileResult",
     "ConflictResolutionMap",
     "ColumnResolution",
     "DetectedColumn",
@@ -44,4 +39,9 @@ __all__ = [
     "EnrichmentResponse",
     "MergeSheetsResponse",
     "UploadSheetsResponse",
+    "FTPDownloadProfile",
+    "FTPDownloadRequest",
+    "FTPDownloadStartResponse",
+    "FTPDownloadStatusResponse",
+    "FTPProfileResult",
 ]

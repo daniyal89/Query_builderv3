@@ -7,14 +7,20 @@ interface LocalFileObjectCreatorProps {
   onCreated: () => Promise<unknown> | unknown;
 }
 
+function cleanPath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function inferObjectName(filePath: string): string {
   const fileName = filePath.split(/[\\/]/).pop() || "";
   const withoutExtension = fileName.replace(/\.[^.]+$/, "");
   const normalized = withoutExtension.replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_");
   const trimmed = normalized.replace(/^_+|_+$/g, "");
-  if (!trimmed) {
-    return "";
-  }
+  if (!trimmed) return "";
   return /^[A-Za-z_]/.test(trimmed) ? trimmed : `file_${trimmed}`;
 }
 
@@ -49,7 +55,7 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
 
     try {
       const response = await createLocalFileObject({
-        file_path: filePath,
+        file_path: cleanPath(filePath),
         object_name: objectName,
         object_type: objectType,
         replace,
@@ -80,7 +86,7 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
           <input
             type="text"
             value={filePath}
-            onChange={(event) => setFilePath(event.target.value)}
+            onChange={(event) => setFilePath(cleanPath(event.target.value))}
             className="w-full rounded border border-gray-300 bg-white px-2 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
             placeholder="C:\\data\\source.xlsx or C:\\data\\source.csv"
           />
@@ -89,8 +95,9 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
             onClick={async () => {
               const path = await pickSystemFile("data");
               if (path) {
-                setFilePath(path);
-                if (!objectNameTouched) setObjectName(inferObjectName(path));
+                const clean = cleanPath(path);
+                setFilePath(clean);
+                if (!objectNameTouched) setObjectName(inferObjectName(clean));
               }
             }}
             className="rounded border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-50 whitespace-nowrap"
@@ -170,11 +177,7 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
       )}
 
       {error && <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
-      {message && (
-        <div className="mb-3 rounded border border-emerald-200 bg-white px-3 py-2 text-xs text-emerald-700">
-          {message}
-        </div>
-      )}
+      {message && <div className="mb-3 rounded border border-emerald-200 bg-white px-3 py-2 text-xs text-emerald-700">{message}</div>}
 
       <button
         type="button"

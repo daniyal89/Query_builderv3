@@ -1,19 +1,23 @@
 from fastapi import APIRouter, HTTPException
 
-from backend.models.ftp_download import FTPDownloadRequest, FTPDownloadResponse
+from backend.models.ftp_download import (
+    FTPDownloadRequest,
+    FTPDownloadStartResponse,
+    FTPDownloadStatusResponse,
+)
 from backend.services.ftp_download_service import FTPDownloadService
 
 router = APIRouter()
 
 
 @router.post(
-    "/ftp-download",
-    response_model=FTPDownloadResponse,
-    summary="Download files from one or more FTP folders",
+    "/ftp-download/start",
+    response_model=FTPDownloadStartResponse,
+    summary="Start a background FTP download job",
 )
-def ftp_download(payload: FTPDownloadRequest) -> FTPDownloadResponse:
+def start_ftp_download(payload: FTPDownloadRequest) -> FTPDownloadStartResponse:
     try:
-        result = FTPDownloadService.download_files(
+        result = FTPDownloadService.start_download(
             host=payload.host,
             port=payload.port,
             output_root=payload.output_root,
@@ -26,8 +30,32 @@ def ftp_download(payload: FTPDownloadRequest) -> FTPDownloadResponse:
             skip_existing=payload.skip_existing,
             profiles=payload.profiles,
         )
-        return FTPDownloadResponse(**result)
+        return FTPDownloadStartResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc
+
+
+@router.get(
+    "/ftp-download/status/{job_id}",
+    response_model=FTPDownloadStatusResponse,
+    summary="Get current status for an FTP download job",
+)
+def get_ftp_download_status(job_id: str) -> FTPDownloadStatusResponse:
+    result = FTPDownloadService.get_job_status(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="FTP download job not found.")
+    return FTPDownloadStatusResponse(**result)
+
+
+@router.post(
+    "/ftp-download/stop/{job_id}",
+    response_model=FTPDownloadStatusResponse,
+    summary="Request stop for a running FTP download job",
+)
+def stop_ftp_download(job_id: str) -> FTPDownloadStatusResponse:
+    result = FTPDownloadService.stop_download(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="FTP download job not found.")
+    return FTPDownloadStatusResponse(**result)

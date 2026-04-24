@@ -444,3 +444,420 @@ The Query Builder operates in two strictly isolated modes:
 * **Result Export:** Export query results to common formats such as CSV / XLSX / JSON.
 * **Reusable Query Sources:** Allow starting a new query from a saved query, model, metric, or local view to avoid rebuilding common logic.
 * **Shareability:** Optional saved-query links / permalink-style sharing may be useful later if multiple users will use the tool.
+
+
+### 8. Merge & Enrich restoration in Query_builderv3
+The current v3 regression where `/import` showed the Folder Merge UI was corrected.
+
+#### Correct route split
+- `/import` = Merge & Enrich wizard
+- `/folder-merge` = Folder Merge
+- `/ftp-download` = FTP Download
+
+#### Merge & Enrich behavior retained
+- upload one or more CSV or Excel files
+- detect uploaded columns via `upload-sheets`
+- map uploaded `ACCT_ID` plus one secondary key (`DISCOM` or `DIV_CODE`)
+- choose master table columns to fetch
+- run LEFT JOIN enrichment and download the exported file
+- preserve every uploaded row even when no match is found
+
+#### Frontend files changed
+- `frontend/src/App.tsx`
+- `frontend/src/components/layout/Sidebar.tsx`
+- `frontend/src/components/layout/Header.tsx`
+- `frontend/src/pages/MergeEnrichPage.tsx`
+- `frontend/src/pages/FolderMergePage.tsx`
+
+#### Note
+Backend merge and enrich endpoints already existed in v3. The regression was in route-to-page wiring, not in the main merge backend.
+
+---
+
+## 18. Latest Update — FTP and Google Drive Sidebar Expansion
+
+### 18.1 Scope of this update
+This update documents all changes added after the base Query Builder v3 handover. The app is no longer only a DuckDB query dashboard. It now also acts as a local UPPCL operations shell for FTP download, Google Drive upload, and Google Drive download workflows.
+
+The latest sidebar routes are:
+
+| Sidebar label | Route | Main frontend page |
+|---|---|---|
+| Dashboard | `/` | `HomePage.tsx` |
+| Query Builder (Local) | `/query/local` | `QueryBuilderPage.tsx` |
+| Query Builder (Marcadose) | `/query/marcadose` | `MarcadoseQueryBuilderPage.tsx` |
+| Merge & Enrich | `/import` | `MergeEnrichPage.tsx` |
+| Folder Merge | `/folder-merge` | `FolderMergePage.tsx` |
+| FTP Download | `/ftp-download` | `FtpDownloadPage.tsx` |
+| Upload master in Drive | `/drive-upload-master` | `UploadMasterDrivePage.tsx` |
+| Drive Download | `/drive-download` | `DriveDownloadPage.tsx` |
+
+### 18.2 Structural changes
+
+#### Backend files added or materially changed
+
+| File | Purpose |
+|---|---|
+| `backend/api/endpoints/ftp_download.py` | API endpoints for starting, polling, and stopping FTP download jobs. |
+| `backend/models/ftp_download.py` | Pydantic request/response models for FTP profiles, job start response, job status, and per-profile results. |
+| `backend/services/ftp_download_service.py` | Core FTP download engine: connects to each DISCOM FTP account, scans remote folders, downloads `.gz` files, skips existing local files by size, retries failures, tracks progress, and supports cancellation. |
+| `backend/api/endpoints/google_drive.py` | API endpoints for Google auth status/login plus Drive upload/download start, status, and stop. |
+| `backend/models/google_drive.py` | Pydantic models for Drive auth config, upload/download requests, job status, and auth status. |
+| `backend/services/google_drive_service.py` | Core Google Drive service: OAuth login, optional service-account mode, public-link download attempt, recursive folder download, recursive folder upload, Google Docs/Sheets/Slides export, skip-existing logic, and cancellation support. |
+| `backend/api/router.py` | Now includes `ftp_download.router` and `google_drive.router`. |
+| `requirements.txt` | Added Google API dependencies: `google-api-python-client`, `google-auth`, and `google-auth-oauthlib`. |
+
+#### Frontend files added or materially changed
+
+| File | Purpose |
+|---|---|
+| `frontend/src/pages/FtpDownloadPage.tsx` | Full FTP Download page including DISCOM profiles, date/month helper, progress/status cards, stop button, and editable remote/local profile fields. |
+| `frontend/src/pages/UploadMasterDrivePage.tsx` | Google Drive upload page for uploading a local MASTER folder tree into a Drive parent folder. |
+| `frontend/src/pages/DriveDownloadPage.tsx` | Google Drive file/folder download page with public-first auto mode, optional advanced service-account mode, progress/status, and stop button. |
+| `frontend/src/api/ftpApi.ts` | Client wrappers for `/api/ftp-download/start`, `/api/ftp-download/status/{job_id}`, and `/api/ftp-download/stop/{job_id}`. |
+| `frontend/src/api/driveApi.ts` | Client wrappers for Drive auth, upload/download start, status polling, and stop APIs. |
+| `frontend/src/types/ftp.types.ts` | TypeScript interfaces matching FTP Pydantic models. |
+| `frontend/src/types/drive.types.ts` | TypeScript interfaces matching Drive Pydantic models. |
+| `frontend/src/App.tsx` | Added routes for FTP Download, Upload master in Drive, and Drive Download. |
+| `frontend/src/components/layout/Sidebar.tsx` | Added sidebar links for the three operations pages. |
+
+#### Config and notes files added
+
+| File | Purpose |
+|---|---|
+| `config/README_google_oauth.txt` | Explains how to place the OAuth Desktop client JSON for Google login. |
+| `DRIVE_AUTH_UPDATE_NOTES.md` | Documents the OAuth/public-first auth update. |
+| `STOP_AND_SKIP_UPDATE_NOTES.md` | Documents stop/cancel and skip-existing behavior. |
+| `FTP_PERIOD_HELPER_UPDATE_NOTES.md` | Documents the FTP Master/Billed date/month helper. |
+
+### 18.3 FTP Download feature
+
+#### Purpose
+The FTP Download page replaces manual FTP scripts for downloading UPPCL `.gz` files from DISCOM FTP folders into a local folder tree.
+
+#### Supported DISCOM profile pattern
+The UI is designed around these DISCOM profiles:
+
+- `MVVNL`
+- `DVVNL`
+- `PVVNL`
+- `PuVNL`
+- `KESCO`
+
+Each profile contains FTP username, password, remote folder, and local subfolder. Users can edit remote and local paths directly in the UI.
+
+#### Date and month helper
+A helper card was added below the FTP Download header to reduce confusion around `{MONTH}` and `{DATE}` placeholders.
+
+The helper supports two presets:
+
+1. **Master data**
+   - User selects a month from a month picker.
+   - Remote folder is filled as `/01-MASTER_DATA/{MONTH}/`.
+   - Local subfolder is filled as `{MONTH}/{PROFILE}`.
+   - Output root defaults to `G:\MASTER` when the field is blank or still on a default root.
+
+2. **Billed data**
+   - User selects a date from a calendar input.
+   - User can also see/edit the billed local month folder because billed output paths use both month and date.
+   - Remote folder is filled as `/03_CSV_BILLED/{DATE}/`.
+   - Local subfolder is filled as `{MONTH}/{DATE}/{PROFILE}`.
+   - Output root defaults to `G:\BILLED` when the field is blank or still on a default root.
+
+Examples:
+
+```text
+Master March 2026
+Remote folder: /01-MASTER_DATA/MAR_2026/
+Local subfolder for MVVNL: MAR_2026/MVVNL
+
+Billed 24-Apr-2026
+Remote folder: /03_CSV_BILLED/24042026/
+Local subfolder for MVVNL: MAR_2026/24042026/MVVNL
+```
+
+The helper only fills defaults. The user can still manually edit every profile's remote folder and local subfolder before starting the job.
+
+#### FTP skip-existing behavior
+`skip_existing` is enabled by default. The backend skips a file when:
+
+- the local file already exists, and
+- the local file size matches the FTP file size.
+
+This avoids re-downloading files already downloaded in a previous run.
+
+#### FTP stop behavior
+The FTP page includes **Stop download**. The stop endpoint sets the job state to `cancelling`; active file transfer may need to complete or hit timeout before the final state becomes `cancelled`.
+
+#### FTP backend endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/ftp-download/start` | Start FTP background job. |
+| `GET` | `/api/ftp-download/status/{job_id}` | Poll job status. |
+| `POST` | `/api/ftp-download/stop/{job_id}` | Request cancellation. |
+
+### 18.4 Google Drive authentication model
+
+#### Normal user flow
+Normal users should not browse for OAuth JSON. They should only:
+
+1. Paste a Drive file/folder link or ID.
+2. Choose a local download folder, or choose a local folder to upload.
+3. Click Sign in with Google only when private Drive access is required.
+
+#### Developer/admin OAuth requirement
+The app still needs one Google OAuth Desktop client JSON as the app identity. This file is provided once by the developer/admin, not by each normal user.
+
+Default expected path:
+
+```text
+config/google_oauth_client.json
+```
+
+Environment override:
+
+```text
+QUERY_BUILDER_GOOGLE_OAUTH_CLIENT_JSON=C:\path\to\client_secret.json
+```
+
+The OAuth JSON must be a Desktop OAuth client file with an `installed` object. It is not a service-account JSON file.
+
+#### Token cache
+After the first successful Google login, the app writes a local token cache:
+
+```text
+config/google_drive_token.json
+```
+
+This token cache is local to the app/user environment and should not be committed or shared.
+
+#### Optional service-account mode
+Service-account JSON remains available under **Advanced authentication**. Use it only for admin/automation workflows.
+
+Rules for service-account mode:
+
+- User must provide the service-account JSON path in the advanced section.
+- The target/source Drive folder must be shared with the service account's `client_email`.
+- A service account is not the same as a normal Google login and does not represent the end user's Google account unless Workspace domain-wide delegation is separately configured outside this app.
+
+### 18.5 Upload master in Drive feature
+
+#### Purpose
+The Upload master in Drive page uploads a local MASTER folder tree to Google Drive.
+
+Typical local folder:
+
+```text
+G:\MASTER\MAR_2026
+```
+
+Typical root Drive folder name:
+
+```text
+MASTER_DATA_2026_03
+```
+
+The user provides:
+
+- local MASTER folder path,
+- Drive parent folder ID,
+- optional root Drive folder name,
+- parallel worker count,
+- skip-existing setting.
+
+#### Upload skip-existing behavior
+When **Skip files that already exist in Drive folder by name** is checked, the service lists files already in each target Drive folder and skips a local file if a file with the same name already exists there.
+
+#### Upload stop behavior
+The page includes **Stop upload**. Stop sets the job to `cancelling`; active upload chunks may need to finish or timeout before the job becomes `cancelled`.
+
+### 18.6 Drive Download feature
+
+#### Purpose
+The Drive Download page downloads a Google Drive file or folder from a full link or raw Drive ID into a local folder.
+
+The user provides:
+
+- Drive file/folder link or ID,
+- local download folder,
+- whether to export Google Docs/Sheets/Slides,
+- whether to overwrite existing local files.
+
+#### Link handling
+The app accepts full links such as:
+
+```text
+https://drive.google.com/file/d/FILE_ID/view?usp=drive_link
+https://drive.google.com/drive/folders/FOLDER_ID
+```
+
+It extracts the internal Drive ID automatically.
+
+#### Auto/public-first mode
+Default mode is **Auto: public first, then Google login**.
+
+Behavior:
+
+1. For public file links, the backend first tries direct public download without Google login.
+2. If the public attempt fails, or if folder listing/API metadata is needed, the backend falls back to OAuth Google login.
+3. For private files/folders, user login is required unless service-account mode is selected and has permission.
+
+Important constraint: public folder listing needs Google Drive API access, so public folder links usually still require OAuth/API login for recursive download.
+
+#### Google Docs/Sheets/Slides export
+Google-native files cannot be downloaded as raw binary files. When export is enabled:
+
+| Google file type | Export format |
+|---|---|
+| Google Docs | `.docx` |
+| Google Sheets | `.xlsx` |
+| Google Slides | `.pptx` |
+| Google Drawings | `.png` |
+| Unknown Google app type | `.pdf` fallback |
+
+#### Drive download skip-existing behavior
+When **Overwrite existing local files** is unchecked, existing local files are skipped. This prevents re-downloading files already downloaded in a previous run.
+
+#### Drive download stop behavior
+The page includes **Stop download**. Stop sets the job to `cancelling`; current download/export chunk may need to finish or timeout before cancellation is visible.
+
+#### Drive backend endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/drive/auth/status` | Show OAuth configuration and token status. |
+| `POST` | `/api/drive/auth/login` | Start Google OAuth login and save token cache. |
+| `POST` | `/api/drive/upload/start` | Start Drive upload background job. |
+| `POST` | `/api/drive/download/start` | Start Drive download background job. |
+| `GET` | `/api/drive/status/{job_id}` | Poll Drive job status. |
+| `POST` | `/api/drive/stop/{job_id}` | Request upload/download cancellation. |
+
+### 18.7 Job status model
+
+FTP and Drive jobs are asynchronous background jobs. Frontend pages start a job and poll status until it reaches a terminal state.
+
+Current status values:
+
+```text
+queued
+running
+cancelling
+completed
+failed
+cancelled
+```
+
+Do not assume Stop is instant. Current file operations may need to finish or timeout.
+
+### 18.8 Build and run notes after these changes
+
+#### Python dependencies
+From project root:
+
+```powershell
+pip install -r requirements.txt
+```
+
+#### Frontend build
+From project root:
+
+```powershell
+cd frontend
+npm install
+npm run build
+cd ..
+python main.py
+```
+
+#### NPM/Vite compatibility note
+The working frontend package uses `@vitejs/plugin-react@^4.3.0` and `vite@^5.4.0`. Do not use Vite 8 with `@vitejs/plugin-react@4.x`; npm will raise a peer dependency conflict.
+
+If dependency resolution fails after old lockfiles, delete `frontend/node_modules` and `frontend/package-lock.json`, then install again.
+
+PowerShell-safe cleanup:
+
+```powershell
+cd D:\PROJECTS\Query_builderv3
+if (Test-Path .\frontend\node_modules) { Remove-Item -Recurse -Force .\frontend\node_modules }
+if (Test-Path .\frontend\package-lock.json) { Remove-Item -Force .\frontend\package-lock.json }
+cd .\frontend
+npm install
+npm run build
+```
+
+#### Browser cache
+After rebuilding frontend, restart `python main.py` and press `Ctrl+F5` in the browser.
+
+#### EXE build
+Only rebuild EXE after `python main.py` works:
+
+```powershell
+pyinstaller query_builder.spec --clean
+```
+
+For packaged EXE, keep the `config` folder beside the executable when OAuth login is required:
+
+```text
+dist\query_builder.exe
+dist\config\google_oauth_client.json
+```
+
+### 18.9 Important operational rules
+
+- The Drive OAuth JSON is developer/admin-provided app configuration, not a user-uploaded credential.
+- The service-account JSON is optional advanced auth and must not be confused with OAuth Desktop client JSON.
+- Never commit real `google_oauth_client.json`, `google_drive_token.json`, or `service_account.json` to source control.
+- Public Drive files can often download without login; public folders and private items generally need Drive API access.
+- FTP skip logic is size-based; Drive upload skip logic is name-based inside each Drive folder; Drive download skip logic is local-file-existence-based when overwrite is off.
+- Remote FTP folder and local subfolder values generated by the helper are defaults only; manual edits by the user must remain supported.
+- Stop/cancel APIs are cooperative and should be treated as graceful cancellation, not force-kill.
+
+## Update: Marcadose Monthly Master Table Auto UNION Feature
+
+### Feature Summary
+
+The existing Marcadose Query Builder has been enhanced to support automatic monthly master table selection and optional `UNION ALL` query generation across selected DISCOMs.
+
+No new sidebar item or new page was added. The feature is integrated into the existing Marcadose Query Builder screen.
+
+### Supported Modes
+
+The feature works with both existing Marcadose options:
+
+1. Fetch List
+2. Generate Report
+
+### New UI Controls Added
+
+Inside the existing Marcadose Query Builder page, the following controls are available:
+
+- Month selector
+- DISCOM selector
+- Apply UNION ALL toggle
+- Selected master table preview
+- Insert List Template button
+- Insert Report Template button
+- Insert Table Placeholder button
+- Add Grand Total row option for Generate Report mode
+
+### Supported DISCOMs
+
+The allowed DISCOM values are:
+
+- DVVNL
+- PVVNL
+- PUVNL
+- MVVNL
+- KESCO
+
+These values are whitelisted in the backend for safety.
+
+### Monthly Master Table Format
+
+The selected month and DISCOM are used to generate Marcadose master table names in this format:
+
+```sql
+MERCADOS.CM_master_data_<month_tag>_<DISCOM>
+
+backend/services/marcadose_union_service.py

@@ -1,5 +1,5 @@
 """
-query.py â€” Pydantic schemas for the visual query builder.
+query.py — Pydantic schemas for the visual query builder.
 
 Defines the structured query payload sent from the frontend and the
 tabular result set returned by the backend after SQL execution.
@@ -8,6 +8,7 @@ tabular result set returned by the backend after SQL execution.
 from __future__ import annotations
 
 from typing import Any, Literal
+import re
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -102,6 +103,51 @@ class PivotConfig(BaseModel):
     func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX"] = Field(..., description="Function for aggregation.")
 
 
+class MarcadoseUnionConfig(BaseModel):
+    """Monthly Marcadose master-table replacement and UNION ALL configuration."""
+
+    enabled: bool = Field(default=False, description="Whether to expand the query across selected DISCOM tables.")
+    month_tag: str = Field(default="", description="Monthly tag used in CM_master_data_<month>_<discom>.")
+    discoms: list[str] = Field(default_factory=list, description="Selected DISCOM codes.")
+    base_discom: str = Field(default="DVVNL", description="Single/base DISCOM used when union mode is off.")
+    add_grand_total: bool = Field(default=False, description="Append a grand total row for Generate Report outputs.")
+    schema_name: str = Field(default="MERCADOS", description="Oracle schema that owns monthly master tables.")
+
+    @model_validator(mode="after")
+    def validate_union_config(self) -> "MarcadoseUnionConfig":
+        allowed = {"DVVNL", "PVVNL", "PUVNL", "MVVNL", "KESCO"}
+
+        self.month_tag = self.month_tag.strip().lower()
+        if self.month_tag and not re.fullmatch(r"[a-z]{3}_\d{4}", self.month_tag):
+            raise ValueError("Marcadose month must use format like mar_2026.")
+
+        self.schema_name = (self.schema_name or "MERCADOS").strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", self.schema_name):
+            raise ValueError("Invalid Marcadose schema name.")
+
+        normalized_discoms = []
+        for discom in self.discoms:
+            normalized = discom.strip().upper()
+            if normalized not in allowed:
+                raise ValueError(f"Unsupported DISCOM '{discom}'.")
+            if normalized not in normalized_discoms:
+                normalized_discoms.append(normalized)
+
+        self.base_discom = (self.base_discom or "").strip().upper()
+        if self.base_discom and self.base_discom not in allowed:
+            raise ValueError(f"Unsupported base DISCOM '{self.base_discom}'.")
+
+        if not normalized_discoms and self.base_discom:
+            normalized_discoms = [self.base_discom]
+        if normalized_discoms and self.base_discom not in normalized_discoms:
+            self.base_discom = normalized_discoms[0]
+        if not self.base_discom and normalized_discoms:
+            self.base_discom = normalized_discoms[0]
+
+        self.discoms = normalized_discoms
+        return self
+
+
 class QueryPayload(BaseModel):
     """Structured query definition sent from the frontend query builder."""
 
@@ -128,6 +174,10 @@ class QueryPayload(BaseModel):
     group_by: list[str] = Field(default_factory=list, description="Columns to GROUP BY.")
     aggregates: list[AggregateRule] = Field(default_factory=list, description="List of aggregations to apply.")
     sql: str | None = Field(default=None, description="Raw SQL text for direct SQL execution.")
+    marcadose_union: MarcadoseUnionConfig | None = Field(
+        default=None,
+        description="Optional Marcadose monthly master table and UNION ALL controls.",
+    )
 
     @model_validator(mode="after")
     def validate_execution_mode(self) -> "QueryPayload":

@@ -6,6 +6,7 @@ Thread safety is handled via a threading.Lock since DuckDB connections
 are not safe to share across threads.
 """
 
+import os
 import re
 import threading
 from pathlib import Path
@@ -22,66 +23,46 @@ SUPPORTED_SOURCE_EXTENSIONS = {".csv", ".tsv", ".xlsx"}
 
 
 class DuckDBService:
-    """Singleton service managing a single DuckDB connection.
-
-    Attributes:
-        _conn: The active duckdb.DuckDBPyConnection or None.
-        _db_path: Path to the currently connected .duckdb file.
-        _lock: Threading lock guarding all connection operations.
-    """
+    """Singleton service managing a single DuckDB connection."""
 
     _conn: Optional[duckdb.DuckDBPyConnection]
     _db_path: Optional[Path]
     _lock: threading.Lock
 
     def __init__(self) -> None:
-        """Initialize the service with no active connection."""
         self._conn = None
         self._db_path = None
         self._lock = threading.Lock()
 
     @property
     def is_connected(self) -> bool:
-        """Return True if a DuckDB connection is currently open."""
         return self._conn is not None
 
+    def _normalize_user_path(self, raw_path: str) -> Path:
+        value = (raw_path or "").strip()
+        if not value:
+            raise ValueError("Path cannot be empty.")
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1].strip()
+        value = os.path.expandvars(os.path.expanduser(value))
+        return Path(value)
+
     def connect(self, db_path: str) -> int:
-        """Open a connection to the specified DuckDB file.
-
-        If a connection is already active, it is closed first before
-        opening the new one.
-
-        Args:
-            db_path: Absolute filesystem path to the .duckdb file.
-                     If the file does not exist, DuckDB will create it.
-
-        Returns:
-            Number of user tables found in the database.
-
-        Raises:
-            FileNotFoundError: If the parent directory does not exist.
-            ValueError: If the path is empty or not a valid string.
-            RuntimeError: If DuckDB fails to open the file.
-        """
         if not db_path or not db_path.strip():
             raise ValueError("Database path cannot be empty.")
 
-        resolved = Path(db_path).resolve()
+        path_obj = self._normalize_user_path(db_path)
+        resolved = path_obj.resolve() if path_obj.is_absolute() else (Path.cwd() / path_obj).resolve()
 
-        # Ensure the parent directory exists (DuckDB can create the file,
-        # but the directory must already be there)
         if not resolved.parent.exists():
-            raise FileNotFoundError(
-                f"Parent directory does not exist: {resolved.parent}"
-            )
+            raise FileNotFoundError(f"Parent directory does not exist: {resolved.parent}")
 
         with self._lock:
-            # Close any existing connection first
             if self._conn is not None:
                 try:
                     self._conn.close()
                 except Exception:
-                    pass  # Swallow errors on stale connections
+                    pass
 
             try:
                 self._conn = duckdb.connect(str(resolved), read_only=False)
@@ -91,12 +72,10 @@ class DuckDBService:
                 self._db_path = None
                 raise RuntimeError(f"Failed to open DuckDB database: {exc}") from exc
 
-            # Return the number of user tables/views
             tables = self._fetch_table_entries_unlocked()
             return len(tables)
 
     def disconnect(self) -> None:
-        """Close the active DuckDB connection and reset state."""
         with self._lock:
             if self._conn is not None:
                 try:
@@ -107,17 +86,6 @@ class DuckDBService:
                 self._db_path = None
 
     def list_tables(self) -> list[TableMetadata]:
-        """Return metadata for all user-defined tables in the database.
-
-        Queries DuckDB's information_schema for table names, then for each
-        table fetches its columns and an approximate row count.
-
-        Returns:
-            List of TableMetadata with name, columns, and row_count.
-
-        Raises:
-            RuntimeError: If no connection is active.
-        """
         self._ensure_connected()
 
         with self._lock:
@@ -127,78 +95,39 @@ class DuckDBService:
             for name, table_type in table_entries:
                 columns = self._fetch_columns_unlocked(name)
                 row_count = self._fetch_row_count_unlocked(name) if table_type == "BASE TABLE" else 0
-                result.append(
-                    TableMetadata(
-                        table_name=name,
-                        columns=columns,
-                        row_count=row_count,
-                    )
-                )
+                result.append(TableMetadata(table_name=name, columns=columns, row_count=row_count))
 
             return result
 
     def get_columns(self, table_name: str) -> list[ColumnDetail]:
-        """Return column details for a specific table.
-
-        Args:
-            table_name: Name of the table to introspect.
-
-        Returns:
-            Ordered list of ColumnDetail objects.
-
-        Raises:
-            RuntimeError: If no connection is active.
-            ValueError: If the table does not exist.
-        """
         self._ensure_connected()
 
         with self._lock:
-            # Verify the table exists
             existing = self._fetch_table_names()
             if table_name not in existing:
                 raise ValueError(f"Table '{table_name}' does not exist.")
             return self._fetch_columns_unlocked(table_name)
 
-    def execute(
-        self, sql: str, params: Optional[list[Any]] = None
-    ) -> tuple[list[str], list[list[Any]], int]:
-        """Execute a SQL statement and return the result set.
-
-        Args:
-            sql: The SQL query string (may include ? placeholders).
-            params: Optional list of parameter values for placeholders.
-
-        Returns:
-            Tuple of (column_names, rows, total_count).
-
-        Raises:
-            RuntimeError: If no connection is active.
-            duckdb.Error: If the SQL is invalid.
-        """
+    def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
 
         with self._lock:
-            assert self._conn is not None  # guarded by _ensure_connected
-
-            if params:
-                result = self._conn.execute(sql, params)
-            else:
-                result = self._conn.execute(sql)
-
+            assert self._conn is not None
+            result = self._conn.execute(sql, params) if params else self._conn.execute(sql)
             columns = [desc[0] for desc in result.description] if result.description else []
             rows = result.fetchall()
-
             return columns, [list(row) for row in rows], len(rows)
 
     def create_object_from_file(self, payload: FileObjectRequest) -> TableMetadata:
-        """Create a local DuckDB table or view from a CSV/TSV/XLSX file."""
-
         self._ensure_connected()
         object_name = payload.object_name.strip()
         if not VALID_OBJECT_NAME.fullmatch(object_name):
-            raise ValueError("Object name must start with a letter/underscore and contain only letters, numbers, and underscores.")
+            raise ValueError(
+                "Object name must start with a letter/underscore and contain only letters, numbers, and underscores."
+            )
 
-        source_path = Path(payload.file_path).expanduser().resolve()
+        path_obj = self._normalize_user_path(payload.file_path)
+        source_path = path_obj.resolve() if path_obj.is_absolute() else (Path.cwd() / path_obj).resolve()
         if not source_path.exists() or not source_path.is_file():
             raise ValueError(f"Source file does not exist: {source_path}")
 
@@ -230,10 +159,7 @@ class DuckDBService:
             row_count = self._fetch_row_count_unlocked(object_name) if object_type == "TABLE" else 0
             return TableMetadata(table_name=object_name, columns=columns, row_count=row_count)
 
-    # ──────────────────────────── Private helpers ────────────────────────────
-
     def _ensure_connected(self) -> None:
-        """Raise RuntimeError if no database is connected."""
         if self._conn is None:
             raise RuntimeError("No database connected. Call connect() first.")
 
@@ -244,10 +170,6 @@ class DuckDBService:
         return f"'{value.replace(chr(39), chr(39) * 2)}'"
 
     def _fetch_table_entries_unlocked(self) -> list[tuple[str, str]]:
-        """Return user table/view names and types from the current connection.
-
-        Must be called while holding self._lock.
-        """
         assert self._conn is not None
         result = self._conn.execute(
             "SELECT table_name, table_type FROM information_schema.tables "
@@ -257,8 +179,6 @@ class DuckDBService:
         return [(row[0], row[1]) for row in result.fetchall()]
 
     def _fetch_table_names(self) -> list[str]:
-        """Return user table/view names from the current connection."""
-
         return [name for name, _ in self._fetch_table_entries_unlocked()]
 
     def _load_excel_extension_unlocked(self) -> None:
@@ -294,10 +214,6 @@ class DuckDBService:
         raise ValueError("Supported file types are .csv, .tsv, and .xlsx.")
 
     def _fetch_columns_unlocked(self, table_name: str) -> list[ColumnDetail]:
-        """Return column details for a table.
-
-        Must be called while holding self._lock.
-        """
         assert self._conn is not None
         result = self._conn.execute(
             "SELECT column_name, data_type, is_nullable "
@@ -306,27 +222,10 @@ class DuckDBService:
             "ORDER BY ordinal_position",
             [table_name],
         )
-        return [
-            ColumnDetail(
-                name=row[0],
-                dtype=row[1],
-                nullable=(row[2] == "YES"),
-            )
-            for row in result.fetchall()
-        ]
+        return [ColumnDetail(name=row[0], dtype=row[1], nullable=(row[2] == "YES")) for row in result.fetchall()]
 
     def _fetch_row_count_unlocked(self, table_name: str) -> int:
-        """Return the row count for a table.
-
-        Uses a direct COUNT(*) which is fast on DuckDB due to its
-        columnar storage zone-map optimizations.
-
-        Must be called while holding self._lock.
-        """
         assert self._conn is not None
-        # Use identifier quoting to prevent SQL injection on table names
-        result = self._conn.execute(
-            f"SELECT COUNT(*) FROM {self._quote_identifier(table_name)}"
-        )
+        result = self._conn.execute(f"SELECT COUNT(*) FROM {self._quote_identifier(table_name)}")
         count = result.fetchone()
         return count[0] if count else 0

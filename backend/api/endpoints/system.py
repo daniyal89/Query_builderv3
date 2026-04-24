@@ -13,6 +13,18 @@ class PickPathResponse(BaseModel):
     path: Optional[str] = None
 
 
+class PickFileRequest(BaseModel):
+    file_type: Optional[str] = None
+    file_types: Optional[str] = None
+
+
+class PickSavePathRequest(BaseModel):
+    default_file_name: Optional[str] = None
+    suggested_name: Optional[str] = None
+    extension: Optional[str] = None
+    default_extension: Optional[str] = None
+
+
 def _build_root() -> tk.Tk:
     root = tk.Tk()
     root.withdraw()
@@ -24,16 +36,18 @@ def _pick_file_dialog(file_types: Optional[str] = None) -> Optional[str]:
     root = _build_root()
 
     if file_types == "duckdb":
-        filetypes = [("DuckDB Files", "*.duckdb"), ("All Files", "*.*")]
+        dialog_types = [("DuckDB Files", "*.duckdb"), ("All Files", "*.*")]
     elif file_types == "data":
-        filetypes = [
+        dialog_types = [
             ("Data Files", "*.csv;*.tsv;*.xlsx;*.xls;*.xlsb;*.gz;*.zip"),
             ("All Files", "*.*"),
         ]
+    elif file_types == "json":
+        dialog_types = [("JSON Files", "*.json"), ("All Files", "*.*")]
     else:
-        filetypes = [("All Files", "*.*")]
+        dialog_types = [("All Files", "*.*")]
 
-    path = filedialog.askopenfilename(filetypes=filetypes)
+    path = filedialog.askopenfilename(filetypes=dialog_types)
     root.destroy()
     return path if path else None
 
@@ -45,10 +59,7 @@ def _pick_folder_dialog() -> Optional[str]:
     return path if path else None
 
 
-def _pick_save_path_dialog(
-    suggested_name: str = "merged_output.csv",
-    default_extension: str = ".csv",
-) -> Optional[str]:
+def _pick_save_path_dialog(suggested_name: str = "merged_output.csv", default_extension: str = ".csv") -> Optional[str]:
     root = _build_root()
     path = filedialog.asksaveasfilename(
         initialfile=suggested_name,
@@ -63,26 +74,52 @@ def _pick_save_path_dialog(
     return path if path else None
 
 
-@router.get("/system/pick-file", response_model=PickPathResponse, summary="Open a native file picker dialog")
-async def pick_file(file_types: Optional[str] = None) -> PickPathResponse:
+async def _run_pick_file(file_types: Optional[str] = None) -> PickPathResponse:
     path = await asyncio.to_thread(_pick_file_dialog, file_types)
     return PickPathResponse(path=path)
 
 
-@router.get("/system/pick-folder", response_model=PickPathResponse, summary="Open a native folder picker dialog")
-async def pick_folder() -> PickPathResponse:
+async def _run_pick_folder() -> PickPathResponse:
     path = await asyncio.to_thread(_pick_folder_dialog)
     return PickPathResponse(path=path)
 
 
+async def _run_pick_save_path(suggested_name: str, default_extension: str) -> PickPathResponse:
+    path = await asyncio.to_thread(_pick_save_path_dialog, suggested_name, default_extension)
+    return PickPathResponse(path=path)
+
+
+@router.get("/system/pick-file", response_model=PickPathResponse, summary="Open a native file picker dialog")
+async def pick_file_get(file_types: Optional[str] = None) -> PickPathResponse:
+    return await _run_pick_file(file_types)
+
+
+@router.post("/system/pick-file", response_model=PickPathResponse, summary="Open a native file picker dialog")
+async def pick_file_post(payload: PickFileRequest) -> PickPathResponse:
+    file_types = payload.file_types or payload.file_type
+    return await _run_pick_file(file_types)
+
+
+@router.get("/system/pick-folder", response_model=PickPathResponse, summary="Open a native folder picker dialog")
+async def pick_folder_get() -> PickPathResponse:
+    return await _run_pick_folder()
+
+
+@router.post("/system/pick-folder", response_model=PickPathResponse, summary="Open a native folder picker dialog")
+async def pick_folder_post() -> PickPathResponse:
+    return await _run_pick_folder()
+
+
 @router.get("/system/pick-save-path", response_model=PickPathResponse, summary="Open a native save dialog")
-async def pick_save_path(
+async def pick_save_path_get(
     suggested_name: str = "merged_output.csv",
     default_extension: str = ".csv",
 ) -> PickPathResponse:
-    path = await asyncio.to_thread(
-        _pick_save_path_dialog,
-        suggested_name,
-        default_extension,
-    )
-    return PickPathResponse(path=path)
+    return await _run_pick_save_path(suggested_name, default_extension)
+
+
+@router.post("/system/pick-save-path", response_model=PickPathResponse, summary="Open a native save dialog")
+async def pick_save_path_post(payload: PickSavePathRequest) -> PickPathResponse:
+    suggested_name = payload.default_file_name or payload.suggested_name or "merged_output.csv"
+    default_extension = payload.extension or payload.default_extension or ".csv"
+    return await _run_pick_save_path(suggested_name, default_extension)

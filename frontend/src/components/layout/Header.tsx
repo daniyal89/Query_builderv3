@@ -1,5 +1,5 @@
 /**
- * Header.tsx â€” Top application bar.
+ * Header.tsx — Top application bar.
  */
 
 import React from "react";
@@ -12,6 +12,7 @@ function getPageTitle(pathname: string, dbPath: string): string {
   if (pathname.startsWith("/query/local")) return "Query Builder (Local)";
   if (pathname.startsWith("/query/marcadose")) return "Query Builder (Marcadose)";
   if (pathname.startsWith("/import")) return "Merge & Enrich";
+  if (pathname.startsWith("/folder-merge")) return "Folder Merge";
   if (pathname.startsWith("/ftp-download")) return "FTP Download";
   return dbPath ? dbPath.split("\\").pop()?.split("/").pop() || "Data Dashboard" : "Data Dashboard";
 }

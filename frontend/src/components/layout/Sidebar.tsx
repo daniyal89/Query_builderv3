@@ -1,5 +1,5 @@
 /**
- * Sidebar.tsx â€” Primary navigation sidebar.
+ * Sidebar.tsx — Primary navigation sidebar.
  */
 
 import React from "react";
@@ -28,8 +28,17 @@ export const Sidebar: React.FC = () => {
         <NavLink to="/import" className={linkClassName}>
           Merge & Enrich
         </NavLink>
+        <NavLink to="/folder-merge" className={linkClassName}>
+          Folder Merge
+        </NavLink>
         <NavLink to="/ftp-download" className={linkClassName}>
           FTP Download
+        </NavLink>
+        <NavLink to="/drive-upload-master" className={linkClassName}>
+          Upload master in Drive
+        </NavLink>
+        <NavLink to="/drive-download" className={linkClassName}>
+          Drive Download
         </NavLink>
       </nav>
     </aside>

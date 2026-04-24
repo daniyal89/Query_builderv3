@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -42,12 +42,23 @@ class FTPProfileResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
-class FTPDownloadResponse(BaseModel):
-    host: str
-    output_root: str
-    total_profiles: int = Field(..., ge=0)
-    total_files_found: int = Field(..., ge=0)
-    total_downloaded_files: int = Field(..., ge=0)
-    total_skipped_files: int = Field(..., ge=0)
-    total_failed_files: int = Field(..., ge=0)
+class FTPDownloadStartResponse(BaseModel):
+    job_id: str
+    status: Literal["queued", "running", "cancelling", "completed", "failed", "cancelled"]
+
+
+class FTPDownloadStatusResponse(BaseModel):
+    job_id: str
+    status: Literal["queued", "running", "cancelling", "completed", "failed", "cancelled"]
+    host: str = ""
+    output_root: str = ""
+    current_profile: Optional[str] = None
+    total_profiles: int = Field(default=0, ge=0)
+    total_files_found: int = Field(default=0, ge=0)
+    total_downloaded_files: int = Field(default=0, ge=0)
+    total_skipped_files: int = Field(default=0, ge=0)
+    total_failed_files: int = Field(default=0, ge=0)
     profile_results: list[FTPProfileResult] = Field(default_factory=list)
+    error_message: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None

@@ -1,9 +1,5 @@
 /**
  * PathInput.tsx — DuckDB file path input with validation.
- *
- * Text input field + file-browse button for entering the absolute path
- * to a .duckdb file. Provides inline validation feedback (path format,
- * file extension check).
  */
 import React from "react";
 import { pickSystemFile } from "../../api/systemApi";
@@ -14,6 +10,14 @@ interface PathInputProps {
   onConnect: () => void;
   isConnecting: boolean;
   error: string | null;
+}
+
+function cleanPath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
 }
 
 export const PathInput: React.FC<PathInputProps> = ({
@@ -33,7 +37,7 @@ export const PathInput: React.FC<PathInputProps> = ({
             className="w-full border border-gray-300 rounded px-4 py-2 focus:outline-none focus:border-indigo-500 font-mono text-sm"
             placeholder="e.g. C:\data\database.duckdb"
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => onChange(cleanPath(e.target.value))}
             onKeyDown={(e) => e.key === "Enter" && onConnect()}
             disabled={isConnecting}
           />
@@ -41,7 +45,7 @@ export const PathInput: React.FC<PathInputProps> = ({
         <button
           onClick={async () => {
             const path = await pickSystemFile("duckdb");
-            if (path) onChange(path);
+            if (path) onChange(cleanPath(path));
           }}
           disabled={isConnecting}
           className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded disabled:opacity-50 transition-colors whitespace-nowrap"
