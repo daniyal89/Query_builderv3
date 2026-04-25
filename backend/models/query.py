@@ -167,7 +167,12 @@ class QueryPayload(BaseModel):
     )
     sort: list[SortClause] = Field(default_factory=list, description="List of ORDER BY clauses.")
     joins: list[JoinClause] = Field(default_factory=list, description="Ordered joins applied to the base table.")
-    limit_rows: int = Field(default=1000, description="Maximum rows to return. 0 means unlimited.", ge=0)
+    limit_rows: int = Field(
+        default=1000,
+        description="Maximum rows to return. 0 means unlimited.",
+        ge=0,
+        le=50000,
+    )
     offset: int = Field(default=0, description="Number of rows to skip for pagination.", ge=0)
     mode: Literal["LIST", "REPORT"] = Field(default="LIST", description="Operation mode of the query builder.")
     pivot: PivotConfig | None = Field(default=None, description="Pivot configuration used if mode is REPORT.")
