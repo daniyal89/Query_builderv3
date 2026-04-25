@@ -102,12 +102,8 @@ class OracleService:
 
     def get_columns(self, table_name: str) -> list[ColumnDetail]:
         self._ensure_connected()
-        normalized = table_name.strip().upper()
         with self._lock:
-            existing = {name.upper() for name in self._fetch_object_names_unlocked()}
-            if normalized not in existing:
-                raise ValueError(f"Table or view '{table_name}' does not exist in schema '{self._schema_name}'.")
-            return self._fetch_columns_unlocked(normalized)
+            return self._fetch_columns_unlocked(table_name)
 
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
