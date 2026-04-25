@@ -133,11 +133,7 @@ async def execute_query(
 
             columns, rows = QueryBuilderService.pivot_report_rows(payload, aggregate_rows)
 
-            if (
-                payload.engine == "oracle"
-                and payload.marcadose_union
-                and payload.marcadose_union.add_grand_total
-            ):
+            if payload.marcadose_union and payload.marcadose_union.add_grand_total:
                 rows = MarcadoseUnionService.append_grand_total(columns, rows)
 
             return QueryResult(

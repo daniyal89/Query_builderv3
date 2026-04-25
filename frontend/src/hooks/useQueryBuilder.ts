@@ -194,7 +194,7 @@ function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine): Que
     offset: state.offset,
     mode: state.mode,
     pivot: state.mode === "REPORT" ? state.pivotConfig : undefined,
-    marcadose_union: engine === "oracle" ? state.marcadoseUnion : undefined,
+    marcadose_union: state.marcadoseUnion,
   };
 }
 
@@ -605,7 +605,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
           limit_rows: state.limitRows,
           offset: state.offset,
           mode: state.mode,
-          marcadose_union: engine === "oracle" ? state.marcadoseUnion : undefined,
+          marcadose_union: state.marcadoseUnion,
           group_by: [],
           aggregates: [],
           sql: state.sqlText,

@@ -534,19 +534,6 @@ WHERE 1 = 1`;
                   append a grand total.
                 </p>
 
-                {state.mode === "REPORT" && (
-                  <label className="mt-3 flex items-center gap-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={marcadoseUnion.add_grand_total}
-                      onChange={(event) =>
-                        applyMarcadoseUnionUpdates({ add_grand_total: event.target.checked })
-                      }
-                    />
-                    Add Grand Total row
-                  </label>
-                )}
-
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -635,6 +622,18 @@ WHERE 1 = 1`;
                   config={state.pivotConfig}
                   onChange={setPivotConfig}
                 />
+                <div className="mb-4 rounded border border-gray-200 bg-white p-3 shadow-sm">
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={marcadoseUnion.add_grand_total}
+                      onChange={(event) =>
+                        applyMarcadoseUnionUpdates({ add_grand_total: event.target.checked })
+                      }
+                    />
+                    Add Grand Total row
+                  </label>
+                </div>
                 <FilterPanel
                   filters={state.filters}
                   columns={reportColumns}
