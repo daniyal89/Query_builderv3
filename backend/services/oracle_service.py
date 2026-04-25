@@ -113,15 +113,39 @@ class OracleService:
             assert self._conn is not None
             cursor = self._conn.cursor()
             try:
-                if params:
-                    cursor.execute(sql, params)
-                else:
-                    cursor.execute(sql)
+                try:
+                    if params:
+                        cursor.execute(sql, params)
+                    else:
+                        cursor.execute(sql)
+                except Exception as exc:
+                    if not self._is_invalid_character_error(exc):
+                        raise
+
+                    cleaned_sql = self._sanitize_sql_for_oracle(sql)
+                    if cleaned_sql == sql:
+                        raise
+
+                    if params:
+                        cursor.execute(cleaned_sql, params)
+                    else:
+                        cursor.execute(cleaned_sql)
                 columns = [desc[0] for desc in (cursor.description or [])]
                 rows = cursor.fetchall()
                 return columns, [list(row) for row in rows], len(rows)
             finally:
                 cursor.close()
+
+    @staticmethod
+    def _is_invalid_character_error(exc: Exception) -> bool:
+        return "ORA-00911" in str(exc).upper()
+
+    @staticmethod
+    def _sanitize_sql_for_oracle(sql: str) -> str:
+        sanitized = sql.replace("\u00A0", " ").replace("`", "").strip()
+        if sanitized.endswith(";"):
+            sanitized = sanitized[:-1].rstrip()
+        return sanitized
 
     @staticmethod
     def ensure_read_only_sql(sql: str) -> None:

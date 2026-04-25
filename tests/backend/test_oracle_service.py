@@ -43,3 +43,39 @@ def test_get_columns_accepts_schema_qualified_name_when_list_is_unqualified() ->
     result = service.get_columns("MERCADOS.CM_master_data_apr_2026_DVVNL")
 
     assert result == expected
+
+
+def test_oracle_execute_retries_after_sanitizing_invalid_character_sql() -> None:
+    service = OracleService()
+
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.description = [("DISCOM",), ("COUNT",)]
+            self._calls = 0
+
+        def execute(self, sql: str, params=None) -> None:
+            self._calls += 1
+            if self._calls == 1:
+                raise RuntimeError("ORA-00911: invalid character")
+            assert "`" not in sql
+            assert "\u00A0" not in sql
+            assert not sql.rstrip().endswith(";")
+
+        def fetchall(self):
+            return [("DVVNL", 1)]
+
+        def close(self) -> None:
+            return None
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    service._conn = FakeConnection()
+    service._schema_name = "MERCADOS"
+
+    columns, rows, total = service.execute("SELECT * FROM DUAL\u00A0`")
+
+    assert columns == ["DISCOM", "COUNT"]
+    assert rows == [["DVVNL", 1]]
+    assert total == 1
