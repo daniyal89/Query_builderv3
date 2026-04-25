@@ -36,3 +36,13 @@ def test_select_oracle_source_object_prefers_higher_column_count_within_priority
         },
     )
     assert selected == "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL_WIDE"
+
+
+def test_select_oracle_source_object_prefers_latest_cm_master_data_dvvnl() -> None:
+    objects = [
+        "MERCADOS.CM_MASTER_DATA_FEB_2026_DVVNL",
+        "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL",
+        "MERCADOS.MASTER_ARCHIVE_DVVNL",
+    ]
+    selected = SampleSnapshotService._select_oracle_source_object(objects)
+    assert selected == "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL"

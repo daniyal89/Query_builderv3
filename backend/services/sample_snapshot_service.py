@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,20 @@ class SampleSnapshotService:
     ORACLE_DIR = ROOT_DIR / "marcadose"
     SAMPLE_LIMIT = 1000
     PREFERRED_DISCOM = "DVVNL"
+    MONTH_INDEX = {
+        "JAN": 1,
+        "FEB": 2,
+        "MAR": 3,
+        "APR": 4,
+        "MAY": 5,
+        "JUN": 6,
+        "JUL": 7,
+        "AUG": 8,
+        "SEP": 9,
+        "OCT": 10,
+        "NOV": 11,
+        "DEC": 12,
+    }
 
     @staticmethod
     def _slug(value: str) -> str:
@@ -186,16 +201,27 @@ class SampleSnapshotService:
         if not normalized:
             return object_names[0]
         counts = {k.upper(): int(v) for k, v in (column_counts or {}).items()}
+        cm_master_pattern = re.compile(r"CM_MASTER_DATA_[A-Z]{3}_\d{4}_DVVNL")
 
-        def score(name: str) -> tuple[int, int, str]:
+        def month_rank(name_upper: str) -> tuple[int, int]:
+            match = re.search(r"_([A-Z]{3})_(\d{4})_", name_upper)
+            if not match:
+                return (0, 0)
+            month_text, year_text = match.group(1), match.group(2)
+            return (int(year_text), cls.MONTH_INDEX.get(month_text, 0))
+
+        def score(name: str) -> tuple[int, int, int, int, str]:
             upper = name.upper()
-            if "MASTER" in upper and cls.PREFERRED_DISCOM in upper:
+            if cm_master_pattern.search(upper):
                 rank = 0
-            elif "MASTER" in upper:
+            elif "MASTER" in upper and cls.PREFERRED_DISCOM in upper:
                 rank = 1
-            else:
+            elif "MASTER" in upper:
                 rank = 2
+            else:
+                rank = 3
             column_count = counts.get(upper, counts.get(upper.split(".")[-1], 0))
-            return (rank, -column_count, upper)
+            year, month = month_rank(upper)
+            return (rank, -year, -month, -column_count, upper)
 
         return sorted(normalized, key=score)[0]
