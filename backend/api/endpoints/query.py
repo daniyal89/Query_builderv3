@@ -60,13 +60,15 @@ async def preview_query(
             if payload.engine == "oracle":
                 sql = MarcadoseUnionService.apply(sql, payload.marcadose_union)
                 OracleService.ensure_read_only_sql(sql)
-            return QueryPreview(sql=sql, source_mode="sql", can_sync_builder=False)
+            preview_sql = QueryBuilderService.add_ai_helper_comment(sql, payload.engine, "manual")
+            return QueryPreview(sql=preview_sql, source_mode="sql", can_sync_builder=False)
 
         sql = QueryBuilderService.build_preview_sql(payload)
         if payload.engine == "oracle":
             sql = MarcadoseUnionService.apply(sql, payload.marcadose_union)
             OracleService.ensure_read_only_sql(sql)
-        return QueryPreview(sql=sql, source_mode="builder", can_sync_builder=True)
+        preview_sql = QueryBuilderService.add_ai_helper_comment(sql, payload.engine, "builder")
+        return QueryPreview(sql=preview_sql, source_mode="builder", can_sync_builder=True)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -123,6 +125,7 @@ async def execute_query(
                     QueryBuilderService.render_sql(report_sql, params, payload.engine),
                     payload.marcadose_union,
                 )
+                executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
                 _, aggregate_rows, _ = service.execute(executed_sql)
             else:
                 _, aggregate_rows, _ = service.execute(report_sql, params)
@@ -155,10 +158,12 @@ async def execute_query(
                 QueryBuilderService.render_sql(data_sql, params, payload.engine),
                 payload.marcadose_union,
             )
+            executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
             executed_count_sql = MarcadoseUnionService.build_total_count_sql(
                 QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
                 payload.marcadose_union,
             )
+            executed_count_sql = QueryBuilderService.normalize_manual_sql(executed_count_sql)
             columns, rows, _ = service.execute(executed_sql)
             _, count_rows, _ = service.execute(executed_count_sql)
         else:

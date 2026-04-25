@@ -21,6 +21,8 @@ class QueryBuilderService:
     FRIENDLY_TEXT_OPERATORS = {"CONTAINS", "NOT CONTAINS", "STARTS WITH", "ENDS WITH"}
     NUMERIC_COMPARISON_OPERATORS = {">", "<", ">=", "<="}
     REPORT_VALUE_ALIAS = "__REPORT_VALUE__"
+    AI_HELPER_COMMENT_START = "/* AI_CONTEXT"
+    AI_HELPER_COMMENT_END = "*/"
 
     @staticmethod
     def _normalize_list_value(value: Any) -> list[Any]:
@@ -144,13 +146,46 @@ class QueryBuilderService:
 
     @staticmethod
     def normalize_manual_sql(sql: str) -> str:
-        normalized = sql.strip()
+        normalized = QueryBuilderService.strip_ai_helper_comment(sql).strip()
         if not normalized:
             raise ValueError("SQL cannot be empty.")
         normalized = normalized[:-1].rstrip() if normalized.endswith(";") else normalized
         if ";" in normalized:
             raise ValueError("Only a single SQL statement can be executed at a time.")
         return normalized
+
+    @staticmethod
+    def strip_ai_helper_comment(sql: str) -> str:
+        text = sql.lstrip()
+        if not text.startswith(QueryBuilderService.AI_HELPER_COMMENT_START):
+            return sql
+        end_index = text.find(QueryBuilderService.AI_HELPER_COMMENT_END)
+        if end_index == -1:
+            return sql
+        return text[end_index + len(QueryBuilderService.AI_HELPER_COMMENT_END) :].lstrip()
+
+    @staticmethod
+    def add_ai_helper_comment(sql: str, engine: EngineName, source_mode: str) -> str:
+        normalized_sql = QueryBuilderService.strip_ai_helper_comment(sql).strip()
+        read_only = "true" if engine == "oracle" else "false"
+        comment = "\n".join(
+            [
+                "/* AI_CONTEXT",
+                f"engine: {'oracle-marcadose' if engine == 'oracle' else 'duckdb'}",
+                f"source_mode: {source_mode}",
+                "join_semantics: JOIN clauses and ON predicates are already resolved in this SQL.",
+                "filter_semantics: WHERE predicates are AND-combined unless SQL explicitly uses OR.",
+                (
+                    "limit_semantics: Uses OFFSET ... FETCH for pagination."
+                    if engine == "oracle"
+                    else "limit_semantics: Uses LIMIT/OFFSET for pagination."
+                ),
+                "date_literal_semantics: DATE 'YYYY-MM-DD' denotes explicit date comparison.",
+                f"marcadose_read_only: {read_only}",
+                "*/",
+            ]
+        )
+        return f"{comment}\n{normalized_sql}"
 
     @staticmethod
     def _quote_identifier(identifier: str) -> str:

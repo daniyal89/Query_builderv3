@@ -271,3 +271,29 @@ def test_duckdb_keeps_string_comparison_when_filter_value_is_not_numeric() -> No
     assert "TRY_CAST(" not in sql
     assert "t0.\"DISCOM\" = ?" in sql
     assert params == ["DVVNL"]
+
+
+def test_add_ai_helper_comment_prefixes_sql_with_engine_and_source_context() -> None:
+    sql = 'SELECT t0."id" FROM "employees" t0 LIMIT 5'
+
+    preview_sql = QueryBuilderService.add_ai_helper_comment(sql, "duckdb", "builder")
+
+    assert preview_sql.startswith("/* AI_CONTEXT")
+    assert "engine: duckdb" in preview_sql
+    assert "source_mode: builder" in preview_sql
+    assert "limit_semantics: Uses LIMIT/OFFSET for pagination." in preview_sql
+    assert preview_sql.endswith(sql)
+
+
+def test_normalize_manual_sql_strips_ai_helper_comment_before_validation() -> None:
+    sql_with_helper = """/* AI_CONTEXT
+engine: oracle-marcadose
+source_mode: manual
+marcadose_read_only: true
+*/
+SELECT * FROM CUSTOMER
+"""
+
+    normalized = QueryBuilderService.normalize_manual_sql(sql_with_helper)
+
+    assert normalized == "SELECT * FROM CUSTOMER"
