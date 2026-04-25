@@ -233,6 +233,22 @@ def test_count_sql_uses_date_literals_without_params_for_date_columns() -> None:
     assert params == []
 
 
+def test_duckdb_date_like_column_uses_flexible_date_parsing_expression() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="LAST_BILL_DATE", operator="=", value="2026-03-01")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "COALESCE(" in sql
+    assert "TRY_STRPTIME(CAST(t0.\"LAST_BILL_DATE\" AS VARCHAR), '%d-%b-%Y')" in sql
+    assert "TRY_STRPTIME(CAST(t0.\"LAST_BILL_DATE\" AS VARCHAR), '%d-%m-%Y')" in sql
+    assert "= DATE '2026-03-01'" in sql
+    assert params == []
+
+
 def test_duckdb_numeric_comparison_casts_varchar_like_column() -> None:
     payload = QueryPayload(
         engine="duckdb",

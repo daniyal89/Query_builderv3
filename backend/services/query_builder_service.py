@@ -85,6 +85,18 @@ class QueryBuilderService:
         return f"DATE '{normalized}'"
 
     @staticmethod
+    def _duckdb_date_expression(column_expr: str) -> str:
+        return (
+            "COALESCE("
+            f"TRY_CAST({column_expr} AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%b-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%B-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%m-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%Y-%m-%d') AS DATE)"
+            ")"
+        )
+
+    @staticmethod
     def _to_float_if_numeric(value: Any) -> float | None:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return float(value)
@@ -341,6 +353,11 @@ class QueryBuilderService:
             filter_column_expr = (
                 f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_numeric_cast else column_expr
             )
+            date_filter_expr = (
+                QueryBuilderService._duckdb_date_expression(column_expr)
+                if use_date_literals and engine == "duckdb"
+                else column_expr
+            )
 
             if operator in QueryBuilderService.NO_VALUE_OPERATORS:
                 where_clauses.append(f"{column_expr} {operator}")
@@ -352,7 +369,7 @@ class QueryBuilderService:
                     raise ValueError(f"{operator} filters need at least one value.")
                 if use_date_literals:
                     literals = ", ".join(QueryBuilderService._date_literal(value) for value in values)
-                    where_clauses.append(f"{column_expr} {operator} ({literals})")
+                    where_clauses.append(f"{date_filter_expr} {operator} ({literals})")
                 else:
                     placeholders = ", ".join(
                         QueryBuilderService._build_placeholders(engine, len(values), len(params) + 1)
@@ -365,7 +382,7 @@ class QueryBuilderService:
                 start, end = QueryBuilderService._normalize_range_value(filter_condition.value)
                 if use_date_literals:
                     where_clauses.append(
-                        f"{filter_column_expr} {operator} {QueryBuilderService._date_literal(start)} AND {QueryBuilderService._date_literal(end)}"
+                        f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(start)} AND {QueryBuilderService._date_literal(end)}"
                     )
                 else:
                     start_numeric = QueryBuilderService._to_float_if_numeric(start)
@@ -400,7 +417,7 @@ class QueryBuilderService:
 
             if use_date_literals:
                 where_clauses.append(
-                    f"{filter_column_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}"
+                    f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}"
                 )
             else:
                 placeholder = QueryBuilderService._placeholder(engine, len(params) + 1)
