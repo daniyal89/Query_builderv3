@@ -231,3 +231,69 @@ def test_count_sql_uses_date_literals_without_params_for_date_columns() -> None:
 
     assert sql == "SELECT COUNT(*) FROM \"MASTER\" t0 WHERE t0.\"LAST_BILL_DATE\" >= DATE '2026-03-01'"
     assert params == []
+
+
+def test_duckdb_numeric_comparison_casts_varchar_like_column() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="ARREAR", operator=">", value="1000")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRY_CAST(t0.\"ARREAR\" AS DOUBLE) > ?" in sql
+    assert params == [1000.0]
+
+
+def test_duckdb_between_casts_varchar_like_column_when_bounds_are_numeric() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="TOTAL_OUTSTANDING", operator="BETWEEN", value="100,200")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRY_CAST(t0.\"TOTAL_OUTSTANDING\" AS DOUBLE) BETWEEN ? AND ?" in sql
+    assert params == [100.0, 200.0]
+
+
+def test_duckdb_keeps_string_comparison_when_filter_value_is_not_numeric() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="DISCOM", operator="=", value="DVVNL")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRY_CAST(" not in sql
+    assert "t0.\"DISCOM\" = ?" in sql
+    assert params == ["DVVNL"]
+
+
+def test_add_ai_helper_comment_prefixes_sql_with_engine_and_source_context() -> None:
+    sql = 'SELECT t0."id" FROM "employees" t0 LIMIT 5'
+
+    preview_sql = QueryBuilderService.add_ai_helper_comment(sql, "duckdb", "builder")
+
+    assert preview_sql.startswith("/* AI_CONTEXT")
+    assert "engine: duckdb" in preview_sql
+    assert "source_mode: builder" in preview_sql
+    assert "limit_semantics: Uses LIMIT/OFFSET for pagination." in preview_sql
+    assert preview_sql.endswith(sql)
+
+
+def test_normalize_manual_sql_strips_ai_helper_comment_before_validation() -> None:
+    sql_with_helper = """/* AI_CONTEXT
+engine: oracle-marcadose
+source_mode: manual
+marcadose_read_only: true
+*/
+SELECT * FROM CUSTOMER
+"""
+
+    normalized = QueryBuilderService.normalize_manual_sql(sql_with_helper)
+
+    assert normalized == "SELECT * FROM CUSTOMER"

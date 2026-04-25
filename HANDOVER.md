@@ -861,170 +861,88 @@ The selected month and DISCOM are used to generate Marcadose master table names 
 MERCADOS.CM_master_data_<month_tag>_<DISCOM>
 
 backend/services/marcadose_union_service.py
-## 19. Latest Update — Security Guardrails, Query Productivity, and Sidebar-6 Tooling
+## 20. Latest Update — Auto Sample Snapshot on Connect (DuckDB + Marcadose)
 
-This section documents all additions merged after the previous handover revision so future developers and AI agents can understand what exists, why it was added, and where to modify it safely.
+To support future debugging, data profiling, and AI-assisted schema understanding, the app now captures a **one-time sample snapshot** (up to 1000 rows) whenever a database connection is made.
 
-### 19.1 Why these changes were introduced
+### 20.1 Why this exists
+- Operators/developers often need a quick look at representative data without manually writing SQL.
+- Future AI agents can use these sample files to understand column shape, value formats, and likely filter patterns.
+- Snapshot capture is one-time per connection target to avoid repeated overhead.
 
-The changes were introduced for three reasons:
+### 20.2 What was added
 
-1. **Backend safety hardening**
-   - reduce misuse of local filesystem path inputs
-   - limit oversized manual SQL input
-   - prevent accidentally huge row fetches in query responses
+#### New service
+- **File:** `backend/services/sample_snapshot_service.py`
+- **Responsibilities:**
+  - one-time snapshot capture for DuckDB and Marcadose
+  - writes CSV sample and metadata JSON
+  - max rows captured: `1000`
 
-2. **Query builder productivity**
-   - users needed fast reuse of common query configurations
-   - users needed lightweight visibility of recently executed queries
+#### Snapshot output folders
+- DuckDB snapshots: `samples/duckdb/`
+- Marcadose snapshots: `samples/marcadose/`
 
-3. **Operations/dev tooling in UI**
-   - expose script-based data engineering workflows directly from sidebar navigation
-   - provide copy-ready command examples for non-developer operators
+Each snapshot writes:
+1. `<slug>_sample.csv`
+2. `<slug>_sample.meta.json`
 
-### 19.2 New backend safety layer
+### 20.3 Connection-time integration
 
-#### New utility module
-- **File:** `backend/utils/path_safety.py`
-- **Purpose:** central reusable path normalization and defensive validation.
-- **Functions:**
-  - `sanitize_local_path_input(value, field_name)`
-    - trims user input
-    - removes wrapping quotes
-    - expands env vars and user-home aliases
-    - rejects empty input
-  - `validate_relative_subpath(value, field_name)`
-    - ensures relative-only subpath usage
-    - blocks path traversal segments (`..`) and malformed empty parts
-
-#### Models now using path validators
-- `backend/models/local_object.py`
-  - validates `FileObjectRequest.file_path`
-- `backend/models/ftp_download.py`
-  - validates `FTPDownloadRequest.output_root`
-  - validates `FTPDownloadProfile.local_subfolder` as safe relative subfolder
-- `backend/models/google_drive.py`
-  - validates auth optional file paths (`oauth_client_json_path`, `token_json_path`, `service_account_json_path`)
-  - validates `DriveUploadRequest.local_folder`
-  - validates `DriveDownloadRequest.output_folder`
-
-### 19.3 Query execution guardrails
-
-#### Manual SQL length cap
-- **File:** `backend/api/endpoints/query.py`
-- Added `MAX_SQL_TEXT_LENGTH = 50000`.
-- Applied in both endpoints:
-  - `POST /api/query/preview`
-  - `POST /api/query`
+#### DuckDB connect flow
+- **File:** `backend/services/duckdb_service.py`
+- On successful connect, service calls:
+  - `SampleSnapshotService.capture_duckdb_once(...)`
 - Behavior:
-  - oversized SQL now returns HTTP 400 with explicit max-length message.
+  - if snapshot CSV already exists for that DB slug, do nothing
+  - otherwise choose first main schema object (prefer BASE TABLE over VIEW) and save up to 1000 rows
 
-#### Result size cap
-- **File:** `backend/models/query.py`
-- `QueryPayload.limit_rows` now enforces upper bound `le=50000`.
-- This prevents very large accidental builder/manual fetches.
+#### Marcadose connect flow
+- **File:** `backend/services/oracle_service.py`
+- On successful connect, service calls:
+  - `SampleSnapshotService.capture_oracle_once(...)`
+- Behavior:
+  - if snapshot CSV already exists for schema+connection slug, do nothing
+  - otherwise choose **one representative object only** using preference:
+    1) master object for preferred DISCOM (`DVVNL`)
+    2) any object containing `MASTER`
+    3) fallback to first object
+  - saves up to 1000 rows from the selected single object
 
-### 19.4 Query Builder saved workflows
+### 20.4 Important behavior notes
+- Snapshot capture is **non-blocking** for connection success.
+- Any snapshot failure is intentionally swallowed so connection APIs remain reliable.
+- Snapshot is intended for profiling/reference, not full-data export.
 
-#### Saved Query + History feature
-- **Primary UI file:** `frontend/src/components/query/QueryBuilderWorkspace.tsx`
-- Added:
-  - save current query configuration
-  - load saved query configuration
-  - delete saved query
-  - query execution history panel
-  - history insertion after successful run
-- LocalStorage keys:
-  - `qb:saved-queries:v1`
-  - `qb:query-history:v1`
+### 20.5 Future enhancement ideas
+- Add a UI page to view/download the latest snapshots.
+- Add per-table sample capture options.
+- Add configurable row limit and sampling strategy (random vs first N).
 
-#### Hook support for loading state
-- **File:** `frontend/src/hooks/useQueryBuilder.ts`
-- Added `applyState(nextState)` API to restore state from saved data.
-- This is used by the workspace saved-query loader.
+## 21. Latest Update — File Preview and Header Correction for DuckDB Table/View Creation
 
-### 19.5 Sidebar-6 tooling feature (new page and scripts)
+The Local "Create From File" flow now supports previewing top rows and correcting/adding headers before object creation.
 
-A new sidebar feature was added for operational scripts requested by the project owner.
+### 21.1 Backend changes
+- **Endpoint added:** `POST /api/duckdb/file-object/preview`
+  - returns top rows (default 10) and detected columns from CSV/TSV/XLSX source.
+- **Model updates:** `backend/models/local_object.py`
+  - `FilePreviewRequest`, `FilePreviewResponse`
+  - `FileObjectRequest.header_names` (optional custom output headers)
+- **Service updates:** `backend/services/duckdb_service.py`
+  - `preview_file_source(...)`
+  - custom-header projection support via `_build_projected_relation_sql(...)`
 
-#### New scripts
-1. **`build_duckdb.py`**
-   - Purpose: create DuckDB TABLE/VIEW from CSV, GZ CSV, or Parquet.
-   - Supports:
-     - target DB file path
-     - input file path/glob
-     - object name/type
-     - replace mode
-     - optional month label for run logs
+### 21.2 Frontend changes
+- **API:** `frontend/src/api/localObjectApi.ts`
+  - `previewLocalFileObject(...)`
+- **UI:** `frontend/src/components/query/LocalFileObjectCreator.tsx`
+  - added "Preview top 10 rows" action
+  - shows preview grid
+  - allows editing column names before create
+  - sends `header_names` to backend on create
 
-2. **`csv_to_prequat.py`**
-   - Purpose: convert CSV or CSV.GZ inputs into Parquet output.
-   - Supports:
-     - input path/glob
-     - output parquet path
-     - compression option
-
-> Note: filename intentionally kept as `csv_to_prequat.py` to match stakeholder-requested naming.
-
-#### New UI page
-- **File:** `frontend/src/pages/SidebarToolsPage.tsx`
-- Route: `/sidebar-6-tools`
-- Shows copy-ready command examples for both scripts.
-- Designed as operator instruction page (not a backend job runner).
-
-#### Routing/navigation updates
-- **File:** `frontend/src/App.tsx`
-  - added route for `/sidebar-6-tools`.
-- **File:** `frontend/src/components/layout/Sidebar.tsx`
-  - added sidebar link: **Sidebar-6 Tools**.
-- **File:** `frontend/src/components/layout/Header.tsx`
-  - added title mapping: **Sidebar-6 Data Tools**.
-
-### 19.6 UI system refresh from this update cycle
-
-- **File:** `frontend/src/index.css`
-- Added global design tokens for:
-  - primary/hover colors
-  - surface/background/text/border semantic colors
-  - success/warning/error accents
-- Added global box-sizing and improved base typography baseline.
-
-### 19.7 Operational developer notes
-
-1. If users report invalid-path errors in FTP/Drive/local object creation:
-   - check validator behavior in `backend/utils/path_safety.py`
-   - verify whether value should be absolute (`output_root`, `local_folder`, etc.) or relative (`local_subfolder`)
-
-2. If users report SQL rejected due size:
-   - review `MAX_SQL_TEXT_LENGTH` in `backend/api/endpoints/query.py`
-
-3. If users report query result truncation/limit validation errors:
-   - review `QueryPayload.limit_rows` in `backend/models/query.py`
-
-4. If users report saved query data mismatch:
-   - verify localStorage keys and serialization in `QueryBuilderWorkspace.tsx`
-   - verify state restore behavior in `useQueryBuilder.ts` `applyState`
-
-5. If users ask where Sidebar-6 script examples are:
-   - route `/sidebar-6-tools`
-   - page component `SidebarToolsPage.tsx`
-   - scripts in repo root: `build_duckdb.py`, `csv_to_prequat.py`
-
-### 19.8 Build/verification commands for this update
-
-From repo root:
-
-```bash
-# Frontend compile check
-cd frontend
-npm run build
-
-# Script help checks
-cd ..
-python build_duckdb.py --help
-python csv_to_prequat.py --help
-```
-
-### 19.9 Security note
-
-A GitHub PAT was used during remote push from agent workflow. Always rotate/revoke exposed tokens and avoid storing PATs in shell history, scripts, or remotes.
+### 21.3 Why this helps
+- Users can validate whether header row is interpreted correctly.
+- Users can add/correct final column names before creating table/view.
+- Reduces confusion and post-create rename work when source files are inconsistent.
