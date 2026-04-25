@@ -45,17 +45,15 @@ def test_get_columns_accepts_schema_qualified_name_when_list_is_unqualified() ->
     assert result == expected
 
 
-def test_oracle_execute_retries_after_sanitizing_invalid_character_sql() -> None:
+def test_oracle_execute_sanitizes_wrapped_sql_before_execution() -> None:
     service = OracleService()
 
     class FakeCursor:
         def __init__(self) -> None:
             self.description = [("DISCOM",), ("COUNT",)]
-            self._calls = 0
 
         def execute(self, sql: str, params=None) -> None:
-            self._calls += 1
-            if self._calls == 1:
+            if "`" in sql or "\u00A0" in sql:
                 raise RuntimeError("ORA-00911: invalid character")
             assert "`" not in sql
             assert "\u00A0" not in sql
@@ -74,8 +72,13 @@ def test_oracle_execute_retries_after_sanitizing_invalid_character_sql() -> None
     service._conn = FakeConnection()
     service._schema_name = "MERCADOS"
 
-    columns, rows, total = service.execute("SELECT * FROM DUAL\u00A0`")
+    columns, rows, total = service.execute("\"SELECT * FROM DUAL\\n\u00A0`\"")
 
     assert columns == ["DISCOM", "COUNT"]
     assert rows == [["DVVNL", 1]]
     assert total == 1
+
+
+def test_oracle_sanitize_sql_unwraps_quoted_and_escaped_text() -> None:
+    sanitized = OracleService._sanitize_sql_for_oracle("\"SELECT * FROM dual\\nWHERE x = \\\"Y\\\";\"")
+    assert sanitized == 'SELECT * FROM dual\nWHERE x = "Y"'

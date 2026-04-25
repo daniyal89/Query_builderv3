@@ -107,7 +107,15 @@ class OracleService:
 
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
-        self.ensure_read_only_sql(sql)
+        normalized_sql = sql
+        try:
+            self.ensure_read_only_sql(normalized_sql)
+        except ValueError:
+            cleaned_candidate = self._sanitize_sql_for_oracle(sql)
+            if cleaned_candidate == sql:
+                raise
+            self.ensure_read_only_sql(cleaned_candidate)
+            normalized_sql = cleaned_candidate
 
         with self._lock:
             assert self._conn is not None
@@ -115,16 +123,17 @@ class OracleService:
             try:
                 try:
                     if params:
-                        cursor.execute(sql, params)
+                        cursor.execute(normalized_sql, params)
                     else:
-                        cursor.execute(sql)
+                        cursor.execute(normalized_sql)
                 except Exception as exc:
                     if not self._is_invalid_character_error(exc):
                         raise
 
-                    cleaned_sql = self._sanitize_sql_for_oracle(sql)
-                    if cleaned_sql == sql:
+                    cleaned_sql = self._sanitize_sql_for_oracle(normalized_sql)
+                    if cleaned_sql == normalized_sql:
                         raise
+                    self.ensure_read_only_sql(cleaned_sql)
 
                     if params:
                         cursor.execute(cleaned_sql, params)
@@ -142,7 +151,20 @@ class OracleService:
 
     @staticmethod
     def _sanitize_sql_for_oracle(sql: str) -> str:
-        sanitized = sql.replace("\u00A0", " ").replace("`", "").strip()
+        sanitized = (
+            sql.replace("\u00A0", " ")
+            .replace("`", "")
+            .replace("\\n", "\n")
+            .replace("\\r", " ")
+            .replace("\\t", " ")
+            .replace('\\"', '"')
+            .replace("\\'", "'")
+            .strip()
+        )
+
+        if len(sanitized) >= 2 and sanitized[0] == sanitized[-1] and sanitized[0] in {"'", '"'}:
+            sanitized = sanitized[1:-1].strip()
+
         if sanitized.endswith(";"):
             sanitized = sanitized[:-1].rstrip()
         return sanitized
