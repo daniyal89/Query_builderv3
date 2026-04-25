@@ -93,6 +93,50 @@ function buildMarcadoseMasterTable(
   return `${schemaName || "MERCADOS"}.CM_master_data_${monthTag}_${discom}`;
 }
 
+function parseMonthTagFromMasterTable(tableName: string): { monthTag: string; year: number; monthIndex: number } | null {
+  const match = /CM_master_data_([a-z]{3}_\d{4})_([A-Z]+)/i.exec(tableName);
+  if (!match) return null;
+
+  const monthTag = match[1].toLowerCase();
+  const [monthShort, yearText] = monthTag.split("_");
+  const year = Number(yearText);
+  const monthIndex = MONTH_INDEX_BY_SHORT_NAME[monthShort];
+
+  if (!Number.isFinite(year) || monthIndex === undefined) return null;
+  return { monthTag, year, monthIndex };
+}
+
+function pickLatestAvailableMasterTable(
+  tables: TableMetadata[],
+  discom: string,
+  schemaName = "MERCADOS"
+): string | null {
+  const schema = (schemaName || "MERCADOS").toUpperCase();
+  const discomUpper = discom.toUpperCase();
+
+  const candidates = tables
+    .map((table) => table.table_name)
+    .filter((name) => {
+      const normalized = name.toUpperCase();
+      return normalized.startsWith(`${schema}.CM_MASTER_DATA_`) && normalized.endsWith(`_${discomUpper}`);
+    })
+    .map((name) => ({ name, parsed: parseMonthTagFromMasterTable(name) }))
+    .filter(
+      (item): item is { name: string; parsed: { monthTag: string; year: number; monthIndex: number } } =>
+        item.parsed !== null
+    );
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => {
+    if (a.parsed.year !== b.parsed.year) return b.parsed.year - a.parsed.year;
+    if (a.parsed.monthIndex !== b.parsed.monthIndex) return b.parsed.monthIndex - a.parsed.monthIndex;
+    return a.name.localeCompare(b.name);
+  });
+
+  return candidates[0].name;
+}
+
 export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   engine,
   title,
@@ -230,29 +274,34 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
 
   const marcadoseUnion = state.marcadoseUnion;
 
-  const selectedMasterTable = buildMarcadoseMasterTable(
-    marcadoseUnion.month_tag,
-    marcadoseUnion.base_discom,
-    marcadoseUnion.schema_name
-  );
-
-  useEffect(() => {
-    if (engine !== "oracle" || !selectedMasterTable) return;
-
-    setMetadataTables((previousTables) => {
-      if (previousTables.some((table) => table.table_name === selectedMasterTable)) {
-        return previousTables;
-      }
-
-      return [{ table_name: selectedMasterTable, columns: [], row_count: 0 }, ...previousTables];
-    });
-  }, [engine, selectedMasterTable]);
+  const selectedMasterTable = useMemo(() => {
+    const requested = buildMarcadoseMasterTable(
+      marcadoseUnion.month_tag,
+      marcadoseUnion.base_discom,
+      marcadoseUnion.schema_name
+    );
+    if (metadataTables.some((table) => table.table_name === requested)) return requested;
+    return (
+      pickLatestAvailableMasterTable(
+        metadataTables,
+        marcadoseUnion.base_discom,
+        marcadoseUnion.schema_name
+      ) || requested
+    );
+  }, [marcadoseUnion.base_discom, marcadoseUnion.month_tag, marcadoseUnion.schema_name, metadataTables]);
 
   useEffect(() => {
     if (engine === "oracle" && !state.table && selectedMasterTable) {
       setTable(selectedMasterTable);
     }
   }, [engine, selectedMasterTable, setTable, state.table]);
+
+  useEffect(() => {
+    if (engine !== "oracle" || !selectedMasterTable) return;
+    const parsed = parseMonthTagFromMasterTable(selectedMasterTable);
+    if (!parsed || parsed.monthTag === marcadoseUnion.month_tag) return;
+    setMarcadoseUnion({ ...marcadoseUnion, month_tag: parsed.monthTag });
+  }, [engine, marcadoseUnion, selectedMasterTable, setMarcadoseUnion]);
 
   const applyMarcadoseUnionUpdates = (updates: Partial<typeof marcadoseUnion>) => {
     const next = { ...marcadoseUnion, ...updates };
@@ -274,8 +323,22 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
       next.base_discom = next.discoms[0];
     }
 
+    const requestedTable = buildMarcadoseMasterTable(next.month_tag, next.base_discom, next.schema_name);
+    const fallbackTable =
+      pickLatestAvailableMasterTable(metadataTables, next.base_discom, next.schema_name) || requestedTable;
+    const availableTable = metadataTables.some((table) => table.table_name === requestedTable)
+      ? requestedTable
+      : fallbackTable;
+
+    if (availableTable !== requestedTable) {
+      const parsed = parseMonthTagFromMasterTable(availableTable);
+      if (parsed && parsed.monthTag !== next.month_tag) {
+        next.month_tag = parsed.monthTag;
+      }
+    }
+
     setMarcadoseUnion(next);
-    setTable(buildMarcadoseMasterTable(next.month_tag, next.base_discom, next.schema_name));
+    setTable(availableTable);
   };
 
   const toggleMarcadoseDiscom = (discom: string) => {
