@@ -23,6 +23,8 @@ def test_apply_rewrites_fetch_first_for_each_union_branch() -> None:
     assert "UNION ALL" in transformed
     assert "FETCH FIRST" not in transformed.upper()
     assert transformed.upper().count("ROWNUM <= 1000") == 2
+    assert "qb_branch_1" in transformed
+    assert "qb_branch_2" in transformed
 
 
 def test_apply_keeps_non_union_queries_unchanged_except_placeholder_replacement() -> None:

@@ -103,8 +103,8 @@ class MarcadoseUnionService:
             base_sql = normalized[: fetch_match.start()].rstrip()
 
         branches = [
-            f"SELECT * FROM (\n{cls._replace_for_discom(base_sql, config, discom)}\n)"
-            for discom in selected
+            f"SELECT * FROM (\n{cls._replace_for_discom(base_sql, config, discom)}\n) qb_branch_{index + 1}"
+            for index, discom in enumerate(selected)
         ]
 
         if branch_limit is not None:
