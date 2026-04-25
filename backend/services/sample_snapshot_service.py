@@ -16,6 +16,7 @@ class SampleSnapshotService:
     DUCKDB_DIR = ROOT_DIR / "duckdb"
     ORACLE_DIR = ROOT_DIR / "marcadose"
     SAMPLE_LIMIT = 1000
+    PREFERRED_DISCOM = "DVVNL"
 
     @staticmethod
     def _slug(value: str) -> str:
@@ -81,7 +82,7 @@ class SampleSnapshotService:
         if sample_csv.exists() or not object_names:
             return
 
-        source_object = object_names[0]
+        source_object = cls._select_oracle_source_object(object_names)
         cursor = conn.cursor()
         try:
             cursor.execute(f"SELECT * FROM {source_object} FETCH FIRST {cls.SAMPLE_LIMIT} ROWS ONLY")
@@ -106,3 +107,29 @@ class SampleSnapshotService:
                 "rows_saved": len(rows),
             },
         )
+
+    @classmethod
+    def _select_oracle_source_object(cls, object_names: list[str]) -> str:
+        """
+        Select only one representative Oracle object for sampling.
+        Preference order:
+        1) master table/view for preferred discom (e.g., DVVNL),
+        2) any object containing MASTER,
+        3) first object from list as safe fallback.
+        """
+        normalized = [name.strip() for name in object_names if name and name.strip()]
+        if not normalized:
+            return object_names[0]
+
+        preferred_discom_master = [
+            name for name in normalized
+            if "MASTER" in name.upper() and cls.PREFERRED_DISCOM in name.upper()
+        ]
+        if preferred_discom_master:
+            return sorted(preferred_discom_master)[0]
+
+        any_master = [name for name in normalized if "MASTER" in name.upper()]
+        if any_master:
+            return sorted(any_master)[0]
+
+        return normalized[0]

@@ -903,7 +903,11 @@ Each snapshot writes:
   - `SampleSnapshotService.capture_oracle_once(...)`
 - Behavior:
   - if snapshot CSV already exists for schema+connection slug, do nothing
-  - otherwise choose first available object from resolved object list and save up to 1000 rows
+  - otherwise choose **one representative object only** using preference:
+    1) master object for preferred DISCOM (`DVVNL`)
+    2) any object containing `MASTER`
+    3) fallback to first object
+  - saves up to 1000 rows from the selected single object
 
 ### 20.4 Important behavior notes
 - Snapshot capture is **non-blocking** for connection success.
