@@ -134,6 +134,16 @@ export const SidebarToolsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={async () => {
+                  const path = await pickSystemFile("data");
+                  if (path) setBuildForm((p) => ({ ...p, input_path: path }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                File...
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
                   const folder = await pickSystemFolder();
                   if (folder) setBuildForm((p) => ({ ...p, input_path: `${folder}/*` }));
                 }}

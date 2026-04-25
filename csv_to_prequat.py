@@ -22,10 +22,12 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = duckdb.connect()
+    input_sql = f"'{args.input.replace(chr(39), chr(39) * 2)}'"
+    output_sql = f"'{str(output_path).replace(chr(39), chr(39) * 2)}'"
+    compression_sql = f"'{args.compression.replace(chr(39), chr(39) * 2)}'"
     conn.execute(
-        "COPY (SELECT * FROM read_csv_auto(?, union_by_name = true, filename = true)) "
-        "TO ? (FORMAT PARQUET, COMPRESSION ?)",
-        [args.input, str(output_path), args.compression],
+        f"COPY (SELECT * FROM read_csv_auto({input_sql}, union_by_name = true, filename = true)) "
+        f"TO {output_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})",
     )
     print(f"Parquet created at: {output_path}")
     return 0

@@ -14,6 +14,10 @@ router = APIRouter()
 VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _sql_string_literal(value: str) -> str:
+    return f"'{value.replace(chr(39), chr(39) * 2)}'"
+
+
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)
 async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
     try:
@@ -30,16 +34,13 @@ async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
             conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
             conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
 
-        input_path = payload.input_path
-        if ".parquet" in input_path.lower():
-            relation_sql = "read_parquet(?)"
+        input_path_sql = _sql_string_literal(payload.input_path)
+        if ".parquet" in payload.input_path.lower():
+            relation_sql = f"read_parquet({input_path_sql})"
         else:
-            relation_sql = "read_csv_auto(?, union_by_name = true, filename = true)"
+            relation_sql = f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
-        conn.execute(
-            f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}",
-            [input_path],
-        )
+        conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
         conn.close()
 
         month_text = f" for {payload.month_label}" if payload.month_label else ""
@@ -58,10 +59,12 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         conn = duckdb.connect()
+        input_path_sql = _sql_string_literal(payload.input_path)
+        output_path_sql = _sql_string_literal(str(output_path))
+        compression_sql = _sql_string_literal(payload.compression)
         conn.execute(
-            "COPY (SELECT * FROM read_csv_auto(?, union_by_name = true, filename = true)) "
-            "TO ? (FORMAT PARQUET, COMPRESSION ?)",
-            [payload.input_path, str(output_path), payload.compression],
+            f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
+            f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
         )
         conn.close()
         return SidebarToolResponse(
@@ -70,4 +73,3 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
