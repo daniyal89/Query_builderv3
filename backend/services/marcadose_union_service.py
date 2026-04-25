@@ -25,6 +25,10 @@ class MarcadoseUnionService:
         r"^\s*SELECT\s+COUNT\s*\(\s*\*\s*\)\s+FROM\s+",
         re.IGNORECASE | re.DOTALL,
     )
+    FETCH_FIRST_PATTERN = re.compile(
+        r"\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY\s*$",
+        re.IGNORECASE,
+    )
 
     @classmethod
     def is_active(cls, config: MarcadoseUnionConfig | None) -> bool:
@@ -91,10 +95,20 @@ class MarcadoseUnionService:
 
             return cls._replace_for_discom(normalized, config, base_discom)
 
+        fetch_match = cls.FETCH_FIRST_PATTERN.search(normalized)
+        branch_limit: int | None = None
+        base_sql = normalized
+        if fetch_match:
+            branch_limit = int(fetch_match.group(1))
+            base_sql = normalized[: fetch_match.start()].rstrip()
+
         branches = [
-            f"SELECT * FROM (\n{cls._replace_for_discom(normalized, config, discom)}\n)"
+            f"SELECT * FROM (\n{cls._replace_for_discom(base_sql, config, discom)}\n)"
             for discom in selected
         ]
+
+        if branch_limit is not None:
+            branches = [f"{branch} WHERE ROWNUM <= {branch_limit}" for branch in branches]
 
         return "\nUNION ALL\n".join(branches)
 
