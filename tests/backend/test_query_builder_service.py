@@ -231,3 +231,43 @@ def test_count_sql_uses_date_literals_without_params_for_date_columns() -> None:
 
     assert sql == "SELECT COUNT(*) FROM \"MASTER\" t0 WHERE t0.\"LAST_BILL_DATE\" >= DATE '2026-03-01'"
     assert params == []
+
+
+def test_duckdb_numeric_comparison_casts_varchar_like_column() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="ARREAR", operator=">", value="1000")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRY_CAST(t0.\"ARREAR\" AS DOUBLE) > ?" in sql
+    assert params == [1000.0]
+
+
+def test_duckdb_between_casts_varchar_like_column_when_bounds_are_numeric() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="TOTAL_OUTSTANDING", operator="BETWEEN", value="100,200")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRY_CAST(t0.\"TOTAL_OUTSTANDING\" AS DOUBLE) BETWEEN ? AND ?" in sql
+    assert params == [100.0, 200.0]
+
+
+def test_duckdb_keeps_string_comparison_when_filter_value_is_not_numeric() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="DISCOM", operator="=", value="DVVNL")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRY_CAST(" not in sql
+    assert "t0.\"DISCOM\" = ?" in sql
+    assert params == ["DVVNL"]
