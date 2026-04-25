@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { runBuildDuckDb, runCsvToParquet } from "../api/sidebarToolsApi";
+import { pickSystemFile, pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 
 interface FieldProps {
   label: string;
@@ -81,7 +82,7 @@ export const SidebarToolsPage: React.FC = () => {
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-        <h1 className="text-2xl font-semibold text-slate-900">Sidebar-6 Data Tools</h1>
+        <h1 className="text-2xl font-semibold text-slate-900">Data Tools</h1>
         <p className="mt-2 text-sm text-slate-600">
           Use these tools to run Step-1 (CSV/GZ → Parquet) and Step-2 (Build DuckDB table/view). All fields below
           are now explicitly labeled so users can understand what each input means.
@@ -105,10 +106,42 @@ export const SidebarToolsPage: React.FC = () => {
         <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>build_duckdb.py</code></p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <Field label="DuckDB file path" help="Full target .duckdb file path. Example: G:/MASTER/uppcl_latest.duckdb">
-            <input className="w-full rounded border p-2" value={buildForm.db_path} onChange={(e) => setBuildForm((p) => ({ ...p, db_path: e.target.value }))} />
+            <div className="flex gap-2">
+              <input
+                className="w-full rounded border p-2"
+                value={buildForm.db_path}
+                onChange={(e) => setBuildForm((p) => ({ ...p, db_path: e.target.value }))}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const path = await pickSystemSavePath("monthly.duckdb", ".duckdb");
+                  if (path) setBuildForm((p) => ({ ...p, db_path: path }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Browse...
+              </button>
+            </div>
           </Field>
           <Field label="Input parquet/csv path or glob" help="Supports wildcards. Example: G:/MASTER_PARQUET/MAR_2026/**/*.parquet">
-            <input className="w-full rounded border p-2" value={buildForm.input_path} onChange={(e) => setBuildForm((p) => ({ ...p, input_path: e.target.value }))} />
+            <div className="flex gap-2">
+              <input
+                className="w-full rounded border p-2"
+                value={buildForm.input_path}
+                onChange={(e) => setBuildForm((p) => ({ ...p, input_path: e.target.value }))}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const folder = await pickSystemFolder();
+                  if (folder) setBuildForm((p) => ({ ...p, input_path: `${folder}/*` }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Folder...
+              </button>
+            </div>
           </Field>
           <Field label="Object name in DuckDB" help="Target table/view name. Example: master or master_MAR_2026">
             <input className="w-full rounded border p-2" value={buildForm.object_name} onChange={(e) => setBuildForm((p) => ({ ...p, object_name: e.target.value }))} />
@@ -141,10 +174,52 @@ export const SidebarToolsPage: React.FC = () => {
         <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>csv_to_prequat.py</code></p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <Field label="Input CSV/GZ path or glob" help="Example: G:/MASTER/MAR_2026/*.csv.gz">
-            <input className="w-full rounded border p-2 md:col-span-2" value={parquetForm.input_path} onChange={(e) => setParquetForm((p) => ({ ...p, input_path: e.target.value }))} />
+            <div className="flex gap-2">
+              <input
+                className="w-full rounded border p-2 md:col-span-2"
+                value={parquetForm.input_path}
+                onChange={(e) => setParquetForm((p) => ({ ...p, input_path: e.target.value }))}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const path = await pickSystemFile("data");
+                  if (path) setParquetForm((p) => ({ ...p, input_path: path }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                File...
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const folder = await pickSystemFolder();
+                  if (folder) setParquetForm((p) => ({ ...p, input_path: `${folder}/*.csv.gz` }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Folder...
+              </button>
+            </div>
           </Field>
           <Field label="Output parquet file path" help="Example: G:/MASTER_PARQUET/MAR_2026/master.parquet">
-            <input className="w-full rounded border p-2 md:col-span-2" value={parquetForm.output_path} onChange={(e) => setParquetForm((p) => ({ ...p, output_path: e.target.value }))} />
+            <div className="flex gap-2">
+              <input
+                className="w-full rounded border p-2 md:col-span-2"
+                value={parquetForm.output_path}
+                onChange={(e) => setParquetForm((p) => ({ ...p, output_path: e.target.value }))}
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const path = await pickSystemSavePath("master.parquet", ".parquet");
+                  if (path) setParquetForm((p) => ({ ...p, output_path: path }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Browse...
+              </button>
+            </div>
           </Field>
           <Field label="Compression codec" help="Recommended: snappy or zstd">
             <input className="w-full rounded border p-2" value={parquetForm.compression} onChange={(e) => setParquetForm((p) => ({ ...p, compression: e.target.value }))} />
