@@ -21,3 +21,18 @@ def test_select_oracle_source_object_uses_first_when_no_master() -> None:
     objects = ["SCHEMA.VIEW_A", "SCHEMA.VIEW_B"]
     selected = SampleSnapshotService._select_oracle_source_object(objects)
     assert selected == "SCHEMA.VIEW_A"
+
+
+def test_select_oracle_source_object_prefers_higher_column_count_within_priority() -> None:
+    objects = [
+        "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL_SMALL",
+        "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL_WIDE",
+    ]
+    selected = SampleSnapshotService._select_oracle_source_object(
+        objects,
+        column_counts={
+            "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL_SMALL": 10,
+            "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL_WIDE": 200,
+        },
+    )
+    assert selected == "MERCADOS.CM_MASTER_DATA_MAR_2026_DVVNL_WIDE"

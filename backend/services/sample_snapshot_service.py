@@ -46,14 +46,26 @@ class SampleSnapshotService:
             return
 
         table_rows = conn.execute(
-            "SELECT table_name, table_type FROM information_schema.tables "
-            "WHERE table_schema='main' AND table_type IN ('BASE TABLE','VIEW') "
-            "ORDER BY CASE WHEN table_type='BASE TABLE' THEN 0 ELSE 1 END, table_name LIMIT 1"
+            "SELECT t.table_name, t.table_type, COUNT(c.column_name) AS column_count "
+            "FROM information_schema.tables t "
+            "LEFT JOIN information_schema.columns c "
+            "ON c.table_schema = t.table_schema AND c.table_name = t.table_name "
+            "WHERE t.table_schema='main' AND t.table_type IN ('BASE TABLE','VIEW') "
+            "GROUP BY t.table_name, t.table_type "
+            "ORDER BY "
+            "CASE "
+            "WHEN UPPER(t.table_name) LIKE '%MASTER%' AND UPPER(t.table_name) LIKE '%DVVNL%' THEN 0 "
+            "WHEN UPPER(t.table_name) LIKE '%MASTER%' THEN 1 "
+            "WHEN t.table_type='BASE TABLE' THEN 2 "
+            "ELSE 3 END, "
+            "column_count DESC, t.table_name "
+            "LIMIT 1"
         ).fetchall()
         if not table_rows:
             return
 
         table_name = table_rows[0][0]
+        column_count = int(table_rows[0][2] or 0)
         quoted = f'"{table_name.replace(chr(34), chr(34) * 2)}"'
         result = conn.execute(f"SELECT * FROM {quoted} LIMIT {cls.SAMPLE_LIMIT}")
         columns = [desc[0] for desc in (result.description or [])]
@@ -69,6 +81,7 @@ class SampleSnapshotService:
                 "created_at_utc": datetime.now(timezone.utc).isoformat(),
                 "db_path": str(db_path),
                 "source_table": table_name,
+                "source_column_count": column_count,
                 "row_limit": cls.SAMPLE_LIMIT,
                 "rows_saved": len(rows),
             },
@@ -82,7 +95,8 @@ class SampleSnapshotService:
         if sample_csv.exists() or not object_names:
             return
 
-        source_object = cls._select_oracle_source_object(object_names)
+        column_counts = cls._oracle_column_counts(conn, object_names)
+        source_object = cls._select_oracle_source_object(object_names, column_counts=column_counts)
         cursor = conn.cursor()
         try:
             cursor.execute(f"SELECT * FROM {source_object} FETCH FIRST {cls.SAMPLE_LIMIT} ROWS ONLY")
@@ -103,13 +117,64 @@ class SampleSnapshotService:
                 "schema_name": schema_name,
                 "connection_label": connection_label,
                 "source_object": source_object,
+                "source_column_count": int(column_counts.get(source_object.upper(), 0)),
                 "row_limit": cls.SAMPLE_LIMIT,
                 "rows_saved": len(rows),
             },
         )
 
     @classmethod
-    def _select_oracle_source_object(cls, object_names: list[str]) -> str:
+    def _oracle_column_counts(cls, conn: Any, object_names: list[str]) -> dict[str, int]:
+        normalized = [name.strip() for name in object_names if name and name.strip()]
+        pairs: list[tuple[str, str]] = []
+        for qualified in normalized:
+            if "." in qualified:
+                owner, table = qualified.split(".", 1)
+            else:
+                owner, table = "", qualified
+            pairs.append((owner.upper(), table.upper()))
+
+        if not pairs:
+            return {}
+
+        binds: dict[str, str] = {}
+        clauses: list[str] = []
+        for index, (owner, table) in enumerate(pairs):
+            owner_key = f"o{index}"
+            table_key = f"t{index}"
+            if owner:
+                clauses.append(f"(owner = :{owner_key} AND table_name = :{table_key})")
+                binds[owner_key] = owner
+            else:
+                clauses.append(f"(table_name = :{table_key})")
+            binds[table_key] = table
+
+        query = (
+            "SELECT owner, table_name, COUNT(*) AS column_count "
+            "FROM all_tab_columns "
+            f"WHERE {' OR '.join(clauses)} "
+            "GROUP BY owner, table_name"
+        )
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query, binds)
+            rows = cursor.fetchall()
+        finally:
+            cursor.close()
+
+        counts: dict[str, int] = {}
+        for owner, table_name, column_count in rows:
+            key = f"{str(owner).upper()}.{str(table_name).upper()}"
+            counts[key] = int(column_count or 0)
+            counts[str(table_name).upper()] = int(column_count or 0)
+        return counts
+
+    @classmethod
+    def _select_oracle_source_object(
+        cls,
+        object_names: list[str],
+        column_counts: dict[str, int] | None = None,
+    ) -> str:
         """
         Select only one representative Oracle object for sampling.
         Preference order:
@@ -120,16 +185,17 @@ class SampleSnapshotService:
         normalized = [name.strip() for name in object_names if name and name.strip()]
         if not normalized:
             return object_names[0]
+        counts = {k.upper(): int(v) for k, v in (column_counts or {}).items()}
 
-        preferred_discom_master = [
-            name for name in normalized
-            if "MASTER" in name.upper() and cls.PREFERRED_DISCOM in name.upper()
-        ]
-        if preferred_discom_master:
-            return sorted(preferred_discom_master)[0]
+        def score(name: str) -> tuple[int, int, str]:
+            upper = name.upper()
+            if "MASTER" in upper and cls.PREFERRED_DISCOM in upper:
+                rank = 0
+            elif "MASTER" in upper:
+                rank = 1
+            else:
+                rank = 2
+            column_count = counts.get(upper, counts.get(upper.split(".")[-1], 0))
+            return (rank, -column_count, upper)
 
-        any_master = [name for name in normalized if "MASTER" in name.upper()]
-        if any_master:
-            return sorted(any_master)[0]
-
-        return normalized[0]
+        return sorted(normalized, key=score)[0]
