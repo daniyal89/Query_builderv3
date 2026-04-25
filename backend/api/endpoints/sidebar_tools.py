@@ -67,17 +67,14 @@ async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
         db_path = Path(payload.db_path).expanduser().resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = duckdb.connect(str(db_path))
         object_sql = f'"{payload.object_name.replace(chr(34), chr(34) * 2)}"'
-
-        if payload.replace:
-            conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-            conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
-
         relation_sql = _resolve_relation_sql(payload.input_path)
+        with duckdb.connect(str(db_path)) as conn:
+            if payload.replace:
+                conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
+                conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
 
-        conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
-        conn.close()
+            conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
 
         month_text = f" for {payload.month_label}" if payload.month_label else ""
         return SidebarToolResponse(
@@ -95,15 +92,14 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
         output_path = Path(payload.output_path).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = duckdb.connect()
         input_path_sql = _sql_string_literal(resolved_input)
         output_path_sql = _sql_string_literal(str(output_path))
         compression_sql = _sql_string_literal(payload.compression)
-        conn.execute(
-            f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
-            f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
-        )
-        conn.close()
+        with duckdb.connect() as conn:
+            conn.execute(
+                f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
+                f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+            )
         return SidebarToolResponse(
             message="Parquet conversion completed successfully.",
             output_path=str(output_path),
