@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import duckdb
 
 from backend.app import app
 
@@ -46,3 +47,27 @@ def test_sidebar_csv_to_parquet_creates_output_file(tmp_path: Path) -> None:
 
     assert response.status_code == 200, response.text
     assert output_path.exists()
+
+
+def test_sidebar_build_duckdb_detects_parquet_from_wildcard_without_extension(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_parquet.duckdb"
+    parquet_dir = tmp_path / "parquet"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = parquet_dir / "data.parquet"
+
+    duckdb.connect().execute("COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)])
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(parquet_dir / "*"),
+            "object_name": "MASTER_FROM_PARQUET",
+            "object_type": "TABLE",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+
+    assert response.status_code == 200, response.text

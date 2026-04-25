@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 from pathlib import Path
 import duckdb
 
@@ -25,7 +26,18 @@ def build_relation_sql(input_path: str) -> str:
     sample = input_path.lower()
     if sample.endswith(".parquet") or ".parquet" in sample:
         return f"read_parquet('{input_path}')"
-    return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
+    if sample.endswith(".csv") or ".csv" in sample or sample.endswith(".tsv") or ".tsv" in sample:
+        return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
+
+    matches = glob.glob(input_path, recursive=True)
+    if matches:
+        first = matches[0].lower()
+        if first.endswith(".parquet"):
+            return f"read_parquet('{input_path}')"
+        if first.endswith(".csv") or first.endswith(".csv.gz") or first.endswith(".tsv"):
+            return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
+
+    return f"read_parquet('{input_path}')"
 
 
 def main() -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import glob
 from pathlib import Path
 
 import duckdb
@@ -16,6 +17,26 @@ VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def _sql_string_literal(value: str) -> str:
     return f"'{value.replace(chr(39), chr(39) * 2)}'"
+
+
+def _resolve_relation_sql(input_path: str) -> str:
+    lowered = input_path.lower()
+    input_path_sql = _sql_string_literal(input_path)
+
+    if ".parquet" in lowered:
+        return f"read_parquet({input_path_sql})"
+    if ".csv" in lowered or ".tsv" in lowered:
+        return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
+
+    matches = glob.glob(input_path, recursive=True)
+    if matches:
+        sample = matches[0].lower()
+        if sample.endswith(".parquet"):
+            return f"read_parquet({input_path_sql})"
+        if sample.endswith(".csv") or sample.endswith(".csv.gz") or sample.endswith(".tsv"):
+            return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
+
+    return f"read_parquet({input_path_sql})"
 
 
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)
@@ -34,11 +55,7 @@ async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
             conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
             conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
 
-        input_path_sql = _sql_string_literal(payload.input_path)
-        if ".parquet" in payload.input_path.lower():
-            relation_sql = f"read_parquet({input_path_sql})"
-        else:
-            relation_sql = f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
+        relation_sql = _resolve_relation_sql(payload.input_path)
 
         conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
         conn.close()
