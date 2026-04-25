@@ -16,6 +16,7 @@ import duckdb
 
 from backend.models.local_object import FileObjectRequest
 from backend.models.schema import TableMetadata, ColumnDetail
+from backend.services.sample_snapshot_service import SampleSnapshotService
 
 
 VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -73,6 +74,11 @@ class DuckDBService:
                 raise RuntimeError(f"Failed to open DuckDB database: {exc}") from exc
 
             tables = self._fetch_table_entries_unlocked()
+            try:
+                SampleSnapshotService.capture_duckdb_once(self._conn, resolved)
+            except Exception:
+                # Snapshot capture is non-blocking and must never fail connection flow.
+                pass
             return len(tables)
 
     def disconnect(self) -> None:

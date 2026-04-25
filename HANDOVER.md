@@ -861,3 +861,56 @@ The selected month and DISCOM are used to generate Marcadose master table names 
 MERCADOS.CM_master_data_<month_tag>_<DISCOM>
 
 backend/services/marcadose_union_service.py
+## 20. Latest Update — Auto Sample Snapshot on Connect (DuckDB + Marcadose)
+
+To support future debugging, data profiling, and AI-assisted schema understanding, the app now captures a **one-time sample snapshot** (up to 1000 rows) whenever a database connection is made.
+
+### 20.1 Why this exists
+- Operators/developers often need a quick look at representative data without manually writing SQL.
+- Future AI agents can use these sample files to understand column shape, value formats, and likely filter patterns.
+- Snapshot capture is one-time per connection target to avoid repeated overhead.
+
+### 20.2 What was added
+
+#### New service
+- **File:** `backend/services/sample_snapshot_service.py`
+- **Responsibilities:**
+  - one-time snapshot capture for DuckDB and Marcadose
+  - writes CSV sample and metadata JSON
+  - max rows captured: `1000`
+
+#### Snapshot output folders
+- DuckDB snapshots: `samples/duckdb/`
+- Marcadose snapshots: `samples/marcadose/`
+
+Each snapshot writes:
+1. `<slug>_sample.csv`
+2. `<slug>_sample.meta.json`
+
+### 20.3 Connection-time integration
+
+#### DuckDB connect flow
+- **File:** `backend/services/duckdb_service.py`
+- On successful connect, service calls:
+  - `SampleSnapshotService.capture_duckdb_once(...)`
+- Behavior:
+  - if snapshot CSV already exists for that DB slug, do nothing
+  - otherwise choose first main schema object (prefer BASE TABLE over VIEW) and save up to 1000 rows
+
+#### Marcadose connect flow
+- **File:** `backend/services/oracle_service.py`
+- On successful connect, service calls:
+  - `SampleSnapshotService.capture_oracle_once(...)`
+- Behavior:
+  - if snapshot CSV already exists for schema+connection slug, do nothing
+  - otherwise choose first available object from resolved object list and save up to 1000 rows
+
+### 20.4 Important behavior notes
+- Snapshot capture is **non-blocking** for connection success.
+- Any snapshot failure is intentionally swallowed so connection APIs remain reliable.
+- Snapshot is intended for profiling/reference, not full-data export.
+
+### 20.5 Future enhancement ideas
+- Add a UI page to view/download the latest snapshots.
+- Add per-table sample capture options.
+- Add configurable row limit and sampling strategy (random vs first N).

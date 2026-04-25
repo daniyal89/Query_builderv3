@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from backend.models.connection import OracleConnectionRequest
 from backend.models.schema import ColumnDetail, TableMetadata
+from backend.services.sample_snapshot_service import SampleSnapshotService
 
 
 READ_ONLY_KEYWORDS = re.compile(
@@ -62,6 +63,17 @@ class OracleService:
 
             self._schema_name = payload.username.strip().upper()
             self._connection_label = f"{payload.host.strip()}:{payload.port}/{payload.sid.strip()}"
+            try:
+                object_names = self._fetch_object_names_unlocked()
+                SampleSnapshotService.capture_oracle_once(
+                    self._conn,
+                    self._schema_name,
+                    self._connection_label,
+                    object_names,
+                )
+            except Exception:
+                # Snapshot capture is non-blocking and must not block Oracle connect.
+                pass
             return 0
 
     def disconnect(self) -> None:
