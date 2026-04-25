@@ -73,6 +73,24 @@ def test_sidebar_csv_to_parquet_supports_gz_when_pattern_is_csv_gz(tmp_path: Pat
     assert output_path.exists()
 
 
+def test_sidebar_csv_to_parquet_rejects_unknown_compression(tmp_path: Path) -> None:
+    csv_path = tmp_path / "input.csv"
+    output_path = tmp_path / "out.parquet"
+    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/csv-to-parquet",
+        json={
+            "input_path": str(csv_path),
+            "output_path": str(output_path),
+            "compression": "not-a-codec",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+
 def test_sidebar_build_duckdb_detects_parquet_from_wildcard_without_extension(tmp_path: Path) -> None:
     db_path = tmp_path / "tools_parquet.duckdb"
     parquet_dir = tmp_path / "parquet"

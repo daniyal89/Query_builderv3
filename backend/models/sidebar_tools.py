@@ -48,9 +48,19 @@ class CsvToParquetRequest(BaseModel):
     def validate_paths(cls, value: str) -> str:
         return sanitize_local_path_input(value, "path")
 
+    @field_validator("compression")
+    @classmethod
+    def validate_compression(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        allowed = {"uncompressed", "snappy", "gzip", "zstd", "lz4", "brotli"}
+        if normalized not in allowed:
+            raise ValueError(
+                "compression must be one of: uncompressed, snappy, gzip, zstd, lz4, brotli."
+            )
+        return normalized
+
 
 class SidebarToolResponse(BaseModel):
     status: str = "ok"
     message: str
     output_path: str | None = None
-
