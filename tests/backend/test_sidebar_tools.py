@@ -1,4 +1,5 @@
 from pathlib import Path
+import gzip
 
 from fastapi.testclient import TestClient
 import duckdb
@@ -49,6 +50,47 @@ def test_sidebar_csv_to_parquet_creates_output_file(tmp_path: Path) -> None:
     assert output_path.exists()
 
 
+def test_sidebar_csv_to_parquet_supports_gz_when_pattern_is_csv_gz(tmp_path: Path) -> None:
+    csv_dir = tmp_path / "master" / "MAR_2026"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    gz_path = csv_dir / "part-001.gz"
+    output_path = tmp_path / "out_from_gz.parquet"
+
+    with gzip.open(gz_path, "wt", encoding="utf-8") as handle:
+        handle.write("id,name\n1,Alice\n")
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/csv-to-parquet",
+        json={
+            "input_path": str(csv_dir / "*.csv.gz"),
+            "output_path": str(output_path),
+            "compression": "zstd",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert output_path.exists()
+
+
+def test_sidebar_csv_to_parquet_rejects_unknown_compression(tmp_path: Path) -> None:
+    csv_path = tmp_path / "input.csv"
+    output_path = tmp_path / "out.parquet"
+    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/csv-to-parquet",
+        json={
+            "input_path": str(csv_path),
+            "output_path": str(output_path),
+            "compression": "not-a-codec",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+
 def test_sidebar_build_duckdb_detects_parquet_from_wildcard_without_extension(tmp_path: Path) -> None:
     db_path = tmp_path / "tools_parquet.duckdb"
     parquet_dir = tmp_path / "parquet"
@@ -71,3 +113,48 @@ def test_sidebar_build_duckdb_detects_parquet_from_wildcard_without_extension(tm
     )
 
     assert response.status_code == 200, response.text
+
+
+def test_sidebar_build_duckdb_detects_gz_csv_from_wildcard_without_extension(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_gz.duckdb"
+    csv_dir = tmp_path / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    gz_path = csv_dir / "data.gz"
+
+    with gzip.open(gz_path, "wt", encoding="utf-8") as handle:
+        handle.write("id,name\n1,Alice\n")
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(csv_dir / "*"),
+            "object_name": "MASTER_FROM_GZ",
+            "object_type": "VIEW",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_missing.duckdb"
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(tmp_path / "does-not-exist" / "*.csv"),
+            "object_name": "MISSING_INPUT",
+            "object_type": "TABLE",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert "No files found that match the pattern" in response.json()["detail"]

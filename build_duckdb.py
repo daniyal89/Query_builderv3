@@ -26,7 +26,14 @@ def build_relation_sql(input_path: str) -> str:
     sample = input_path.lower()
     if sample.endswith(".parquet") or ".parquet" in sample:
         return f"read_parquet('{input_path}')"
-    if sample.endswith(".csv") or ".csv" in sample or sample.endswith(".tsv") or ".tsv" in sample:
+    if (
+        sample.endswith(".csv")
+        or ".csv" in sample
+        or sample.endswith(".tsv")
+        or ".tsv" in sample
+        or sample.endswith(".gz")
+        or ".gz" in sample
+    ):
         return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
 
     matches = glob.glob(input_path, recursive=True)
@@ -34,10 +41,15 @@ def build_relation_sql(input_path: str) -> str:
         first = matches[0].lower()
         if first.endswith(".parquet"):
             return f"read_parquet('{input_path}')"
-        if first.endswith(".csv") or first.endswith(".csv.gz") or first.endswith(".tsv"):
+        if (
+            first.endswith(".csv")
+            or first.endswith(".csv.gz")
+            or first.endswith(".tsv")
+            or first.endswith(".gz")
+        ):
             return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
 
-    return f"read_parquet('{input_path}')"
+    return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
 
 
 def main() -> int:

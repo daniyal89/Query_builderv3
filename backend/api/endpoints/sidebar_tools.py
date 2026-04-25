@@ -25,7 +25,7 @@ def _resolve_relation_sql(input_path: str) -> str:
 
     if ".parquet" in lowered:
         return f"read_parquet({input_path_sql})"
-    if ".csv" in lowered or ".tsv" in lowered:
+    if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
         return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
     matches = glob.glob(input_path, recursive=True)
@@ -33,10 +33,29 @@ def _resolve_relation_sql(input_path: str) -> str:
         sample = matches[0].lower()
         if sample.endswith(".parquet"):
             return f"read_parquet({input_path_sql})"
-        if sample.endswith(".csv") or sample.endswith(".csv.gz") or sample.endswith(".tsv"):
+        if (
+            sample.endswith(".csv")
+            or sample.endswith(".csv.gz")
+            or sample.endswith(".tsv")
+            or sample.endswith(".gz")
+        ):
             return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
-    return f"read_parquet({input_path_sql})"
+    return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
+
+
+def _resolve_existing_input_glob(input_path: str) -> str:
+    matches = glob.glob(input_path, recursive=True)
+    if matches:
+        return input_path
+
+    if ".csv.gz" in input_path.lower():
+        fallback = re.sub(r"\.csv\.gz", ".gz", input_path, flags=re.IGNORECASE)
+        fallback_matches = glob.glob(fallback, recursive=True)
+        if fallback_matches:
+            return fallback
+
+    raise ValueError(f"No files found that match the pattern '{input_path}'.")
 
 
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)
@@ -48,17 +67,15 @@ async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
         db_path = Path(payload.db_path).expanduser().resolve()
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = duckdb.connect(str(db_path))
         object_sql = f'"{payload.object_name.replace(chr(34), chr(34) * 2)}"'
+        resolved_input = _resolve_existing_input_glob(payload.input_path)
+        relation_sql = _resolve_relation_sql(resolved_input)
+        with duckdb.connect(str(db_path)) as conn:
+            if payload.replace:
+                conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
+                conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
 
-        if payload.replace:
-            conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-            conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
-
-        relation_sql = _resolve_relation_sql(payload.input_path)
-
-        conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
-        conn.close()
+            conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
 
         month_text = f" for {payload.month_label}" if payload.month_label else ""
         return SidebarToolResponse(
@@ -72,18 +89,18 @@ async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
 @router.post("/sidebar-tools/csv-to-parquet", response_model=SidebarToolResponse)
 async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
     try:
+        resolved_input = _resolve_existing_input_glob(payload.input_path)
         output_path = Path(payload.output_path).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = duckdb.connect()
-        input_path_sql = _sql_string_literal(payload.input_path)
+        input_path_sql = _sql_string_literal(resolved_input)
         output_path_sql = _sql_string_literal(str(output_path))
         compression_sql = _sql_string_literal(payload.compression)
-        conn.execute(
-            f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
-            f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
-        )
-        conn.close()
+        with duckdb.connect() as conn:
+            conn.execute(
+                f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
+                f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+            )
         return SidebarToolResponse(
             message="Parquet conversion completed successfully.",
             output_path=str(output_path),
