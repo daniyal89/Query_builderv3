@@ -138,3 +138,23 @@ def test_sidebar_build_duckdb_detects_gz_csv_from_wildcard_without_extension(tmp
     )
 
     assert response.status_code == 200, response.text
+
+
+def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_missing.duckdb"
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(tmp_path / "does-not-exist" / "*.csv"),
+            "object_name": "MISSING_INPUT",
+            "object_type": "TABLE",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert "No files found that match the pattern" in response.json()["detail"]

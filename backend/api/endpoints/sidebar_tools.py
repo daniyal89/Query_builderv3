@@ -68,7 +68,8 @@ async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         object_sql = f'"{payload.object_name.replace(chr(34), chr(34) * 2)}"'
-        relation_sql = _resolve_relation_sql(payload.input_path)
+        resolved_input = _resolve_existing_input_glob(payload.input_path)
+        relation_sql = _resolve_relation_sql(resolved_input)
         with duckdb.connect(str(db_path)) as conn:
             if payload.replace:
                 conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
