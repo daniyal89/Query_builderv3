@@ -26,6 +26,7 @@ function getErrorMessage(error: unknown): string {
 const FORM_STORAGE_KEY = "ftp_download_form_state_v3";
 const PRESET_STORAGE_KEY = "ftp_download_preset_overrides_v3";
 const CUSTOM_PRESET_STORAGE_KEY = "ftp_download_custom_presets_v3";
+const JOB_STORAGE_KEY = "ftp_download_job_v1";
 
 const DEFAULT_PRESET_USERS: Record<string, string> = {
   MVVNL: "mvftpreport",
@@ -250,8 +251,26 @@ function loadCustomPresets(): CustomSavedPreset[] {
   return safeReadJson<CustomSavedPreset[]>(CUSTOM_PRESET_STORAGE_KEY, []);
 }
 
+type PersistedJobState = {
+  jobId: string;
+  status: FTPDownloadStatusResponse | null;
+};
+
+function isTerminalStatus(status: FTPDownloadStatusResponse | null): boolean {
+  return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function loadInitialJobState(): { jobId: string | null; status: FTPDownloadStatusResponse | null; isLoading: boolean } {
+  const saved = safeReadJson<Partial<PersistedJobState> | null>(JOB_STORAGE_KEY, null);
+  if (!saved) return { jobId: null, status: null, isLoading: false };
+  const jobId = typeof saved.jobId === "string" && saved.jobId.trim() ? saved.jobId : null;
+  const status = saved.status ?? null;
+  return { jobId, status, isLoading: Boolean(jobId) && !isTerminalStatus(status as FTPDownloadStatusResponse | null) };
+}
+
 export const FtpDownloadPage: React.FC = () => {
   const initialState = useMemo(() => loadInitialFormState(), []);
+  const initialJobState = useMemo(() => loadInitialJobState(), []);
 
   const [host, setHost] = useState(initialState.host);
   const [port, setPort] = useState(initialState.port);
@@ -271,10 +290,10 @@ export const FtpDownloadPage: React.FC = () => {
   const [customPresetName, setCustomPresetName] = useState("");
   const [customPresets, setCustomPresets] = useState<CustomSavedPreset[]>(loadCustomPresets());
   const [message, setMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(initialJobState.isLoading);
   const [error, setError] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<FTPDownloadStatusResponse | null>(null);
+  const [jobId, setJobId] = useState<string | null>(initialJobState.jobId);
+  const [status, setStatus] = useState<FTPDownloadStatusResponse | null>(initialJobState.status);
 
   useEffect(() => {
     const formState: PageFormState = {
@@ -302,7 +321,17 @@ export const FtpDownloadPage: React.FC = () => {
   }, [customPresets]);
 
   useEffect(() => {
+    if (!jobId) {
+      window.localStorage.removeItem(JOB_STORAGE_KEY);
+      return;
+    }
+    const payload: PersistedJobState = { jobId, status };
+    window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(payload));
+  }, [jobId, status]);
+
+  useEffect(() => {
     if (!jobId) return;
+    setIsLoading(!isTerminalStatus(status));
 
     let cancelled = false;
     const poll = async () => {
@@ -310,8 +339,9 @@ export const FtpDownloadPage: React.FC = () => {
         const next = await getFtpDownloadStatus(jobId);
         if (cancelled) return;
         setStatus(next);
-        if (next.status === "completed" || next.status === "failed" || next.status === "cancelled") {
+        if (isTerminalStatus(next)) {
           setIsLoading(false);
+          setJobId(null);
           return;
         }
         window.setTimeout(poll, 1200);
