@@ -105,6 +105,81 @@ class FTPDownloadService:
         return {"job_id": job_id, "status": "queued"}
 
     @classmethod
+    def download_files(
+        cls,
+        host: str,
+        port: int,
+        output_root: str,
+        file_suffix: str,
+        max_workers: int,
+        max_retries: int,
+        retry_delay_seconds: int,
+        timeout_seconds: int,
+        passive_mode: bool,
+        skip_existing: bool,
+        profiles: list[FTPDownloadProfile],
+    ) -> dict[str, Any]:
+        """
+        Run FTP downloads synchronously and return the final aggregate result.
+
+        This compatibility API is kept for internal callers/tests that expect
+        the pre-job-system return shape.
+        """
+        normalized_host = host.strip()
+        if not normalized_host:
+            raise ValueError("FTP host is required.")
+        if not output_root.strip():
+            raise ValueError("Output root folder is required.")
+        if not profiles:
+            raise ValueError("At least one FTP profile is required.")
+
+        normalized_suffix = file_suffix.strip() or ".gz"
+        if not normalized_suffix.startswith("."):
+            normalized_suffix = f".{normalized_suffix}"
+        normalized_suffix = normalized_suffix.lower()
+
+        output_root_path = cls._expand_tokens(output_root, "ROOT")
+        root_dir = Path(output_root_path).expanduser()
+        root_dir.mkdir(parents=True, exist_ok=True)
+
+        prepared_profiles = [cls._prepare_profile(profile, root_dir) for profile in profiles]
+
+        total_found = total_downloaded = total_skipped = total_failed = 0
+        profile_results: list[dict[str, Any]] = []
+        for prepared in prepared_profiles:
+            result = cls._download_profile(
+                host=normalized_host,
+                port=port,
+                file_suffix=normalized_suffix,
+                max_workers=max_workers,
+                max_retries=max_retries,
+                retry_delay_seconds=retry_delay_seconds,
+                timeout_seconds=timeout_seconds,
+                passive_mode=passive_mode,
+                skip_existing=skip_existing,
+                profile=prepared,
+                job_id="sync",
+            )
+            profile_results.append(result)
+            total_found += result["found_files"]
+            total_downloaded += result["downloaded_files"]
+            total_skipped += result["skipped_files"]
+            total_failed += result["failed_files"]
+
+        return {
+            "status": "completed",
+            "host": normalized_host,
+            "output_root": str(root_dir),
+            "total_profiles": len(prepared_profiles),
+            "total_files_found": total_found,
+            "total_downloaded_files": total_downloaded,
+            "total_skipped_files": total_skipped,
+            "total_failed_files": total_failed,
+            "profile_results": profile_results,
+            "error_message": None,
+        }
+
+    @classmethod
     def get_job_status(cls, job_id: str) -> dict[str, Any] | None:
         with cls._jobs_lock:
             job = cls._jobs.get(job_id)
@@ -408,7 +483,13 @@ class FTPDownloadService:
         ftp = None
         tasks: list[_DownloadTask] = []
         try:
-            ftp = FTPDownloadService._connect(host, port, timeout_seconds, passive_mode, profile)
+            ftp = FTPDownloadService._connect(
+                host=host,
+                port=port,
+                timeout_seconds=timeout_seconds,
+                passive_mode=passive_mode,
+                profile=profile,
+            )
             names = FTPDownloadService._list_names(ftp)
             for name in names:
                 if not name.lower().endswith(file_suffix):
@@ -442,7 +523,13 @@ class FTPDownloadService:
         for attempt in range(1, max_retries + 1):
             FTPDownloadService._raise_if_cancelled(job_id)
             try:
-                ftp = FTPDownloadService._connect(host, port, timeout_seconds, passive_mode, task.profile)
+                ftp = FTPDownloadService._connect(
+                    host=host,
+                    port=port,
+                    timeout_seconds=timeout_seconds,
+                    passive_mode=passive_mode,
+                    profile=task.profile,
+                )
                 with task.local_path.open("wb") as file_handle:
                     def write_chunk(chunk: bytes) -> None:
                         FTPDownloadService._raise_if_cancelled(job_id)
