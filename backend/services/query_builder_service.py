@@ -19,7 +19,10 @@ class QueryBuilderService:
     LIST_OPERATORS = {"IN", "NOT IN"}
     RANGE_OPERATORS = {"BETWEEN", "NOT BETWEEN"}
     FRIENDLY_TEXT_OPERATORS = {"CONTAINS", "NOT CONTAINS", "STARTS WITH", "ENDS WITH"}
+    NUMERIC_COMPARISON_OPERATORS = {">", "<", ">=", "<="}
     REPORT_VALUE_ALIAS = "__REPORT_VALUE__"
+    AI_HELPER_COMMENT_START = "/* AI_CONTEXT"
+    AI_HELPER_COMMENT_END = "*/"
 
     @staticmethod
     def _normalize_list_value(value: Any) -> list[Any]:
@@ -82,6 +85,32 @@ class QueryBuilderService:
         return f"DATE '{normalized}'"
 
     @staticmethod
+    def _duckdb_date_expression(column_expr: str) -> str:
+        return (
+            "COALESCE("
+            f"TRY_CAST({column_expr} AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%b-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%B-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%m-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%Y-%m-%d') AS DATE)"
+            ")"
+        )
+
+    @staticmethod
+    def _to_float_if_numeric(value: Any) -> float | None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return float(text)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
     def _placeholder(engine: EngineName, index: int) -> str:
         return "?" if engine == "duckdb" else f":{index}"
 
@@ -129,13 +158,46 @@ class QueryBuilderService:
 
     @staticmethod
     def normalize_manual_sql(sql: str) -> str:
-        normalized = sql.strip()
+        normalized = QueryBuilderService.strip_ai_helper_comment(sql).strip()
         if not normalized:
             raise ValueError("SQL cannot be empty.")
         normalized = normalized[:-1].rstrip() if normalized.endswith(";") else normalized
         if ";" in normalized:
             raise ValueError("Only a single SQL statement can be executed at a time.")
         return normalized
+
+    @staticmethod
+    def strip_ai_helper_comment(sql: str) -> str:
+        text = sql.lstrip()
+        if not text.startswith(QueryBuilderService.AI_HELPER_COMMENT_START):
+            return sql
+        end_index = text.find(QueryBuilderService.AI_HELPER_COMMENT_END)
+        if end_index == -1:
+            return sql
+        return text[end_index + len(QueryBuilderService.AI_HELPER_COMMENT_END) :].lstrip()
+
+    @staticmethod
+    def add_ai_helper_comment(sql: str, engine: EngineName, source_mode: str) -> str:
+        normalized_sql = QueryBuilderService.strip_ai_helper_comment(sql).strip()
+        read_only = "true" if engine == "oracle" else "false"
+        comment = "\n".join(
+            [
+                "/* AI_CONTEXT",
+                f"engine: {'oracle-marcadose' if engine == 'oracle' else 'duckdb'}",
+                f"source_mode: {source_mode}",
+                "join_semantics: JOIN clauses and ON predicates are already resolved in this SQL.",
+                "filter_semantics: WHERE predicates are AND-combined unless SQL explicitly uses OR.",
+                (
+                    "limit_semantics: Uses OFFSET ... FETCH for pagination."
+                    if engine == "oracle"
+                    else "limit_semantics: Uses LIMIT/OFFSET for pagination."
+                ),
+                "date_literal_semantics: DATE 'YYYY-MM-DD' denotes explicit date comparison.",
+                f"marcadose_read_only: {read_only}",
+                "*/",
+            ]
+        )
+        return f"{comment}\n{normalized_sql}"
 
     @staticmethod
     def _quote_identifier(identifier: str) -> str:
@@ -281,6 +343,21 @@ class QueryBuilderService:
             )
             operator = filter_condition.operator
             use_date_literals = QueryBuilderService._is_date_like_column(column_name)
+            numeric_value = QueryBuilderService._to_float_if_numeric(filter_condition.value)
+            should_use_numeric_cast = (
+                engine == "duckdb"
+                and not use_date_literals
+                and operator in QueryBuilderService.NUMERIC_COMPARISON_OPERATORS
+                and numeric_value is not None
+            )
+            filter_column_expr = (
+                f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_numeric_cast else column_expr
+            )
+            date_filter_expr = (
+                QueryBuilderService._duckdb_date_expression(column_expr)
+                if use_date_literals and engine == "duckdb"
+                else column_expr
+            )
 
             if operator in QueryBuilderService.NO_VALUE_OPERATORS:
                 where_clauses.append(f"{column_expr} {operator}")
@@ -292,7 +369,7 @@ class QueryBuilderService:
                     raise ValueError(f"{operator} filters need at least one value.")
                 if use_date_literals:
                     literals = ", ".join(QueryBuilderService._date_literal(value) for value in values)
-                    where_clauses.append(f"{column_expr} {operator} ({literals})")
+                    where_clauses.append(f"{date_filter_expr} {operator} ({literals})")
                 else:
                     placeholders = ", ".join(
                         QueryBuilderService._build_placeholders(engine, len(values), len(params) + 1)
@@ -305,13 +382,30 @@ class QueryBuilderService:
                 start, end = QueryBuilderService._normalize_range_value(filter_condition.value)
                 if use_date_literals:
                     where_clauses.append(
-                        f"{column_expr} {operator} {QueryBuilderService._date_literal(start)} AND {QueryBuilderService._date_literal(end)}"
+                        f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(start)} AND {QueryBuilderService._date_literal(end)}"
                     )
                 else:
+                    start_numeric = QueryBuilderService._to_float_if_numeric(start)
+                    end_numeric = QueryBuilderService._to_float_if_numeric(end)
+                    should_use_range_numeric_cast = (
+                        engine == "duckdb"
+                        and start_numeric is not None
+                        and end_numeric is not None
+                    )
+                    range_column_expr = (
+                        f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_range_numeric_cast else column_expr
+                    )
                     left_placeholder = QueryBuilderService._placeholder(engine, len(params) + 1)
                     right_placeholder = QueryBuilderService._placeholder(engine, len(params) + 2)
-                    where_clauses.append(f"{column_expr} {operator} {left_placeholder} AND {right_placeholder}")
-                    params.extend([start, end])
+                    where_clauses.append(
+                        f"{range_column_expr} {operator} {left_placeholder} AND {right_placeholder}"
+                    )
+                    params.extend(
+                        [
+                            start_numeric if should_use_range_numeric_cast else start,
+                            end_numeric if should_use_range_numeric_cast else end,
+                        ]
+                    )
                 continue
 
             if operator in QueryBuilderService.FRIENDLY_TEXT_OPERATORS:
@@ -322,11 +416,13 @@ class QueryBuilderService:
                 continue
 
             if use_date_literals:
-                where_clauses.append(f"{column_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}")
+                where_clauses.append(
+                    f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}"
+                )
             else:
                 placeholder = QueryBuilderService._placeholder(engine, len(params) + 1)
-                where_clauses.append(f"{column_expr} {operator} {placeholder}")
-                params.append(filter_condition.value)
+                where_clauses.append(f"{filter_column_expr} {operator} {placeholder}")
+                params.append(numeric_value if should_use_numeric_cast else filter_condition.value)
 
         return " AND ".join(where_clauses) if where_clauses else "", params
 

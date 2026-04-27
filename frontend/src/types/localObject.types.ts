@@ -9,6 +9,7 @@ export interface FileObjectRequest {
   replace: boolean;
   header: boolean;
   sheet_name?: string | null;
+  header_names?: string[];
 }
 
 export interface FileObjectResponse {
@@ -17,4 +18,16 @@ export interface FileObjectResponse {
   object_name: string;
   object_type: LocalFileObjectType;
   table: TableMetadata;
+}
+
+export interface FilePreviewRequest {
+  file_path: string;
+  header: boolean;
+  sheet_name?: string | null;
+  limit_rows?: number;
+}
+
+export interface FilePreviewResponse {
+  columns: string[];
+  rows: Array<Array<string | number | null>>;
 }

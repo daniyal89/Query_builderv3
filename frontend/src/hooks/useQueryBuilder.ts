@@ -80,6 +80,7 @@ export interface UseQueryBuilderReturn {
   setSourceMode: (mode: QuerySourceMode) => void;
   updateSqlText: (sql: string) => void;
   resetSqlToBuilder: () => void;
+  applyState: (nextState: Partial<QueryState>) => void;
   executeQuery: () => Promise<QueryResult | undefined>;
   reset: () => void;
 }
@@ -109,7 +110,14 @@ const initialState: QueryBuilderState = {
 };
 
 function getErrorMessage(err: any, fallback: string): string {
-  return err?.response?.data?.detail || err?.message || fallback;
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") {
+    const message = typeof detail.message === "string" ? detail.message : fallback;
+    const executedSql = typeof detail.executed_sql === "string" ? detail.executed_sql : "";
+    return executedSql ? `${message}\n\nExecuted SQL:\n${executedSql}` : message;
+  }
+  return err?.message || fallback;
 }
 
 function getValidFilters(filters: FilterCondition[]): Omit<FilterCondition, "id">[] {
@@ -193,7 +201,7 @@ function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine): Que
     offset: state.offset,
     mode: state.mode,
     pivot: state.mode === "REPORT" ? state.pivotConfig : undefined,
-    marcadose_union: engine === "oracle" ? state.marcadoseUnion : undefined,
+    marcadose_union: state.marcadoseUnion,
   };
 }
 
@@ -550,6 +558,17 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     }));
   }, []);
 
+  const applyState = useCallback((nextState: Partial<QueryState>) => {
+    setState((prev) => ({
+      ...prev,
+      ...nextState,
+      error: null,
+      previewError: null,
+      isLoading: false,
+      isPreviewLoading: false,
+    }));
+  }, []);
+
   const executeQuery = useCallback(async () => {
     const isBuilderMode = state.sourceMode === "builder";
 
@@ -593,7 +612,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
           limit_rows: state.limitRows,
           offset: state.offset,
           mode: state.mode,
-          marcadose_union: engine === "oracle" ? state.marcadoseUnion : undefined,
+          marcadose_union: state.marcadoseUnion,
           group_by: [],
           aggregates: [],
           sql: state.sqlText,
@@ -648,6 +667,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     setSourceMode,
     updateSqlText,
     resetSqlToBuilder,
+    applyState,
     executeQuery,
     reset,
   };

@@ -12,6 +12,7 @@ import { UploadMasterDrivePage } from "./pages/UploadMasterDrivePage";
 import { DriveDownloadPage } from "./pages/DriveDownloadPage";
 import { MarcadoseQueryBuilderPage } from "./pages/MarcadoseQueryBuilderPage";
 import { QueryBuilderPage } from "./pages/QueryBuilderPage";
+import { SidebarToolsPage } from "./pages/SidebarToolsPage";
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
         <Route path="/ftp-download" element={<FtpDownloadPage />} />
         <Route path="/drive-upload-master" element={<UploadMasterDrivePage />} />
         <Route path="/drive-download" element={<DriveDownloadPage />} />
+        <Route path="/sidebar-6-tools" element={<SidebarToolsPage />} />
       </Routes>
     </PageShell>
   );
