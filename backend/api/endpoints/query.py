@@ -191,6 +191,7 @@ async def execute_query(
                 payload.marcadose_union,
             )
             columns, rows, _ = service.execute(executed_sql)
+            attempted_sql = executed_count_sql
             _, count_rows, _ = service.execute(executed_count_sql)
         else:
             columns, rows, _ = service.execute(data_sql, params)

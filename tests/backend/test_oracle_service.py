@@ -93,3 +93,8 @@ def test_oracle_sanitize_sql_normalizes_fullwidth_and_zero_width_chars() -> None
 def test_oracle_ascii_retry_sql_removes_non_ascii_chars() -> None:
     retry_sql = OracleService._sanitize_ascii_retry_sql("SELECT * FROM dual\u00A0;")
     assert retry_sql == "SELECT * FROM dual"
+
+
+def test_oracle_diagnose_invalid_sql_chars_reports_control_codes() -> None:
+    diagnostic = OracleService._diagnose_invalid_sql_chars("SELECT\x00 * FROM dual")
+    assert "U+0000" in diagnostic

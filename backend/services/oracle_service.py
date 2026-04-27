@@ -130,13 +130,29 @@ class OracleService:
                     retry_sql = ascii_cleaned_sql if ascii_cleaned_sql != cleaned_sql else cleaned_sql
 
                     if retry_sql == normalized_sql:
+                        diagnostic = self._diagnose_invalid_sql_chars(normalized_sql)
+                        if diagnostic:
+                            raise RuntimeError(
+                                "ORA-00911 persists after SQL sanitation. Suspicious character codes: "
+                                f"{diagnostic}"
+                            ) from exc
                         raise
                     self.ensure_read_only_sql(retry_sql)
 
-                    if params:
-                        cursor.execute(retry_sql, params)
-                    else:
-                        cursor.execute(retry_sql)
+                    try:
+                        if params:
+                            cursor.execute(retry_sql, params)
+                        else:
+                            cursor.execute(retry_sql)
+                    except Exception as retry_exc:
+                        if self._is_invalid_character_error(retry_exc):
+                            diagnostic = self._diagnose_invalid_sql_chars(retry_sql)
+                            if diagnostic:
+                                raise RuntimeError(
+                                    "ORA-00911 after retry sanitation. Suspicious character codes: "
+                                    f"{diagnostic}"
+                                ) from retry_exc
+                        raise
                 columns = [desc[0] for desc in (cursor.description or [])]
                 rows = cursor.fetchall()
                 return columns, [list(row) for row in rows], len(rows)
@@ -181,6 +197,17 @@ class OracleService:
     def _sanitize_ascii_retry_sql(sql: str) -> str:
         compact = "".join(char for char in sql if char in {"\n", "\r", "\t"} or 32 <= ord(char) <= 126).strip()
         return compact[:-1].rstrip() if compact.endswith(";") else compact
+
+    @staticmethod
+    def _diagnose_invalid_sql_chars(sql: str) -> str:
+        findings: list[str] = []
+        for index, char in enumerate(sql):
+            code = ord(char)
+            if code < 32 and char not in {"\n", "\r", "\t"}:
+                findings.append(f"pos={index} U+{code:04X}")
+            elif unicodedata.category(char).startswith("C") and char not in {"\n", "\r", "\t"}:
+                findings.append(f"pos={index} U+{code:04X}")
+        return ", ".join(findings[:12])
 
     @staticmethod
     def ensure_read_only_sql(sql: str) -> None:
