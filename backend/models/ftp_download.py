@@ -1,6 +1,8 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from backend.utils.path_safety import sanitize_local_path_input, validate_relative_subpath
 
 
 class FTPDownloadProfile(BaseModel):
@@ -12,6 +14,16 @@ class FTPDownloadProfile(BaseModel):
         default=None,
         description="Optional subfolder under the output root. Supports {DATE}, {MONTH}, {PROFILE}.",
     )
+
+    @field_validator("local_subfolder")
+    @classmethod
+    def validate_local_subfolder(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        return validate_relative_subpath(normalized, "local_subfolder")
 
 
 class FTPDownloadRequest(BaseModel):
@@ -29,6 +41,11 @@ class FTPDownloadRequest(BaseModel):
         description="Skip local files when file size already matches the FTP file size.",
     )
     profiles: list[FTPDownloadProfile] = Field(..., min_length=1, description="One or more FTP login profiles.")
+
+    @field_validator("output_root")
+    @classmethod
+    def validate_output_root(cls, value: str) -> str:
+        return sanitize_local_path_input(value, "output_root")
 
 
 class FTPProfileResult(BaseModel):
