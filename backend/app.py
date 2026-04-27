@@ -8,12 +8,13 @@ configures the SPA fallback so React Router handles client-side routes.
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.api.router import api_router
+from backend.services.error_log_service import ErrorLogService
 
 
 def create_app() -> FastAPI:
@@ -30,6 +31,31 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+
+    @application.exception_handler(HTTPException)
+    async def log_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+        if request.url.path not in {"/api/query", "/api/query/preview"}:
+            ErrorLogService.append(
+                {
+                    "endpoint": request.url.path,
+                    "method": request.method,
+                    "status_code": exc.status_code,
+                    "error": str(exc.detail),
+                }
+            )
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @application.exception_handler(Exception)
+    async def log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        ErrorLogService.append(
+            {
+                "endpoint": request.url.path,
+                "method": request.method,
+                "status_code": 500,
+                "error": str(exc),
+            }
+        )
+        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
     # --- API routes (must be registered BEFORE the static-file mount) ---
     application.include_router(api_router)
