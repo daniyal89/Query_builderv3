@@ -29,6 +29,7 @@ class MarcadoseUnionService:
         r"\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY\s*$",
         re.IGNORECASE,
     )
+    ORDER_BY_PATTERN = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 
     @classmethod
     def is_active(cls, config: MarcadoseUnionConfig | None) -> bool:
@@ -102,15 +103,29 @@ class MarcadoseUnionService:
             branch_limit = int(fetch_match.group(1))
             base_sql = normalized[: fetch_match.start()].rstrip()
 
-        branches = [
-            f"SELECT * FROM (\n{cls._replace_for_discom(base_sql, config, discom)}\n) qb_branch_{index + 1}"
-            for index, discom in enumerate(selected)
-        ]
-
-        if branch_limit is not None:
-            branches = [f"{branch} WHERE ROWNUM <= {branch_limit}" for branch in branches]
+        branches: list[str] = []
+        for index, discom in enumerate(selected, start=1):
+            branch_sql = cls._replace_for_discom(base_sql, config, discom)
+            if branch_limit is not None:
+                branch_sql = cls._apply_rownum_limit(branch_sql, branch_limit, index)
+            branches.append(branch_sql)
 
         return "\nUNION ALL\n".join(branches)
+
+    @classmethod
+    def _apply_rownum_limit(cls, branch_sql: str, limit: int, branch_index: int) -> str:
+        """
+        Apply Oracle row limiting per UNION branch.
+        Prefer direct WHERE/AND ROWNUM for simpler SQL shape; if ORDER BY exists,
+        fall back to wrapping to preserve ordering semantics.
+        """
+        normalized = branch_sql.strip()
+        if cls.ORDER_BY_PATTERN.search(normalized):
+            return f"SELECT * FROM (\n{normalized}\n) qb_branch_{branch_index} WHERE ROWNUM <= {limit}"
+
+        if re.search(r"\bWHERE\b", normalized, flags=re.IGNORECASE):
+            return f"{normalized} AND ROWNUM <= {limit}"
+        return f"{normalized} WHERE ROWNUM <= {limit}"
 
     @classmethod
     def build_total_count_sql(
