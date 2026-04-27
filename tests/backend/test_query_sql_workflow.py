@@ -7,11 +7,19 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from backend.api.endpoints.query import _safe_utf8_hex
 from backend.app import app
 from backend.services.error_log_service import ErrorLogService
 
 
 TEST_DB_PATH = Path(__file__).resolve().parents[2] / "test_data.duckdb"
+
+
+def test_safe_utf8_hex_handles_unpaired_surrogates() -> None:
+    malformed = "\ud800SELECT 1"
+    value = _safe_utf8_hex(malformed)
+    assert isinstance(value, str)
+    assert value
 
 
 def _connect_duckdb(client: TestClient) -> None:

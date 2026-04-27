@@ -60,7 +60,21 @@ export const SidebarToolsPage: React.FC = () => {
           setParquetMessage(latest.message + (latest.output_path ? ` Output: ${latest.output_path}` : ""));
         }
       } catch (error: any) {
-        setParquetMessage(error?.response?.data?.detail || error?.message || "Failed to fetch conversion status.");
+        const detail = error?.response?.data?.detail || error?.message || "Failed to fetch conversion status.";
+        setParquetMessage(detail);
+        setParquetJobId(null);
+        setParquetStatus((previous) =>
+          previous
+            ? {
+                ...previous,
+                status: "failed",
+                message:
+                  error?.response?.status === 404
+                    ? "Background CSV→Parquet job was not found. Start a new conversion."
+                    : detail,
+              }
+            : null,
+        );
       }
     }, 1200);
     return () => window.clearInterval(timer);
