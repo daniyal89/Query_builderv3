@@ -267,7 +267,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     !state.table && state.sourceMode === "builder" && !state.sqlText.trim();
 
   useEffect(() => {
-    if (initialTable && initialTable !== state.table) {
+    if (initialTable && !state.table) {
       setTable(initialTable);
     }
   }, [initialTable, state.table, setTable]);
