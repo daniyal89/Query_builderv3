@@ -21,6 +21,7 @@ READ_ONLY_KEYWORDS = re.compile(
 )
 FOR_UPDATE_PATTERN = re.compile(r"\bFOR\s+UPDATE\b", re.IGNORECASE)
 LEADING_COMMENT_PATTERN = re.compile(r"^\s*(--.*?$|/\*.*?\*/\s*)*", re.DOTALL | re.MULTILINE)
+NON_PRINTABLE_SQL_CHARS_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B\u200C\u200D\u2060\uFEFF]")
 class OracleService:
     """Singleton service managing a single Oracle connection in Thin mode."""
 
@@ -107,15 +108,8 @@ class OracleService:
 
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
-        normalized_sql = sql
-        try:
-            self.ensure_read_only_sql(normalized_sql)
-        except ValueError:
-            cleaned_candidate = self._sanitize_sql_for_oracle(sql)
-            if cleaned_candidate == sql:
-                raise
-            self.ensure_read_only_sql(cleaned_candidate)
-            normalized_sql = cleaned_candidate
+        normalized_sql = self._sanitize_sql_for_oracle(sql)
+        self.ensure_read_only_sql(normalized_sql)
 
         with self._lock:
             assert self._conn is not None
@@ -153,6 +147,10 @@ class OracleService:
     def _sanitize_sql_for_oracle(sql: str) -> str:
         sanitized = (
             sql.replace("\u00A0", " ")
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+            .replace("\u201C", '"')
+            .replace("\u201D", '"')
             .replace("`", "")
             .replace("\\n", "\n")
             .replace("\\r", " ")
@@ -161,6 +159,8 @@ class OracleService:
             .replace("\\'", "'")
             .strip()
         )
+
+        sanitized = NON_PRINTABLE_SQL_CHARS_PATTERN.sub(" ", sanitized)
 
         if len(sanitized) >= 2 and sanitized[0] == sanitized[-1] and sanitized[0] in {"'", '"'}:
             sanitized = sanitized[1:-1].strip()
