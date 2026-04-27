@@ -1,6 +1,8 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from backend.utils.path_safety import sanitize_local_path_input
 
 
 DriveAuthMode = Literal["auto", "oauth", "service_account"]
@@ -25,6 +27,16 @@ class DriveAuthConfig(BaseModel):
         description="Optional service-account JSON path. Required only for service_account mode.",
     )
 
+    @field_validator("oauth_client_json_path", "token_json_path", "service_account_json_path")
+    @classmethod
+    def validate_optional_paths(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        return sanitize_local_path_input(normalized, "auth path")
+
 
 class DriveUploadRequest(BaseModel):
     auth: DriveAuthConfig = Field(default_factory=DriveAuthConfig)
@@ -37,6 +49,11 @@ class DriveUploadRequest(BaseModel):
     skip_existing: bool = Field(default=True, description="Skip files that already exist by name in the target folder.")
     max_workers: int = Field(default=3, ge=1, le=8, description="Parallel upload workers.")
 
+    @field_validator("local_folder")
+    @classmethod
+    def validate_local_folder(cls, value: str) -> str:
+        return sanitize_local_path_input(value, "local_folder")
+
 
 class DriveDownloadRequest(BaseModel):
     auth: DriveAuthConfig = Field(default_factory=DriveAuthConfig)
@@ -44,6 +61,11 @@ class DriveDownloadRequest(BaseModel):
     output_folder: str = Field(..., description="Local folder where files will be downloaded.")
     overwrite_existing: bool = Field(default=False, description="Overwrite local files when they already exist.")
     export_google_files: bool = Field(default=True, description="Export Google Docs/Sheets/Slides while downloading.")
+
+    @field_validator("output_folder")
+    @classmethod
+    def validate_output_folder(cls, value: str) -> str:
+        return sanitize_local_path_input(value, "output_folder")
 
 
 class DriveJobStartResponse(BaseModel):

@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from backend.models.connection import OracleConnectionRequest
 from backend.models.schema import ColumnDetail, TableMetadata
+from backend.services.sample_snapshot_service import SampleSnapshotService
 
 
 READ_ONLY_KEYWORDS = re.compile(
@@ -62,6 +63,17 @@ class OracleService:
 
             self._schema_name = payload.username.strip().upper()
             self._connection_label = f"{payload.host.strip()}:{payload.port}/{payload.sid.strip()}"
+            try:
+                object_names = self._fetch_object_names_unlocked()
+                SampleSnapshotService.capture_oracle_once(
+                    self._conn,
+                    self._schema_name,
+                    self._connection_label,
+                    object_names,
+                )
+            except Exception:
+                # Snapshot capture is non-blocking and must not block Oracle connect.
+                pass
             return 0
 
     def disconnect(self) -> None:
@@ -90,30 +102,72 @@ class OracleService:
 
     def get_columns(self, table_name: str) -> list[ColumnDetail]:
         self._ensure_connected()
-        normalized = table_name.strip().upper()
         with self._lock:
-            existing = {name.upper() for name in self._fetch_object_names_unlocked()}
-            if normalized not in existing:
-                raise ValueError(f"Table or view '{table_name}' does not exist in schema '{self._schema_name}'.")
-            return self._fetch_columns_unlocked(normalized)
+            return self._fetch_columns_unlocked(table_name)
 
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
-        self.ensure_read_only_sql(sql)
+        normalized_sql = sql
+        try:
+            self.ensure_read_only_sql(normalized_sql)
+        except ValueError:
+            cleaned_candidate = self._sanitize_sql_for_oracle(sql)
+            if cleaned_candidate == sql:
+                raise
+            self.ensure_read_only_sql(cleaned_candidate)
+            normalized_sql = cleaned_candidate
 
         with self._lock:
             assert self._conn is not None
             cursor = self._conn.cursor()
             try:
-                if params:
-                    cursor.execute(sql, params)
-                else:
-                    cursor.execute(sql)
+                try:
+                    if params:
+                        cursor.execute(normalized_sql, params)
+                    else:
+                        cursor.execute(normalized_sql)
+                except Exception as exc:
+                    if not self._is_invalid_character_error(exc):
+                        raise
+
+                    cleaned_sql = self._sanitize_sql_for_oracle(normalized_sql)
+                    if cleaned_sql == normalized_sql:
+                        raise
+                    self.ensure_read_only_sql(cleaned_sql)
+
+                    if params:
+                        cursor.execute(cleaned_sql, params)
+                    else:
+                        cursor.execute(cleaned_sql)
                 columns = [desc[0] for desc in (cursor.description or [])]
                 rows = cursor.fetchall()
                 return columns, [list(row) for row in rows], len(rows)
             finally:
                 cursor.close()
+
+    @staticmethod
+    def _is_invalid_character_error(exc: Exception) -> bool:
+        return "ORA-00911" in str(exc).upper()
+
+    @staticmethod
+    def _sanitize_sql_for_oracle(sql: str) -> str:
+        sanitized = (
+            sql.replace("\u00A0", " ")
+            .replace("`", "")
+            .replace("\\n", "\n")
+            .replace("\\r", " ")
+            .replace("\\t", " ")
+            .replace('\\"', '"')
+            .replace("\\'", "'")
+            .strip()
+        )
+
+        if len(sanitized) >= 2 and sanitized[0] == sanitized[-1] and sanitized[0] in {"'", '"'}:
+            sanitized = sanitized[1:-1].strip()
+
+        if sanitized.endswith(";"):
+            sanitized = sanitized[:-1].rstrip()
+        return sanitized
 
     @staticmethod
     def ensure_read_only_sql(sql: str) -> None:
