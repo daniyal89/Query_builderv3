@@ -5,6 +5,7 @@ oracle_service.py â€” Manages Marcadose Oracle connection lifecycle and rea
 from __future__ import annotations
 
 import importlib
+import logging
 import re
 import threading
 import unicodedata
@@ -23,6 +24,7 @@ READ_ONLY_KEYWORDS = re.compile(
 FOR_UPDATE_PATTERN = re.compile(r"\bFOR\s+UPDATE\b", re.IGNORECASE)
 LEADING_COMMENT_PATTERN = re.compile(r"^\s*(--.*?$|/\*.*?\*/\s*)*", re.DOTALL | re.MULTILINE)
 NON_PRINTABLE_SQL_CHARS_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B\u200C\u200D\u2060\uFEFF]")
+logger = logging.getLogger(__name__)
 class OracleService:
     """Singleton service managing a single Oracle connection in Thin mode."""
 
@@ -110,6 +112,10 @@ class OracleService:
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
         normalized_sql = self._sanitize_sql_for_oracle(sql)
+        logger.debug("ORACLE_INPUT_SQL repr: %r", sql)
+        logger.debug("ORACLE_INPUT_SQL utf8-hex: %s", sql.encode("utf-8", errors="backslashreplace").hex())
+        logger.debug("ORACLE_ACTUAL_SQL repr: %r", normalized_sql)
+        logger.debug("ORACLE_ACTUAL_SQL utf8-hex: %s", normalized_sql.encode("utf-8", errors="backslashreplace").hex())
         self.ensure_read_only_sql(normalized_sql)
 
         with self._lock:
