@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import re
 import threading
+import unicodedata
 from typing import Any, Optional
 
 from backend.models.connection import OracleConnectionRequest
@@ -145,8 +146,9 @@ class OracleService:
 
     @staticmethod
     def _sanitize_sql_for_oracle(sql: str) -> str:
+        normalized = unicodedata.normalize("NFKC", sql)
         sanitized = (
-            sql.replace("\u00A0", " ")
+            normalized.replace("\u00A0", " ")
             .replace("\u2018", "'")
             .replace("\u2019", "'")
             .replace("\u201C", '"')
@@ -161,6 +163,9 @@ class OracleService:
         )
 
         sanitized = NON_PRINTABLE_SQL_CHARS_PATTERN.sub(" ", sanitized)
+        sanitized = "".join(
+            char for char in sanitized if char in {"\n", "\r", "\t"} or not unicodedata.category(char).startswith("C")
+        )
 
         if len(sanitized) >= 2 and sanitized[0] == sanitized[-1] and sanitized[0] in {"'", '"'}:
             sanitized = sanitized[1:-1].strip()
