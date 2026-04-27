@@ -25,6 +25,11 @@ class MarcadoseUnionService:
         r"^\s*SELECT\s+COUNT\s*\(\s*\*\s*\)\s+FROM\s+",
         re.IGNORECASE | re.DOTALL,
     )
+    FETCH_FIRST_PATTERN = re.compile(
+        r"\s+FETCH\s+FIRST\s+(\d+)\s+ROWS\s+ONLY\s*$",
+        re.IGNORECASE,
+    )
+    ORDER_BY_PATTERN = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 
     @classmethod
     def is_active(cls, config: MarcadoseUnionConfig | None) -> bool:
@@ -91,12 +96,36 @@ class MarcadoseUnionService:
 
             return cls._replace_for_discom(normalized, config, base_discom)
 
-        branches = [
-            f"SELECT * FROM (\n{cls._replace_for_discom(normalized, config, discom)}\n)"
-            for discom in selected
-        ]
+        fetch_match = cls.FETCH_FIRST_PATTERN.search(normalized)
+        branch_limit: int | None = None
+        base_sql = normalized
+        if fetch_match:
+            branch_limit = int(fetch_match.group(1))
+            base_sql = normalized[: fetch_match.start()].rstrip()
+
+        branches: list[str] = []
+        for index, discom in enumerate(selected, start=1):
+            branch_sql = cls._replace_for_discom(base_sql, config, discom)
+            if branch_limit is not None:
+                branch_sql = cls._apply_rownum_limit(branch_sql, branch_limit, index)
+            branches.append(branch_sql)
 
         return "\nUNION ALL\n".join(branches)
+
+    @classmethod
+    def _apply_rownum_limit(cls, branch_sql: str, limit: int, branch_index: int) -> str:
+        """
+        Apply Oracle row limiting per UNION branch.
+        Prefer direct WHERE/AND ROWNUM for simpler SQL shape; if ORDER BY exists,
+        fall back to wrapping to preserve ordering semantics.
+        """
+        normalized = branch_sql.strip()
+        if cls.ORDER_BY_PATTERN.search(normalized):
+            return f"SELECT * FROM (\n{normalized}\n) qb_branch_{branch_index} WHERE ROWNUM <= {limit}"
+
+        if re.search(r"\bWHERE\b", normalized, flags=re.IGNORECASE):
+            return f"{normalized} AND ROWNUM <= {limit}"
+        return f"{normalized} WHERE ROWNUM <= {limit}"
 
     @classmethod
     def build_total_count_sql(
