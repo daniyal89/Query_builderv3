@@ -47,7 +47,7 @@ def _resolve_relation_sql(input_path: str) -> str:
 def _resolve_csv_parquet_read_sql(input_path: str) -> str:
     input_path_sql = _sql_string_literal(input_path)
     return (
-        f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true, "
+        f"read_csv({input_path_sql}, union_by_name = true, filename = true, auto_detect = true, "
         "all_varchar = true, sample_size = -1)"
     )
 
