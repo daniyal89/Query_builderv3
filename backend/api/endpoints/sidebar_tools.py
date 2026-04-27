@@ -45,17 +45,19 @@ def _resolve_relation_sql(input_path: str) -> str:
 
 
 def _resolve_existing_input_glob(input_path: str) -> str:
-    matches = glob.glob(input_path, recursive=True)
+    cleaned = input_path.strip().strip('"').strip("'")
+    normalized_path = cleaned.replace("\\", "/")
+    matches = glob.glob(normalized_path, recursive=True)
     if matches:
-        return input_path
+        return normalized_path
 
-    if ".csv.gz" in input_path.lower():
-        fallback = re.sub(r"\.csv\.gz", ".gz", input_path, flags=re.IGNORECASE)
+    if ".csv.gz" in normalized_path.lower():
+        fallback = re.sub(r"\.csv\.gz", ".gz", normalized_path, flags=re.IGNORECASE)
         fallback_matches = glob.glob(fallback, recursive=True)
         if fallback_matches:
             return fallback
 
-    raise ValueError(f"No files found that match the pattern '{input_path}'.")
+    raise ValueError(f"No files found that match the pattern '{cleaned}'.")
 
 
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)

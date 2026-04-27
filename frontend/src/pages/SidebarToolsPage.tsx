@@ -181,7 +181,7 @@ export const SidebarToolsPage: React.FC = () => {
 
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">2) Convert CSV/GZ to Parquet</h2>
-        <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>csv_to_prequat.py</code></p>
+        <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>csv_to_parquet.py</code></p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <Field label="Input CSV/GZ path or glob" help="Example: G:/MASTER/MAR_2026/*.csv.gz">
             <div className="flex gap-2">
@@ -238,7 +238,7 @@ export const SidebarToolsPage: React.FC = () => {
         <button onClick={runParquet} disabled={isParquetRunning} className="mt-3 rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60">
           {isParquetRunning ? "Running..." : "Run CSV → Parquet"}
         </button>
-        <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_prequat.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}`}</pre>
+        <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_parquet.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}`}</pre>
         {parquetMessage && <p className="mt-2 text-sm text-slate-700">{parquetMessage}</p>}
       </div>
     </div>
