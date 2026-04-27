@@ -86,6 +86,40 @@ def _resolve_existing_input_glob(input_path: str) -> str:
     raise ValueError(f"No files found that match the pattern '{cleaned}'.")
 
 
+def _list_matching_input_files(pattern: str) -> list[Path]:
+    files = [Path(item).expanduser().resolve() for item in glob.glob(pattern, recursive=True)]
+    return [item for item in files if item.is_file()]
+
+
+def _infer_input_root(pattern: str, files: list[Path]) -> Path:
+    wildcard_index = min(
+        [index for index in (pattern.find("*"), pattern.find("?"), pattern.find("[")) if index != -1],
+        default=-1,
+    )
+    if wildcard_index != -1:
+        prefix = pattern[:wildcard_index]
+        root = Path(prefix).expanduser()
+        while root.name and any(char in root.name for char in ["*", "?", "["]):
+            root = root.parent
+        if root.exists():
+            return root.resolve()
+
+    if files:
+        return files[0].parent
+    return Path(pattern).expanduser().resolve().parent
+
+
+def _parquet_target_for_input(output_root: Path, input_root: Path, source_file: Path) -> Path:
+    try:
+        relative = source_file.relative_to(input_root)
+    except ValueError:
+        relative = source_file.name
+    target = output_root / relative
+    if target.suffix.lower() == ".gz":
+        target = target.with_suffix("")
+    return target.with_suffix(".parquet")
+
+
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)
 async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
     try:
@@ -119,19 +153,48 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
     try:
         resolved_input = _resolve_existing_input_glob(payload.input_path)
         output_path = Path(payload.output_path).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        matched_files = _list_matching_input_files(resolved_input)
+        if not matched_files:
+            raise ValueError(f"No readable files matched '{resolved_input}'.")
 
-        input_path_sql = _sql_string_literal(resolved_input)
-        output_path_sql = _sql_string_literal(str(output_path))
         compression_sql = _sql_string_literal(payload.compression)
-        with duckdb.connect() as conn:
-            conn.execute(
-                f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
-                f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+
+        # Single-file mode keeps backward compatibility when output is an explicit parquet file.
+        if len(matched_files) == 1 and output_path.suffix.lower() == ".parquet":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            input_path_sql = _sql_string_literal(str(matched_files[0]))
+            output_path_sql = _sql_string_literal(str(output_path))
+            with duckdb.connect() as conn:
+                conn.execute(
+                    f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
+                    f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                )
+            return SidebarToolResponse(
+                message="Parquet conversion completed successfully.",
+                output_path=str(output_path),
             )
+
+        # Multi-file mode writes parquet files preserving input relative folder structure.
+        output_root = output_path if output_path.suffix.lower() != ".parquet" else output_path.parent
+        output_root.mkdir(parents=True, exist_ok=True)
+        input_root = _infer_input_root(resolved_input, matched_files)
+
+        converted_count = 0
+        with duckdb.connect() as conn:
+            for source_file in matched_files:
+                target_file = _parquet_target_for_input(output_root, input_root, source_file)
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                source_sql = _sql_string_literal(str(source_file))
+                target_sql = _sql_string_literal(str(target_file))
+                conn.execute(
+                    f"COPY (SELECT * FROM read_csv_auto({source_sql}, union_by_name = true, filename = true)) "
+                    f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                )
+                converted_count += 1
+
         return SidebarToolResponse(
-            message="Parquet conversion completed successfully.",
-            output_path=str(output_path),
+            message=f"Parquet conversion completed successfully for {converted_count} file(s).",
+            output_path=str(output_root),
         )
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
