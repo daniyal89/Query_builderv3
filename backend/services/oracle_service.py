@@ -126,14 +126,17 @@ class OracleService:
                         raise
 
                     cleaned_sql = self._sanitize_sql_for_oracle(normalized_sql)
-                    if cleaned_sql == normalized_sql:
+                    ascii_cleaned_sql = self._sanitize_ascii_retry_sql(cleaned_sql)
+                    retry_sql = ascii_cleaned_sql if ascii_cleaned_sql != cleaned_sql else cleaned_sql
+
+                    if retry_sql == normalized_sql:
                         raise
-                    self.ensure_read_only_sql(cleaned_sql)
+                    self.ensure_read_only_sql(retry_sql)
 
                     if params:
-                        cursor.execute(cleaned_sql, params)
+                        cursor.execute(retry_sql, params)
                     else:
-                        cursor.execute(cleaned_sql)
+                        cursor.execute(retry_sql)
                 columns = [desc[0] for desc in (cursor.description or [])]
                 rows = cursor.fetchall()
                 return columns, [list(row) for row in rows], len(rows)
@@ -173,6 +176,11 @@ class OracleService:
         if sanitized.endswith(";"):
             sanitized = sanitized[:-1].rstrip()
         return sanitized
+
+    @staticmethod
+    def _sanitize_ascii_retry_sql(sql: str) -> str:
+        compact = "".join(char for char in sql if char in {"\n", "\r", "\t"} or 32 <= ord(char) <= 126).strip()
+        return compact[:-1].rstrip() if compact.endswith(";") else compact
 
     @staticmethod
     def ensure_read_only_sql(sql: str) -> None:

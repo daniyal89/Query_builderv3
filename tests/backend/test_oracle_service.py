@@ -88,3 +88,8 @@ def test_oracle_sanitize_sql_normalizes_fullwidth_and_zero_width_chars() -> None
     raw_sql = "SELECT\u200B * FROM dual\uff1b"
     sanitized = OracleService._sanitize_sql_for_oracle(raw_sql)
     assert sanitized.replace("  ", " ") == "SELECT * FROM dual"
+
+
+def test_oracle_ascii_retry_sql_removes_non_ascii_chars() -> None:
+    retry_sql = OracleService._sanitize_ascii_retry_sql("SELECT * FROM dual\u00A0;")
+    assert retry_sql == "SELECT * FROM dual"
