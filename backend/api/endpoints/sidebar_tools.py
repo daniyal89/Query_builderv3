@@ -47,15 +47,30 @@ def _resolve_relation_sql(input_path: str) -> str:
 def _resolve_existing_input_glob(input_path: str) -> str:
     cleaned = input_path.strip().strip('"').strip("'")
     normalized_path = cleaned.replace("\\", "/")
+    normalized_as_path = Path(normalized_path).expanduser()
+
+    if normalized_as_path.is_file():
+        return str(normalized_as_path)
+
+    if normalized_as_path.is_dir():
+        for candidate in ("*.csv.gz", "*.gz", "*.csv", "*.tsv", "*.txt"):
+            pattern = str((normalized_as_path / candidate).as_posix())
+            if glob.glob(pattern, recursive=True):
+                return pattern
+
     matches = glob.glob(normalized_path, recursive=True)
     if matches:
         return normalized_path
 
     if ".csv.gz" in normalized_path.lower():
-        fallback = re.sub(r"\.csv\.gz", ".gz", normalized_path, flags=re.IGNORECASE)
-        fallback_matches = glob.glob(fallback, recursive=True)
-        if fallback_matches:
-            return fallback
+        fallbacks = [
+            re.sub(r"\.csv\.gz", ".gz", normalized_path, flags=re.IGNORECASE),
+            re.sub(r"\.csv\.gz", ".csv", normalized_path, flags=re.IGNORECASE),
+        ]
+        for fallback in fallbacks:
+            fallback_matches = glob.glob(fallback, recursive=True)
+            if fallback_matches:
+                return fallback
 
     raise ValueError(f"No files found that match the pattern '{cleaned}'.")
 

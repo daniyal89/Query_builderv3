@@ -23,6 +23,11 @@ function getErrorMessage(error: unknown): string {
   return "FTP download failed.";
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("response" in error)) return false;
+  return (error as { response?: { status?: number } }).response?.status === 404;
+}
+
 const FORM_STORAGE_KEY = "ftp_download_form_state_v3";
 const PRESET_STORAGE_KEY = "ftp_download_preset_overrides_v3";
 const CUSTOM_PRESET_STORAGE_KEY = "ftp_download_custom_presets_v3";
@@ -347,6 +352,13 @@ export const FtpDownloadPage: React.FC = () => {
         window.setTimeout(poll, 1200);
       } catch (err) {
         if (cancelled) return;
+        if (isNotFoundError(err)) {
+          setJobId(null);
+          setStatus(null);
+          setIsLoading(false);
+          setError("Previous FTP job was not found on server. Please start a new download.");
+          return;
+        }
         setError(getErrorMessage(err));
         setIsLoading(false);
       }

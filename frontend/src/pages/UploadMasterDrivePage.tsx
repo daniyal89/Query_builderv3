@@ -19,6 +19,11 @@ function getErrorMessage(error: unknown): string {
   return "Google Drive upload failed.";
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("response" in error)) return false;
+  return (error as { response?: { status?: number } }).response?.status === 404;
+}
+
 type FormState = {
   authMode: DriveAuthMode;
   serviceAccountJsonPath: string;
@@ -190,6 +195,13 @@ export const UploadMasterDrivePage: React.FC = () => {
         window.setTimeout(poll, 1500);
       } catch (err) {
         if (cancelled) return;
+        if (isNotFoundError(err)) {
+          setJobId(null);
+          setStatus(null);
+          setIsLoading(false);
+          setError("Previous job was not found on server. Please start a new upload.");
+          return;
+        }
         setError(getErrorMessage(err));
         setIsLoading(false);
       }
