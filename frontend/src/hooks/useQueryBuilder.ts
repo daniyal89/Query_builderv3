@@ -21,6 +21,7 @@ import { getReferencedTable } from "../utils/queryBuilderColumns";
 const genId = () => Math.random().toString(36).substring(2, 11);
 const NO_VALUE_OPERATORS = ["IS NULL", "IS NOT NULL"];
 const MARCADOSE_DISCOMS = ["DVVNL", "PVVNL", "PUVNL", "MVVNL", "KESCO"];
+const WORKSPACE_STATE_STORAGE_PREFIX = "qb:workspace-state:v1";
 
 function getDefaultMonthTag(): string {
   const now = new Date();
@@ -205,8 +206,81 @@ function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine): Que
   };
 }
 
+type PersistableQueryBuilderState = Pick<
+  QueryBuilderState,
+  | "table"
+  | "selectedColumns"
+  | "filters"
+  | "sort"
+  | "joins"
+  | "groupBy"
+  | "aggregates"
+  | "limitRows"
+  | "offset"
+  | "mode"
+  | "pivotConfig"
+  | "marcadoseUnion"
+  | "sourceMode"
+  | "generatedSql"
+  | "sqlText"
+  | "isSqlDetached"
+>;
+
+function getWorkspaceStateStorageKey(engine: QueryEngine): string {
+  return `${WORKSPACE_STATE_STORAGE_PREFIX}:${engine}`;
+}
+
+function toPersistableState(state: QueryBuilderState): PersistableQueryBuilderState {
+  return {
+    table: state.table,
+    selectedColumns: state.selectedColumns,
+    filters: state.filters,
+    sort: state.sort,
+    joins: state.joins,
+    groupBy: state.groupBy,
+    aggregates: state.aggregates,
+    limitRows: state.limitRows,
+    offset: state.offset,
+    mode: state.mode,
+    pivotConfig: state.pivotConfig,
+    marcadoseUnion: state.marcadoseUnion,
+    sourceMode: state.sourceMode,
+    generatedSql: state.generatedSql,
+    sqlText: state.sqlText,
+    isSqlDetached: state.isSqlDetached,
+  };
+}
+
 export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilderReturn {
   const [state, setState] = useState<QueryBuilderState>(initialState);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(getWorkspaceStateStorageKey(engine));
+      if (!raw) return;
+      const persisted = JSON.parse(raw) as Partial<PersistableQueryBuilderState>;
+      setState((previous) => ({
+        ...previous,
+        ...persisted,
+        marcadoseUnion: {
+          ...createDefaultMarcadoseUnion(),
+          ...(persisted.marcadoseUnion || {}),
+        },
+        result: null,
+        isLoading: false,
+        isPreviewLoading: false,
+        error: null,
+        previewError: null,
+      }));
+    } catch {
+      // Ignore malformed persisted state and continue with defaults.
+    }
+  }, [engine]);
+
+  useEffect(() => {
+    const payload = toPersistableState(state);
+    window.localStorage.setItem(getWorkspaceStateStorageKey(engine), JSON.stringify(payload));
+  }, [engine, state]);
 
   useEffect(() => {
     let cancelled = false;

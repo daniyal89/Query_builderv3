@@ -23,6 +23,7 @@ class QueryBuilderService:
     REPORT_VALUE_ALIAS = "__REPORT_VALUE__"
     AI_HELPER_COMMENT_START = "/* AI_CONTEXT"
     AI_HELPER_COMMENT_END = "*/"
+    CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B\u200C\u200D\u2060\uFEFF]")
 
     @staticmethod
     def _normalize_list_value(value: Any) -> list[Any]:
@@ -158,7 +159,15 @@ class QueryBuilderService:
 
     @staticmethod
     def normalize_manual_sql(sql: str) -> str:
-        normalized = QueryBuilderService.strip_ai_helper_comment(sql).strip()
+        normalized = QueryBuilderService.strip_ai_helper_comment(sql)
+        normalized = (
+            normalized.replace("\u00A0", " ")
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+            .replace("\u201C", '"')
+            .replace("\u201D", '"')
+        )
+        normalized = QueryBuilderService.CONTROL_CHARS_PATTERN.sub(" ", normalized).strip()
         if not normalized:
             raise ValueError("SQL cannot be empty.")
         normalized = normalized[:-1].rstrip() if normalized.endswith(";") else normalized

@@ -82,3 +82,19 @@ def test_oracle_execute_sanitizes_wrapped_sql_before_execution() -> None:
 def test_oracle_sanitize_sql_unwraps_quoted_and_escaped_text() -> None:
     sanitized = OracleService._sanitize_sql_for_oracle("\"SELECT * FROM dual\\nWHERE x = \\\"Y\\\";\"")
     assert sanitized == 'SELECT * FROM dual\nWHERE x = "Y"'
+
+
+def test_oracle_sanitize_sql_normalizes_fullwidth_and_zero_width_chars() -> None:
+    raw_sql = "SELECT\u200B * FROM dual\uff1b"
+    sanitized = OracleService._sanitize_sql_for_oracle(raw_sql)
+    assert sanitized.replace("  ", " ") == "SELECT * FROM dual"
+
+
+def test_oracle_ascii_retry_sql_removes_non_ascii_chars() -> None:
+    retry_sql = OracleService._sanitize_ascii_retry_sql("SELECT * FROM dual\u00A0;")
+    assert retry_sql == "SELECT * FROM dual"
+
+
+def test_oracle_diagnose_invalid_sql_chars_reports_control_codes() -> None:
+    diagnostic = OracleService._diagnose_invalid_sql_chars("SELECT\x00 * FROM dual")
+    assert "U+0000" in diagnostic

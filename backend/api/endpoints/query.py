@@ -24,6 +24,9 @@ def _log_query_error(
     error: Exception | str,
     attempted_sql: str | None,
 ) -> None:
+    attempted_sql_hex = attempted_sql.encode("utf-8").hex() if isinstance(attempted_sql, str) else None
+    oracle_actual_sql = getattr(error, "oracle_actual_sql", None) if isinstance(error, Exception) else None
+    oracle_actual_sql_hex = oracle_actual_sql.encode("utf-8").hex() if isinstance(oracle_actual_sql, str) else None
     ErrorLogService.append(
         {
             "endpoint": endpoint,
@@ -31,6 +34,10 @@ def _log_query_error(
             "execution_mode": payload.execution_mode,
             "error": str(error),
             "attempted_sql": attempted_sql,
+            "attempted_sql_repr": repr(attempted_sql),
+            "attempted_sql_hex": attempted_sql_hex,
+            "oracle_actual_sql_repr": repr(oracle_actual_sql),
+            "oracle_actual_sql_hex": oracle_actual_sql_hex,
         }
     )
 
@@ -146,10 +153,11 @@ async def execute_query(
 
             if payload.engine == "oracle":
                 executed_sql = MarcadoseUnionService.apply(
-                    QueryBuilderService.render_sql(report_sql, params, payload.engine),
+                    QueryBuilderService.normalize_manual_sql(
+                        QueryBuilderService.render_sql(report_sql, params, payload.engine),
+                    ),
                     payload.marcadose_union,
                 )
-                executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
                 attempted_sql = executed_sql
                 _, aggregate_rows, _ = service.execute(executed_sql)
             else:
@@ -177,17 +185,20 @@ async def execute_query(
 
         if payload.engine == "oracle":
             executed_sql = MarcadoseUnionService.apply(
-                QueryBuilderService.render_sql(data_sql, params, payload.engine),
+                QueryBuilderService.normalize_manual_sql(
+                    QueryBuilderService.render_sql(data_sql, params, payload.engine),
+                ),
                 payload.marcadose_union,
             )
-            executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
             attempted_sql = executed_sql
             executed_count_sql = MarcadoseUnionService.build_total_count_sql(
-                QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
+                QueryBuilderService.normalize_manual_sql(
+                    QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
+                ),
                 payload.marcadose_union,
             )
-            executed_count_sql = QueryBuilderService.normalize_manual_sql(executed_count_sql)
             columns, rows, _ = service.execute(executed_sql)
+            attempted_sql = executed_count_sql
             _, count_rows, _ = service.execute(executed_count_sql)
         else:
             columns, rows, _ = service.execute(data_sql, params)

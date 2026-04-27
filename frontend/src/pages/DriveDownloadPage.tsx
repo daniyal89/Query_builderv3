@@ -4,6 +4,7 @@ import { pickSystemFile, pickSystemFolder } from "../api/systemApi";
 import type { DriveAuthConfig, DriveAuthMode, DriveAuthStatusResponse, DriveJobStatusResponse } from "../types/drive.types";
 
 const STORAGE_KEY = "drive_download_form_v2";
+const JOB_STORAGE_KEY = "drive_download_job_v1";
 
 function getErrorMessage(error: unknown): string {
   if (
@@ -45,6 +46,28 @@ function readInitialState(): FormState {
     return { ...defaultState, ...(JSON.parse(raw) as Partial<FormState>), authMode: "auto" };
   } catch {
     return defaultState;
+  }
+}
+
+type PersistedJobState = {
+  jobId: string;
+  status: DriveJobStatusResponse | null;
+};
+
+function isTerminalStatus(status: DriveJobStatusResponse | null): boolean {
+  return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function readInitialJobState(): { jobId: string | null; status: DriveJobStatusResponse | null; isLoading: boolean } {
+  try {
+    const raw = window.localStorage.getItem(JOB_STORAGE_KEY);
+    if (!raw) return { jobId: null, status: null, isLoading: false };
+    const parsed = JSON.parse(raw) as Partial<PersistedJobState>;
+    const jobId = typeof parsed.jobId === "string" && parsed.jobId.trim() ? parsed.jobId : null;
+    const status = parsed.status ?? null;
+    return { jobId, status, isLoading: Boolean(jobId) && !isTerminalStatus(status as DriveJobStatusResponse | null) };
+  } catch {
+    return { jobId: null, status: null, isLoading: false };
   }
 }
 
@@ -126,11 +149,12 @@ const GoogleAuthCard: React.FC<{
 
 export const DriveDownloadPage: React.FC = () => {
   const initial = useMemo(() => readInitialState(), []);
+  const initialJobState = useMemo(() => readInitialJobState(), []);
   const [state, setState] = useState<FormState>(initial);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<DriveJobStatusResponse | null>(null);
+  const [jobId, setJobId] = useState<string | null>(initialJobState.jobId);
+  const [status, setStatus] = useState<DriveJobStatusResponse | null>(initialJobState.status);
   const [authStatus, setAuthStatus] = useState<DriveAuthStatusResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(initialJobState.isLoading);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -139,19 +163,30 @@ export const DriveDownloadPage: React.FC = () => {
   }, [state]);
 
   useEffect(() => {
+    if (!jobId) {
+      window.localStorage.removeItem(JOB_STORAGE_KEY);
+      return;
+    }
+    const payload: PersistedJobState = { jobId, status };
+    window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(payload));
+  }, [jobId, status]);
+
+  useEffect(() => {
     getDriveAuthStatus().then(setAuthStatus).catch(() => undefined);
   }, []);
 
   useEffect(() => {
     if (!jobId) return;
+    setIsLoading(!isTerminalStatus(status));
     let cancelled = false;
     const poll = async () => {
       try {
         const next = await getDriveJobStatus(jobId);
         if (cancelled) return;
         setStatus(next);
-        if (next.status === "completed" || next.status === "failed" || next.status === "cancelled") {
+        if (isTerminalStatus(next)) {
           setIsLoading(false);
+          setJobId(null);
           getDriveAuthStatus().then(setAuthStatus).catch(() => undefined);
           return;
         }
