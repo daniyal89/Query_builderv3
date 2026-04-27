@@ -146,10 +146,11 @@ async def execute_query(
 
             if payload.engine == "oracle":
                 executed_sql = MarcadoseUnionService.apply(
-                    QueryBuilderService.render_sql(report_sql, params, payload.engine),
+                    QueryBuilderService.normalize_manual_sql(
+                        QueryBuilderService.render_sql(report_sql, params, payload.engine),
+                    ),
                     payload.marcadose_union,
                 )
-                executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
                 attempted_sql = executed_sql
                 _, aggregate_rows, _ = service.execute(executed_sql)
             else:
@@ -177,16 +178,18 @@ async def execute_query(
 
         if payload.engine == "oracle":
             executed_sql = MarcadoseUnionService.apply(
-                QueryBuilderService.render_sql(data_sql, params, payload.engine),
+                QueryBuilderService.normalize_manual_sql(
+                    QueryBuilderService.render_sql(data_sql, params, payload.engine),
+                ),
                 payload.marcadose_union,
             )
-            executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
             attempted_sql = executed_sql
             executed_count_sql = MarcadoseUnionService.build_total_count_sql(
-                QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
+                QueryBuilderService.normalize_manual_sql(
+                    QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
+                ),
                 payload.marcadose_union,
             )
-            executed_count_sql = QueryBuilderService.normalize_manual_sql(executed_count_sql)
             columns, rows, _ = service.execute(executed_sql)
             _, count_rows, _ = service.execute(executed_count_sql)
         else:
