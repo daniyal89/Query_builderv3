@@ -18,15 +18,24 @@ router = APIRouter()
 MAX_SQL_TEXT_LENGTH = 50000
 
 
+def _safe_utf8_hex(text: str | None) -> str | None:
+    if not isinstance(text, str):
+        return None
+    try:
+        return text.encode("utf-8").hex()
+    except UnicodeEncodeError:
+        return text.encode("utf-8", errors="backslashreplace").hex()
+
+
 def _log_query_error(
     endpoint: str,
     payload: QueryPayload,
     error: Exception | str,
     attempted_sql: str | None,
 ) -> None:
-    attempted_sql_hex = attempted_sql.encode("utf-8").hex() if isinstance(attempted_sql, str) else None
+    attempted_sql_hex = _safe_utf8_hex(attempted_sql)
     oracle_actual_sql = getattr(error, "oracle_actual_sql", None) if isinstance(error, Exception) else None
-    oracle_actual_sql_hex = oracle_actual_sql.encode("utf-8").hex() if isinstance(oracle_actual_sql, str) else None
+    oracle_actual_sql_hex = _safe_utf8_hex(oracle_actual_sql)
     ErrorLogService.append(
         {
             "endpoint": endpoint,

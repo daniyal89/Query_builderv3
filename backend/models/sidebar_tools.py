@@ -64,3 +64,21 @@ class SidebarToolResponse(BaseModel):
     status: str = "ok"
     message: str
     output_path: str | None = None
+
+
+class CsvToParquetJobStartResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+
+
+class CsvToParquetJobResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    processed_files: int = 0
+    total_files: int = 0
+    current_file: str | None = None
+    output_path: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None

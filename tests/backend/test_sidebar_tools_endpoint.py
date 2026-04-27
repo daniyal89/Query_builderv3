@@ -105,3 +105,29 @@ def test_csv_to_parquet_endpoint_handles_mixed_numeric_text_columns(tmp_path: Pa
 
     assert response.status_code == 200, response.text
     assert output_file.exists()
+
+
+def test_csv_to_parquet_job_start_status_and_stop(tmp_path: Path) -> None:
+    source = tmp_path / "many.csv.gz"
+    with gzip.open(source, "wt", encoding="utf-8") as handle:
+        handle.write("KNO,VALUE\n123,1\nDV_111368,2\n")
+
+    output_folder = tmp_path / "parquet_out"
+    client = TestClient(app)
+    start = client.post(
+        "/api/sidebar-tools/csv-to-parquet/start",
+        json={
+            "input_path": str(source),
+            "output_path": str(output_folder),
+            "compression": "zstd",
+        },
+    )
+    assert start.status_code == 200, start.text
+    job_id = start.json()["job_id"]
+
+    status_response = client.get(f"/api/sidebar-tools/csv-to-parquet/status/{job_id}")
+    assert status_response.status_code == 200, status_response.text
+    assert status_response.json()["status"] in {"queued", "running", "completed"}
+
+    stop_response = client.post(f"/api/sidebar-tools/csv-to-parquet/stop/{job_id}")
+    assert stop_response.status_code == 200, stop_response.text

@@ -1,5 +1,11 @@
-import React, { useState } from "react";
-import { runBuildDuckDb, runCsvToParquet } from "../api/sidebarToolsApi";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  CsvParquetJobStatusResponse,
+  getCsvToParquetJobStatus,
+  runBuildDuckDb,
+  startCsvToParquetJob,
+  stopCsvToParquetJob,
+} from "../api/sidebarToolsApi";
 import { pickSystemFile, pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 
 interface FieldProps {
@@ -33,8 +39,46 @@ export const SidebarToolsPage: React.FC = () => {
   const [buildMessage, setBuildMessage] = useState("");
   const [parquetMessage, setParquetMessage] = useState("");
   const [isBuildRunning, setIsBuildRunning] = useState(false);
-  const [isParquetRunning, setIsParquetRunning] = useState(false);
+  const [parquetJobId, setParquetJobId] = useState<string | null>(null);
+  const [parquetStatus, setParquetStatus] = useState<CsvParquetJobStatusResponse | null>(null);
   const [statusNote, setStatusNote] = useState("Use labels below and fill full paths before running.");
+  const isParquetRunning = parquetStatus?.status === "queued" || parquetStatus?.status === "running" || parquetStatus?.status === "cancelling";
+  const parquetProgress = useMemo(() => {
+    if (!parquetStatus || parquetStatus.total_files <= 0) return 0;
+    return Math.min(100, Math.round((parquetStatus.processed_files / parquetStatus.total_files) * 100));
+  }, [parquetStatus]);
+
+  useEffect(() => {
+    if (!parquetJobId) return;
+    if (!isParquetRunning) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const latest = await getCsvToParquetJobStatus(parquetJobId);
+        setParquetStatus(latest);
+        if (latest.status === "completed" || latest.status === "failed" || latest.status === "cancelled") {
+          setParquetJobId(null);
+          setParquetMessage(latest.message + (latest.output_path ? ` Output: ${latest.output_path}` : ""));
+        }
+      } catch (error: any) {
+        const detail = error?.response?.data?.detail || error?.message || "Failed to fetch conversion status.";
+        setParquetMessage(detail);
+        setParquetJobId(null);
+        setParquetStatus((previous) =>
+          previous
+            ? {
+                ...previous,
+                status: "failed",
+                message:
+                  error?.response?.status === 404
+                    ? "Background CSV→Parquet job was not found. Start a new conversion."
+                    : detail,
+              }
+            : null,
+        );
+      }
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [parquetJobId, isParquetRunning]);
 
   const applyUppclPreset = () => {
     setBuildForm({
@@ -67,15 +111,31 @@ export const SidebarToolsPage: React.FC = () => {
   };
 
   const runParquet = async () => {
-    setIsParquetRunning(true);
     setParquetMessage("");
     try {
-      const result = await runCsvToParquet(parquetForm);
-      setParquetMessage(result.message + (result.output_path ? ` Output: ${result.output_path}` : ""));
+      const started = await startCsvToParquetJob(parquetForm);
+      setParquetJobId(started.job_id);
+      setParquetStatus({
+        job_id: started.job_id,
+        status: "queued",
+        message: started.message,
+        processed_files: 0,
+        total_files: 0,
+      });
+      setParquetMessage(`CSV→Parquet job started. Job ID: ${started.job_id}`);
     } catch (error: any) {
       setParquetMessage(error?.response?.data?.detail || error?.message || "Conversion failed.");
-    } finally {
-      setIsParquetRunning(false);
+    }
+  };
+
+  const stopParquet = async () => {
+    if (!parquetJobId) return;
+    try {
+      const stopped = await stopCsvToParquetJob(parquetJobId);
+      setParquetStatus(stopped);
+      setParquetMessage(stopped.message);
+    } catch (error: any) {
+      setParquetMessage(error?.response?.data?.detail || error?.message || "Unable to stop conversion.");
     }
   };
 
@@ -235,10 +295,32 @@ export const SidebarToolsPage: React.FC = () => {
             <input className="w-full rounded border p-2" value={parquetForm.compression} onChange={(e) => setParquetForm((p) => ({ ...p, compression: e.target.value }))} />
           </Field>
         </div>
-        <button onClick={runParquet} disabled={isParquetRunning} className="mt-3 rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60">
-          {isParquetRunning ? "Running..." : "Run CSV → Parquet"}
-        </button>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button onClick={runParquet} disabled={isParquetRunning} className="rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60">
+            {isParquetRunning ? "Running..." : "Run CSV → Parquet"}
+          </button>
+          {isParquetRunning && (
+            <button onClick={stopParquet} disabled={parquetStatus?.status === "cancelling"} className="rounded border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60">
+              {parquetStatus?.status === "cancelling" ? "Stopping..." : "Stop conversion"}
+            </button>
+          )}
+        </div>
         <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_parquet.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}`}</pre>
+        {parquetStatus && (
+          <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-medium">Status: {parquetStatus.status}</p>
+              <p className="text-xs text-slate-500">
+                {parquetStatus.processed_files}/{parquetStatus.total_files} files
+              </p>
+            </div>
+            <div className="mt-2 h-2 w-full overflow-hidden rounded bg-slate-200">
+              <div className="h-full bg-emerald-600 transition-all" style={{ width: `${parquetProgress}%` }} />
+            </div>
+            {parquetStatus.current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {parquetStatus.current_file}</p>}
+            <p className="mt-1 text-xs text-slate-500">{parquetStatus.message}</p>
+          </div>
+        )}
         {parquetMessage && <p className="mt-2 text-sm text-slate-700">{parquetMessage}</p>}
       </div>
     </div>
