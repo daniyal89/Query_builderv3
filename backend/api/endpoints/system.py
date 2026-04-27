@@ -1,12 +1,13 @@
-import asyncio
+import threading
 import tkinter as tk
 from tkinter import filedialog
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
 router = APIRouter()
+DIALOG_LOCK = threading.Lock()
 
 
 class PickPathResponse(BaseModel):
@@ -75,18 +76,39 @@ def _pick_save_path_dialog(suggested_name: str = "merged_output.csv", default_ex
 
 
 async def _run_pick_file(file_types: Optional[str] = None) -> PickPathResponse:
-    path = await asyncio.to_thread(_pick_file_dialog, file_types)
-    return PickPathResponse(path=path)
+    try:
+        with DIALOG_LOCK:
+            path = _pick_file_dialog(file_types)
+        return PickPathResponse(path=path)
+    except (RuntimeError, tk.TclError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Native file picker is unavailable. Ensure GUI calls run on the main thread.",
+        ) from exc
 
 
 async def _run_pick_folder() -> PickPathResponse:
-    path = await asyncio.to_thread(_pick_folder_dialog)
-    return PickPathResponse(path=path)
+    try:
+        with DIALOG_LOCK:
+            path = _pick_folder_dialog()
+        return PickPathResponse(path=path)
+    except (RuntimeError, tk.TclError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Native folder picker is unavailable. Ensure GUI calls run on the main thread.",
+        ) from exc
 
 
 async def _run_pick_save_path(suggested_name: str, default_extension: str) -> PickPathResponse:
-    path = await asyncio.to_thread(_pick_save_path_dialog, suggested_name, default_extension)
-    return PickPathResponse(path=path)
+    try:
+        with DIALOG_LOCK:
+            path = _pick_save_path_dialog(suggested_name, default_extension)
+        return PickPathResponse(path=path)
+    except (RuntimeError, tk.TclError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Native save dialog is unavailable. Ensure GUI calls run on the main thread.",
+        ) from exc
 
 
 @router.get("/system/pick-file", response_model=PickPathResponse, summary="Open a native file picker dialog")
