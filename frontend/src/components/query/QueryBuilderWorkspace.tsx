@@ -26,7 +26,28 @@ interface QueryBuilderWorkspaceProps {
   onLocalSchemaChanged?: () => Promise<unknown> | unknown;
 }
 
+interface SavedQueryItem {
+  id: string;
+  name: string;
+  engine: QueryEngine;
+  updatedAt: string;
+  state: any;
+}
+
+interface QueryHistoryItem {
+  id: string;
+  engine: QueryEngine;
+  table: string;
+  mode: "LIST" | "REPORT";
+  sourceMode: "builder" | "manual";
+  executedAt: string;
+  sql: string;
+  total: number;
+}
+
 const MARCADOSE_DISCOMS = ["DVVNL", "PVVNL", "PUVNL", "MVVNL", "KESCO"];
+const SAVED_QUERIES_STORAGE_KEY = "qb:saved-queries:v1";
+const QUERY_HISTORY_STORAGE_KEY = "qb:query-history:v1";
 
 const MONTH_INDEX_BY_SHORT_NAME: Record<string, number> = {
   jan: 0,
@@ -72,6 +93,50 @@ function buildMarcadoseMasterTable(
   return `${schemaName || "MERCADOS"}.CM_master_data_${monthTag}_${discom}`;
 }
 
+function parseMonthTagFromMasterTable(tableName: string): { monthTag: string; year: number; monthIndex: number } | null {
+  const match = /CM_master_data_([a-z]{3}_\d{4})_([A-Z]+)/i.exec(tableName);
+  if (!match) return null;
+
+  const monthTag = match[1].toLowerCase();
+  const [monthShort, yearText] = monthTag.split("_");
+  const year = Number(yearText);
+  const monthIndex = MONTH_INDEX_BY_SHORT_NAME[monthShort];
+
+  if (!Number.isFinite(year) || monthIndex === undefined) return null;
+  return { monthTag, year, monthIndex };
+}
+
+function pickLatestAvailableMasterTable(
+  tables: TableMetadata[],
+  discom: string,
+  schemaName = "MERCADOS"
+): string | null {
+  const schema = (schemaName || "MERCADOS").toUpperCase();
+  const discomUpper = discom.toUpperCase();
+
+  const candidates = tables
+    .map((table) => table.table_name)
+    .filter((name) => {
+      const normalized = name.toUpperCase();
+      return normalized.startsWith(`${schema}.CM_MASTER_DATA_`) && normalized.endsWith(`_${discomUpper}`);
+    })
+    .map((name) => ({ name, parsed: parseMonthTagFromMasterTable(name) }))
+    .filter(
+      (item): item is { name: string; parsed: { monthTag: string; year: number; monthIndex: number } } =>
+        item.parsed !== null
+    );
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => {
+    if (a.parsed.year !== b.parsed.year) return b.parsed.year - a.parsed.year;
+    if (a.parsed.monthIndex !== b.parsed.monthIndex) return b.parsed.monthIndex - a.parsed.monthIndex;
+    return a.name.localeCompare(b.name);
+  });
+
+  return candidates[0].name;
+}
+
 export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   engine,
   title,
@@ -82,6 +147,9 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   const initialTable = searchParams.get("table");
   const [metadataTables, setMetadataTables] = useState<TableMetadata[]>(tables || []);
   const [columnLoadError, setColumnLoadError] = useState<string | null>(null);
+  const [savedQueryName, setSavedQueryName] = useState("");
+  const [savedQueries, setSavedQueries] = useState<SavedQueryItem[]>([]);
+  const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>([]);
   const loadingColumnTablesRef = useRef<Set<string>>(new Set());
   const loadedColumnTablesRef = useRef<Set<string>>(new Set());
 
@@ -106,8 +174,23 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     setSourceMode,
     updateSqlText,
     resetSqlToBuilder,
+    applyState,
     executeQuery,
   } = useQueryBuilder(engine);
+
+  useEffect(() => {
+    try {
+      const savedRaw = window.localStorage.getItem(SAVED_QUERIES_STORAGE_KEY);
+      const historyRaw = window.localStorage.getItem(QUERY_HISTORY_STORAGE_KEY);
+      const saved = savedRaw ? (JSON.parse(savedRaw) as SavedQueryItem[]) : [];
+      const history = historyRaw ? (JSON.parse(historyRaw) as QueryHistoryItem[]) : [];
+      setSavedQueries(saved.filter((item) => item.engine === engine));
+      setQueryHistory(history.filter((item) => item.engine === engine).slice(0, 10));
+    } catch {
+      setSavedQueries([]);
+      setQueryHistory([]);
+    }
+  }, [engine]);
 
   useEffect(() => {
     setMetadataTables((previousTables) => {
@@ -191,29 +274,34 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
 
   const marcadoseUnion = state.marcadoseUnion;
 
-  const selectedMasterTable = buildMarcadoseMasterTable(
-    marcadoseUnion.month_tag,
-    marcadoseUnion.base_discom,
-    marcadoseUnion.schema_name
-  );
-
-  useEffect(() => {
-    if (engine !== "oracle" || !selectedMasterTable) return;
-
-    setMetadataTables((previousTables) => {
-      if (previousTables.some((table) => table.table_name === selectedMasterTable)) {
-        return previousTables;
-      }
-
-      return [{ table_name: selectedMasterTable, columns: [], row_count: 0 }, ...previousTables];
-    });
-  }, [engine, selectedMasterTable]);
+  const selectedMasterTable = useMemo(() => {
+    const requested = buildMarcadoseMasterTable(
+      marcadoseUnion.month_tag,
+      marcadoseUnion.base_discom,
+      marcadoseUnion.schema_name
+    );
+    if (metadataTables.some((table) => table.table_name === requested)) return requested;
+    return (
+      pickLatestAvailableMasterTable(
+        metadataTables,
+        marcadoseUnion.base_discom,
+        marcadoseUnion.schema_name
+      ) || requested
+    );
+  }, [marcadoseUnion.base_discom, marcadoseUnion.month_tag, marcadoseUnion.schema_name, metadataTables]);
 
   useEffect(() => {
     if (engine === "oracle" && !state.table && selectedMasterTable) {
       setTable(selectedMasterTable);
     }
   }, [engine, selectedMasterTable, setTable, state.table]);
+
+  useEffect(() => {
+    if (engine !== "oracle" || !selectedMasterTable) return;
+    const parsed = parseMonthTagFromMasterTable(selectedMasterTable);
+    if (!parsed || parsed.monthTag === marcadoseUnion.month_tag) return;
+    setMarcadoseUnion({ ...marcadoseUnion, month_tag: parsed.monthTag });
+  }, [engine, marcadoseUnion, selectedMasterTable, setMarcadoseUnion]);
 
   const applyMarcadoseUnionUpdates = (updates: Partial<typeof marcadoseUnion>) => {
     const next = { ...marcadoseUnion, ...updates };
@@ -235,8 +323,22 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
       next.base_discom = next.discoms[0];
     }
 
+    const requestedTable = buildMarcadoseMasterTable(next.month_tag, next.base_discom, next.schema_name);
+    const fallbackTable =
+      pickLatestAvailableMasterTable(metadataTables, next.base_discom, next.schema_name) || requestedTable;
+    const availableTable = metadataTables.some((table) => table.table_name === requestedTable)
+      ? requestedTable
+      : fallbackTable;
+
+    if (availableTable !== requestedTable) {
+      const parsed = parseMonthTagFromMasterTable(availableTable);
+      if (parsed && parsed.monthTag !== next.month_tag) {
+        next.month_tag = parsed.monthTag;
+      }
+    }
+
     setMarcadoseUnion(next);
-    setTable(buildMarcadoseMasterTable(next.month_tag, next.base_discom, next.schema_name));
+    setTable(availableTable);
   };
 
   const toggleMarcadoseDiscom = (discom: string) => {
@@ -270,6 +372,99 @@ FROM {{MASTER_TABLE}} m
 WHERE 1 = 1`;
 
     updateSqlText(template);
+  };
+
+  const persistSavedQueries = (next: SavedQueryItem[]) => {
+    const otherEngineQueries = (() => {
+      try {
+        const current = JSON.parse(
+          window.localStorage.getItem(SAVED_QUERIES_STORAGE_KEY) || "[]"
+        ) as SavedQueryItem[];
+        return current.filter((item) => item.engine !== engine);
+      } catch {
+        return [];
+      }
+    })();
+
+    window.localStorage.setItem(
+      SAVED_QUERIES_STORAGE_KEY,
+      JSON.stringify([...otherEngineQueries, ...next])
+    );
+    setSavedQueries(next);
+  };
+
+  const saveCurrentQuery = () => {
+    const name = savedQueryName.trim() || `${state.table || "Untitled"} ${state.mode}`;
+    const currentQuery: SavedQueryItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      engine,
+      updatedAt: new Date().toISOString(),
+      state: {
+        table: state.table,
+        selectedColumns: state.selectedColumns,
+        filters: state.filters,
+        sort: state.sort,
+        joins: state.joins,
+        groupBy: state.groupBy,
+        aggregates: state.aggregates,
+        limitRows: state.limitRows,
+        offset: state.offset,
+        mode: state.mode,
+        pivotConfig: state.pivotConfig,
+        marcadoseUnion: state.marcadoseUnion,
+        sourceMode: state.sourceMode,
+        sqlText: state.sqlText,
+        isSqlDetached: state.isSqlDetached,
+      },
+    };
+    persistSavedQueries([currentQuery, ...savedQueries].slice(0, 30));
+    setSavedQueryName("");
+  };
+
+  const loadSavedQuery = (item: SavedQueryItem) => {
+    applyState({ ...(item.state || {}) });
+  };
+
+  const deleteSavedQuery = (id: string) => {
+    persistSavedQueries(savedQueries.filter((item) => item.id !== id));
+  };
+
+  const persistHistory = (next: QueryHistoryItem[]) => {
+    const otherEngineHistory = (() => {
+      try {
+        const current = JSON.parse(
+          window.localStorage.getItem(QUERY_HISTORY_STORAGE_KEY) || "[]"
+        ) as QueryHistoryItem[];
+        return current.filter((item) => item.engine !== engine);
+      } catch {
+        return [];
+      }
+    })();
+
+    window.localStorage.setItem(
+      QUERY_HISTORY_STORAGE_KEY,
+      JSON.stringify([...otherEngineHistory, ...next])
+    );
+    setQueryHistory(next.slice(0, 10));
+  };
+
+  const runQuery = async () => {
+    const result = await executeQuery();
+    if (!result) return;
+
+    const historyItem: QueryHistoryItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      engine,
+      table: state.table,
+      mode: state.mode,
+      sourceMode: state.sourceMode,
+      executedAt: new Date().toISOString(),
+      sql: result.executed_sql || state.sqlText || state.generatedSql,
+      total: result.total,
+    };
+
+    persistHistory([historyItem, ...queryHistory].slice(0, 25));
   };
 
   return (
@@ -402,19 +597,6 @@ WHERE 1 = 1`;
                   append a grand total.
                 </p>
 
-                {state.mode === "REPORT" && (
-                  <label className="mt-3 flex items-center gap-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={marcadoseUnion.add_grand_total}
-                      onChange={(event) =>
-                        applyMarcadoseUnionUpdates({ add_grand_total: event.target.checked })
-                      }
-                    />
-                    Add Grand Total row
-                  </label>
-                )}
-
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
@@ -503,6 +685,18 @@ WHERE 1 = 1`;
                   config={state.pivotConfig}
                   onChange={setPivotConfig}
                 />
+                <div className="mb-4 rounded border border-gray-200 bg-white p-3 shadow-sm">
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={marcadoseUnion.add_grand_total}
+                      onChange={(event) =>
+                        applyMarcadoseUnionUpdates({ add_grand_total: event.target.checked })
+                      }
+                    />
+                    Add Grand Total row
+                  </label>
+                </div>
                 <FilterPanel
                   filters={state.filters}
                   columns={reportColumns}
@@ -515,6 +709,80 @@ WHERE 1 = 1`;
           </div>
 
           <div className="min-w-0">
+            <div className="mb-4 grid gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-2">
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Saved Queries
+                </p>
+                <div className="mb-2 flex gap-2">
+                  <input
+                    value={savedQueryName}
+                    onChange={(event) => setSavedQueryName(event.target.value)}
+                    placeholder="Name this query"
+                    className="w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={saveCurrentQuery}
+                    className="rounded bg-blue-700 px-3 py-2 text-sm font-medium text-white hover:bg-blue-800"
+                  >
+                    Save
+                  </button>
+                </div>
+                <div className="max-h-36 space-y-2 overflow-y-auto">
+                  {savedQueries.length === 0 ? (
+                    <p className="text-xs text-slate-500">No saved queries yet.</p>
+                  ) : (
+                    savedQueries.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between rounded border border-slate-200 px-2 py-1.5 text-xs"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => loadSavedQuery(item)}
+                          className="truncate text-left text-blue-700 hover:text-blue-900"
+                        >
+                          {item.name}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteSavedQuery(item.id)}
+                          className="ml-2 text-rose-600 hover:text-rose-800"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Recent Query History
+                </p>
+                <div className="max-h-36 space-y-2 overflow-y-auto">
+                  {queryHistory.length === 0 ? (
+                    <p className="text-xs text-slate-500">No query history yet.</p>
+                  ) : (
+                    queryHistory.map((item) => (
+                      <div
+                        key={item.id}
+                        className="rounded border border-slate-200 px-2 py-1.5 text-xs text-slate-700"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-medium">{item.table || "Manual SQL"}</span>
+                          <span>{new Date(item.executedAt).toLocaleString()}</span>
+                        </div>
+                        <div className="text-slate-500">
+                          Rows: {item.total} • {item.mode}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
             <SqlEditorPanel
               engine={engine}
               queryMode={state.mode}
@@ -535,7 +803,7 @@ WHERE 1 = 1`;
               onSelectSourceMode={setSourceMode}
               onResetFromBuilder={resetSqlToBuilder}
               onSqlChange={updateSqlText}
-              onRun={executeQuery}
+              onRun={runQuery}
             />
 
             {shouldShowSelectTableHint && (
