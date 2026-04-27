@@ -45,7 +45,7 @@ def _resolve_relation_sql(input_path: str) -> str:
 
 
 def _resolve_existing_input_glob(input_path: str) -> str:
-    cleaned = input_path.strip().strip('"').strip("'")
+    cleaned = input_path.replace("\u00A0", " ").strip().strip('"').strip("'")
     normalized_path = cleaned.replace("\\", "/")
     normalized_as_path = Path(normalized_path).expanduser()
 
@@ -53,7 +53,7 @@ def _resolve_existing_input_glob(input_path: str) -> str:
         return str(normalized_as_path)
 
     if normalized_as_path.is_dir():
-        for candidate in ("*.csv.gz", "*.gz", "*.csv", "*.tsv", "*.txt"):
+        for candidate in ("**/*.csv.gz", "**/*.gz", "**/*.csv", "**/*.tsv", "**/*.txt"):
             pattern = str((normalized_as_path / candidate).as_posix())
             if glob.glob(pattern, recursive=True):
                 return pattern
@@ -61,6 +61,12 @@ def _resolve_existing_input_glob(input_path: str) -> str:
     matches = glob.glob(normalized_path, recursive=True)
     if matches:
         return normalized_path
+
+    if "/*." in normalized_path:
+        recursive_variant = normalized_path.replace("/*.", "/**/*.")
+        recursive_matches = glob.glob(recursive_variant, recursive=True)
+        if recursive_matches:
+            return recursive_variant
 
     if ".csv.gz" in normalized_path.lower():
         fallbacks = [
@@ -71,6 +77,11 @@ def _resolve_existing_input_glob(input_path: str) -> str:
             fallback_matches = glob.glob(fallback, recursive=True)
             if fallback_matches:
                 return fallback
+            if "/*." in fallback:
+                recursive_fallback = fallback.replace("/*.", "/**/*.")
+                recursive_fallback_matches = glob.glob(recursive_fallback, recursive=True)
+                if recursive_fallback_matches:
+                    return recursive_fallback
 
     raise ValueError(f"No files found that match the pattern '{cleaned}'.")
 
