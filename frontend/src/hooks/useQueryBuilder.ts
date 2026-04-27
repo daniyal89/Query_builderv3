@@ -110,7 +110,14 @@ const initialState: QueryBuilderState = {
 };
 
 function getErrorMessage(err: any, fallback: string): string {
-  return err?.response?.data?.detail || err?.message || fallback;
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") {
+    const message = typeof detail.message === "string" ? detail.message : fallback;
+    const executedSql = typeof detail.executed_sql === "string" ? detail.executed_sql : "";
+    return executedSql ? `${message}\n\nExecuted SQL:\n${executedSql}` : message;
+  }
+  return err?.message || fallback;
 }
 
 function getValidFilters(filters: FilterCondition[]): Omit<FilterCondition, "id">[] {

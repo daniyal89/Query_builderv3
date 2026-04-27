@@ -112,6 +112,36 @@ SELECT "id", "name" FROM "employees" ORDER BY "id" LIMIT 2""",
     assert len(body["rows"]) == 2
 
 
+def test_query_execution_error_includes_attempted_sql_in_response_detail() -> None:
+    client = TestClient(app)
+    _connect_duckdb(client)
+
+    sql_text = 'SELECT * FROM "table_that_does_not_exist"'
+    response = client.post(
+        "/api/query",
+        json={
+            "execution_mode": "sql",
+            "engine": "duckdb",
+            "table": "",
+            "select": [],
+            "filters": [],
+            "sort": [],
+            "limit_rows": 1000,
+            "offset": 0,
+            "mode": "LIST",
+            "group_by": [],
+            "aggregates": [],
+            "sql": sql_text,
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert isinstance(body.get("detail"), dict)
+    assert body["detail"]["executed_sql"] == sql_text
+    assert "table_that_does_not_exist" in body["detail"]["message"]
+
+
 def test_query_preview_rejects_non_read_only_manual_oracle_sql_without_connection() -> None:
     client = TestClient(app)
 

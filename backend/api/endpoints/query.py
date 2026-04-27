@@ -83,6 +83,7 @@ async def execute_query(
     duckdb: DuckDBService = Depends(get_db_service),
     oracle: OracleService = Depends(get_oracle_service),
 ) -> QueryResult:
+    attempted_sql: str | None = None
     try:
         service: DuckDBService | OracleService = _select_engine_service(payload, duckdb, oracle)
 
@@ -96,6 +97,7 @@ async def execute_query(
             if payload.engine == "oracle":
                 executed_sql = MarcadoseUnionService.apply(executed_sql, payload.marcadose_union)
 
+            attempted_sql = executed_sql
             columns, rows, total = service.execute(executed_sql)
 
             if (
@@ -126,10 +128,12 @@ async def execute_query(
                     payload.marcadose_union,
                 )
                 executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
+                attempted_sql = executed_sql
                 _, aggregate_rows, _ = service.execute(executed_sql)
             else:
                 _, aggregate_rows, _ = service.execute(report_sql, params)
                 executed_sql = QueryBuilderService.render_sql(report_sql, params, payload.engine)
+                attempted_sql = executed_sql
 
             columns, rows = QueryBuilderService.pivot_report_rows(payload, aggregate_rows)
 
@@ -155,6 +159,7 @@ async def execute_query(
                 payload.marcadose_union,
             )
             executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
+            attempted_sql = executed_sql
             executed_count_sql = MarcadoseUnionService.build_total_count_sql(
                 QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
                 payload.marcadose_union,
@@ -166,6 +171,7 @@ async def execute_query(
             columns, rows, _ = service.execute(data_sql, params)
             _, count_rows, _ = service.execute(count_sql, count_params)
             executed_sql = QueryBuilderService.render_sql(data_sql, params, payload.engine)
+            attempted_sql = executed_sql
 
         total = count_rows[0][0] if count_rows else 0
 
@@ -180,4 +186,7 @@ async def execute_query(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        detail: dict[str, str] | str = str(exc)
+        if attempted_sql:
+            detail = {"message": str(exc), "executed_sql": attempted_sql}
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
