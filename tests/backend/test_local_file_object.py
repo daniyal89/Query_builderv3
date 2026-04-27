@@ -1,6 +1,7 @@
+from datetime import datetime
 from pathlib import Path
 
-from backend.models.local_object import FileObjectRequest
+from backend.models.local_object import FileObjectRequest, FilePreviewResponse
 from backend.services.duckdb_service import DuckDBService
 
 
@@ -50,3 +51,13 @@ def test_create_view_from_csv_file_is_listed(tmp_path: Path) -> None:
     columns, rows, _ = db.execute('SELECT * FROM "source_view"')
     assert columns == ["id", "name"]
     assert rows == [[1, "Alice"]]
+
+
+def test_file_preview_response_accepts_datetime_cells() -> None:
+    payload = FilePreviewResponse(
+        columns=["dt"],
+        rows=[[datetime(2026, 3, 1, 4, 57)]],
+    )
+
+    assert payload.columns == ["dt"]
+    assert len(payload.rows) == 1

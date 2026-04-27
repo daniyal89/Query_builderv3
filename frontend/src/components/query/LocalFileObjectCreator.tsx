@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { createLocalFileObject } from "../../api/localObjectApi";
+import { createLocalFileObject, previewLocalFileObject } from "../../api/localObjectApi";
 import { pickSystemFile } from "../../api/systemApi";
 import type { LocalFileObjectType } from "../../types/localObject.types";
 
@@ -37,8 +37,12 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
   const [header, setHeader] = useState(true);
   const [sheetName, setSheetName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [previewColumns, setPreviewColumns] = useState<string[]>([]);
+  const [previewRows, setPreviewRows] = useState<Array<Array<string | number | null>>>([]);
+  const [headerNames, setHeaderNames] = useState<string[]>([]);
   const extension = useMemo(() => getExtension(filePath), [filePath]);
   const isExcel = extension === "xlsx" || extension === "xls";
 
@@ -61,6 +65,7 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
         replace,
         header,
         sheet_name: sheetName.trim() || null,
+        header_names: headerNames.filter((name) => name.trim() !== ""),
       });
       await onCreated();
       setMessage(response.message);
@@ -68,6 +73,27 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
       setError(err?.response?.data?.detail || err.message || "Failed to create local object.");
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const handlePreview = async () => {
+    setIsPreviewing(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await previewLocalFileObject({
+        file_path: cleanPath(filePath),
+        header,
+        sheet_name: sheetName.trim() || null,
+        limit_rows: 10,
+      });
+      setPreviewColumns(response.columns);
+      setPreviewRows(response.rows);
+      setHeaderNames(response.columns);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err.message || "Failed to preview file.");
+    } finally {
+      setIsPreviewing(false);
     }
   };
 
@@ -106,6 +132,65 @@ export const LocalFileObjectCreator: React.FC<LocalFileObjectCreatorProps> = ({ 
           </button>
         </div>
       </label>
+
+      <button
+        type="button"
+        onClick={handlePreview}
+        disabled={isPreviewing || !filePath.trim()}
+        className="mb-3 w-full rounded border border-emerald-300 bg-white px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {isPreviewing ? "Loading preview..." : "Preview top 10 rows"}
+      </button>
+
+      {previewColumns.length > 0 && (
+        <div className="mb-3 rounded border border-gray-200 bg-white p-3">
+          <div className="mb-2 text-xs font-semibold text-gray-700">
+            Preview columns (edit names to correct/add headers before create)
+          </div>
+          <div className="mb-2 grid grid-cols-2 gap-2 md:grid-cols-3">
+            {headerNames.map((name, index) => (
+              <input
+                key={`${previewColumns[index]}-${index}`}
+                type="text"
+                value={name}
+                onChange={(event) =>
+                  setHeaderNames((previous) =>
+                    previous.map((candidate, candidateIndex) =>
+                      candidateIndex === index ? event.target.value : candidate
+                    )
+                  )
+                }
+                className="rounded border border-gray-300 px-2 py-1 text-xs"
+                placeholder={`Column ${index + 1}`}
+              />
+            ))}
+          </div>
+          <div className="overflow-x-auto rounded border border-gray-100">
+            <table className="min-w-full text-xs">
+              <thead className="bg-gray-50">
+                <tr>
+                  {headerNames.map((name, index) => (
+                    <th key={`${name}-${index}`} className="border-b border-gray-200 px-2 py-1 text-left font-semibold text-gray-700">
+                      {name || `Column ${index + 1}`}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={cellIndex} className="border-b border-gray-100 px-2 py-1 text-gray-700">
+                        {cell === null ? "" : String(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <label className="mb-3 block">
         <span className="mb-1 block text-xs font-semibold text-gray-700">Table/View name</span>

@@ -14,8 +14,9 @@ from typing import Any, Optional
 
 import duckdb
 
-from backend.models.local_object import FileObjectRequest
+from backend.models.local_object import FileObjectRequest, FilePreviewRequest, FilePreviewResponse
 from backend.models.schema import TableMetadata, ColumnDetail
+from backend.services.sample_snapshot_service import SampleSnapshotService
 
 
 VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -73,6 +74,11 @@ class DuckDBService:
                 raise RuntimeError(f"Failed to open DuckDB database: {exc}") from exc
 
             tables = self._fetch_table_entries_unlocked()
+            try:
+                SampleSnapshotService.capture_duckdb_once(self._conn, resolved)
+            except Exception:
+                # Snapshot capture is non-blocking and must never fail connection flow.
+                pass
             return len(tables)
 
     def disconnect(self) -> None:
@@ -149,6 +155,8 @@ class DuckDBService:
                 header=payload.header,
                 sheet_name=payload.sheet_name,
             )
+            if payload.header_names:
+                relation_sql = self._build_projected_relation_sql(relation_sql, payload.header_names)
             object_sql = self._quote_identifier(object_name)
             if payload.replace:
                 self._conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
@@ -158,6 +166,32 @@ class DuckDBService:
             columns = self._fetch_columns_unlocked(object_name)
             row_count = self._fetch_row_count_unlocked(object_name) if object_type == "TABLE" else 0
             return TableMetadata(table_name=object_name, columns=columns, row_count=row_count)
+
+    def preview_file_source(self, payload: FilePreviewRequest) -> FilePreviewResponse:
+        self._ensure_connected()
+        path_obj = self._normalize_user_path(payload.file_path)
+        source_path = path_obj.resolve() if path_obj.is_absolute() else (Path.cwd() / path_obj).resolve()
+        if not source_path.exists() or not source_path.is_file():
+            raise ValueError(f"Source file does not exist: {source_path}")
+
+        extension = source_path.suffix.lower()
+        if extension == ".xls":
+            raise ValueError("DuckDB supports .xlsx files, but not legacy .xls files. Save as .xlsx or CSV first.")
+        if extension not in SUPPORTED_SOURCE_EXTENSIONS:
+            raise ValueError("Supported file types are .csv, .tsv, and .xlsx.")
+
+        relation_sql = self._build_file_relation_sql(
+            source_path=source_path,
+            header=payload.header,
+            sheet_name=payload.sheet_name,
+        )
+
+        with self._lock:
+            assert self._conn is not None
+            result = self._conn.execute(f"SELECT * FROM {relation_sql} LIMIT {payload.limit_rows}")
+            columns = [desc[0] for desc in (result.description or [])]
+            rows = [list(row) for row in result.fetchall()]
+            return FilePreviewResponse(columns=columns, rows=rows)
 
     def _ensure_connected(self) -> None:
         if self._conn is None:
@@ -212,6 +246,22 @@ class DuckDBService:
             return f"read_xlsx({path_sql}, {', '.join(options)})"
 
         raise ValueError("Supported file types are .csv, .tsv, and .xlsx.")
+
+    def _build_projected_relation_sql(self, relation_sql: str, header_names: list[str]) -> str:
+        assert self._conn is not None
+        preview = self._conn.execute(f"SELECT * FROM {relation_sql} LIMIT 0")
+        source_columns = [desc[0] for desc in (preview.description or [])]
+        normalized_headers = [name.strip() for name in header_names if name.strip()]
+        if len(normalized_headers) != len(source_columns):
+            raise ValueError(
+                f"Custom header count ({len(normalized_headers)}) must match source columns ({len(source_columns)})."
+            )
+
+        aliases = [
+            f'src.{self._quote_identifier(source_name)} AS {self._quote_identifier(target_name)}'
+            for source_name, target_name in zip(source_columns, normalized_headers)
+        ]
+        return f"SELECT {', '.join(aliases)} FROM ({relation_sql}) src"
 
     def _fetch_columns_unlocked(self, table_name: str) -> list[ColumnDetail]:
         assert self._conn is not None

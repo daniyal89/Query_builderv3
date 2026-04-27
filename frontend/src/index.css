@@ -11,9 +11,30 @@
 @tailwind utilities;
 
 @layer base {
-  html, body {
+  :root {
+    --qb-primary: #1d4ed8;
+    --qb-primary-hover: #1e40af;
+    --qb-bg: #f8fafc;
+    --qb-surface: #ffffff;
+    --qb-text: #0f172a;
+    --qb-text-muted: #475569;
+    --qb-border: #e2e8f0;
+    --qb-success: #16a34a;
+    --qb-warning: #d97706;
+    --qb-error: #dc2626;
+  }
+
+  html,
+  body {
     margin: 0;
     padding: 0;
-    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    background: var(--qb-bg);
+    color: var(--qb-text);
+  }
+
+  * {
+    box-sizing: border-box;
   }
 }
