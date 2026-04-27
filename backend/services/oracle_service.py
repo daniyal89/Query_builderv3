@@ -138,10 +138,13 @@ class OracleService:
                     if retry_sql == normalized_sql:
                         diagnostic = self._diagnose_invalid_sql_chars(normalized_sql)
                         if diagnostic:
-                            raise RuntimeError(
+                            runtime_exc = RuntimeError(
                                 "ORA-00911 persists after SQL sanitation. Suspicious character codes: "
                                 f"{diagnostic}"
-                            ) from exc
+                            )
+                            self._attach_sql_debug(runtime_exc, sql, normalized_sql)
+                            raise runtime_exc from exc
+                        self._attach_sql_debug(exc, sql, normalized_sql)
                         raise
                     self.ensure_read_only_sql(retry_sql)
 
@@ -154,10 +157,13 @@ class OracleService:
                         if self._is_invalid_character_error(retry_exc):
                             diagnostic = self._diagnose_invalid_sql_chars(retry_sql)
                             if diagnostic:
-                                raise RuntimeError(
+                                runtime_exc = RuntimeError(
                                     "ORA-00911 after retry sanitation. Suspicious character codes: "
                                     f"{diagnostic}"
-                                ) from retry_exc
+                                )
+                                self._attach_sql_debug(runtime_exc, sql, retry_sql)
+                                raise runtime_exc from retry_exc
+                            self._attach_sql_debug(retry_exc, sql, retry_sql)
                         raise
                 columns = [desc[0] for desc in (cursor.description or [])]
                 rows = cursor.fetchall()
@@ -214,6 +220,11 @@ class OracleService:
             elif unicodedata.category(char).startswith("C") and char not in {"\n", "\r", "\t"}:
                 findings.append(f"pos={index} U+{code:04X}")
         return ", ".join(findings[:12])
+
+    @staticmethod
+    def _attach_sql_debug(exc: Exception, input_sql: str, actual_sql: str) -> None:
+        setattr(exc, "oracle_input_sql", input_sql)
+        setattr(exc, "oracle_actual_sql", actual_sql)
 
     @staticmethod
     def ensure_read_only_sql(sql: str) -> None:
