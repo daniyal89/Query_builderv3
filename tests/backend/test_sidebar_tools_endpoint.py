@@ -1,12 +1,15 @@
 from pathlib import Path
+import gzip
 
 import pytest
+from fastapi.testclient import TestClient
 
 from backend.api.endpoints.sidebar_tools import (
     _infer_input_root,
     _parquet_target_for_input,
     _resolve_existing_input_glob,
 )
+from backend.app import app
 
 
 def test_resolve_existing_input_glob_accepts_wrapped_quotes(tmp_path: Path) -> None:
@@ -82,3 +85,23 @@ def test_parquet_target_preserves_relative_structure(tmp_path: Path) -> None:
     target = _parquet_target_for_input(output_root, input_root, source_file)
 
     assert target.as_posix().endswith("/out/DIV1/sample.parquet")
+
+
+def test_csv_to_parquet_endpoint_handles_mixed_numeric_text_columns(tmp_path: Path) -> None:
+    source = tmp_path / "mixed.csv.gz"
+    with gzip.open(source, "wt", encoding="utf-8") as handle:
+        handle.write("KNO,VALUE\n123,1\nDV_111368,2\n")
+
+    output_file = tmp_path / "out.parquet"
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/csv-to-parquet",
+        json={
+            "input_path": str(source),
+            "output_path": str(output_file),
+            "compression": "zstd",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert output_file.exists()

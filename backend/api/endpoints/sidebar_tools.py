@@ -44,6 +44,14 @@ def _resolve_relation_sql(input_path: str) -> str:
     return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
 
+def _resolve_csv_parquet_read_sql(input_path: str) -> str:
+    input_path_sql = _sql_string_literal(input_path)
+    return (
+        f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true, "
+        "all_varchar = true, sample_size = -1)"
+    )
+
+
 def _resolve_existing_input_glob(input_path: str) -> str:
     cleaned = input_path.replace("\u00A0", " ").strip().strip('"').strip("'")
     normalized_path = cleaned.replace("\\", "/")
@@ -162,11 +170,11 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
         # Single-file mode keeps backward compatibility when output is an explicit parquet file.
         if len(matched_files) == 1 and output_path.suffix.lower() == ".parquet":
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            input_path_sql = _sql_string_literal(str(matched_files[0]))
             output_path_sql = _sql_string_literal(str(output_path))
+            relation_sql = _resolve_csv_parquet_read_sql(str(matched_files[0]))
             with duckdb.connect() as conn:
                 conn.execute(
-                    f"COPY (SELECT * FROM read_csv_auto({input_path_sql}, union_by_name = true, filename = true)) "
+                    f"COPY (SELECT * FROM {relation_sql}) "
                     f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
                 )
             return SidebarToolResponse(
@@ -184,10 +192,10 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
             for source_file in matched_files:
                 target_file = _parquet_target_for_input(output_root, input_root, source_file)
                 target_file.parent.mkdir(parents=True, exist_ok=True)
-                source_sql = _sql_string_literal(str(source_file))
+                relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                 target_sql = _sql_string_literal(str(target_file))
                 conn.execute(
-                    f"COPY (SELECT * FROM read_csv_auto({source_sql}, union_by_name = true, filename = true)) "
+                    f"COPY (SELECT * FROM {relation_sql}) "
                     f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
                 )
                 converted_count += 1
