@@ -153,9 +153,9 @@ export const SidebarToolsPage: React.FC = () => {
     month_label: initialBuildForm.month_label,
   });
   const [parquetForm, setParquetForm] = useState({
-    input_path: initialParquetForm.input_path,
-    output_path: initialParquetForm.output_path,
-    compression: initialParquetForm.compression,
+    input_path: "./data/MAR_2026/*.csv.gz",
+    output_path: "./parquet/MAR_2026",
+    compression: "zstd",
   });
   const [buildMessage, setBuildMessage] = useState(initialBuildStatus.message);
   const [buildStatus, setBuildStatus] = useState<BuildJobStatus>(initialBuildStatus);
