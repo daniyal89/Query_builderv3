@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
+import duckdb
 from fastapi.testclient import TestClient
 
 from backend.api.endpoints.sidebar_tools import (
@@ -51,6 +52,18 @@ def test_resolve_existing_input_glob_accepts_directory_path(tmp_path: Path) -> N
     resolved = _resolve_existing_input_glob(tmp_path.as_posix())
 
     assert resolved.endswith("/**/*.csv.gz")
+
+
+def test_resolve_existing_input_glob_accepts_directory_path_with_parquet(tmp_path: Path) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    parquet_path = nested / "inside.parquet"
+
+    duckdb.connect().execute("COPY (SELECT 1 AS id) TO ? (FORMAT PARQUET)", [str(parquet_path)])
+
+    resolved = _resolve_existing_input_glob(tmp_path.as_posix())
+
+    assert resolved.endswith("/**/*.parquet")
 
 
 def test_resolve_existing_input_glob_supports_recursive_from_non_recursive_pattern(tmp_path: Path) -> None:

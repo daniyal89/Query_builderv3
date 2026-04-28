@@ -47,7 +47,7 @@ def _resolve_relation_sql(input_path: str) -> str:
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
         return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
-    matches = glob.glob(input_path, recursive=True)
+    matches = [item for item in glob.glob(input_path, recursive=True) if Path(item).is_file()]
     if matches:
         sample = matches[0].lower()
         if sample.endswith(".parquet"):
@@ -60,7 +60,7 @@ def _resolve_relation_sql(input_path: str) -> str:
         ):
             return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
-    return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
+    raise ValueError(f"No readable files matched '{input_path}'.")
 
 
 def _resolve_csv_parquet_read_sql(input_path: str) -> str:
@@ -80,18 +80,18 @@ def _resolve_existing_input_glob(input_path: str) -> str:
         return str(normalized_as_path)
 
     if normalized_as_path.is_dir():
-        for candidate in ("**/*.csv.gz", "**/*.gz", "**/*.csv", "**/*.tsv", "**/*.txt"):
+        for candidate in ("**/*.parquet", "**/*.csv.gz", "**/*.gz", "**/*.csv", "**/*.tsv", "**/*.txt"):
             pattern = str((normalized_as_path / candidate).as_posix())
-            if glob.glob(pattern, recursive=True):
+            if any(Path(item).is_file() for item in glob.glob(pattern, recursive=True)):
                 return pattern
 
-    matches = glob.glob(normalized_path, recursive=True)
+    matches = [item for item in glob.glob(normalized_path, recursive=True) if Path(item).is_file()]
     if matches:
         return normalized_path
 
     if "/*." in normalized_path:
         recursive_variant = normalized_path.replace("/*.", "/**/*.")
-        recursive_matches = glob.glob(recursive_variant, recursive=True)
+        recursive_matches = [item for item in glob.glob(recursive_variant, recursive=True) if Path(item).is_file()]
         if recursive_matches:
             return recursive_variant
 
@@ -102,11 +102,13 @@ def _resolve_existing_input_glob(input_path: str) -> str:
         ]
         for fallback in fallbacks:
             fallback_matches = glob.glob(fallback, recursive=True)
-            if fallback_matches:
+            if any(Path(item).is_file() for item in fallback_matches):
                 return fallback
             if "/*." in fallback:
                 recursive_fallback = fallback.replace("/*.", "/**/*.")
-                recursive_fallback_matches = glob.glob(recursive_fallback, recursive=True)
+                recursive_fallback_matches = [
+                    item for item in glob.glob(recursive_fallback, recursive=True) if Path(item).is_file()
+                ]
                 if recursive_fallback_matches:
                     return recursive_fallback
 

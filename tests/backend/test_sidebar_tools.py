@@ -115,6 +115,31 @@ def test_sidebar_build_duckdb_detects_parquet_from_wildcard_without_extension(tm
     assert response.status_code == 200, response.text
 
 
+def test_sidebar_build_duckdb_accepts_directory_with_nested_parquet_files(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_parquet_dir.duckdb"
+    parquet_dir = tmp_path / "parquet_root"
+    nested = parquet_dir / "FEB_2026"
+    nested.mkdir(parents=True, exist_ok=True)
+    parquet_path = nested / "data.parquet"
+
+    duckdb.connect().execute("COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)])
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(parquet_dir),
+            "object_name": "MASTER_FROM_PARQUET_DIR",
+            "object_type": "VIEW",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+
 def test_sidebar_build_duckdb_detects_gz_csv_from_wildcard_without_extension(tmp_path: Path) -> None:
     db_path = tmp_path / "tools_gz.duckdb"
     csv_dir = tmp_path / "csv"
