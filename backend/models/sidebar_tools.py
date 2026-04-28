@@ -40,7 +40,10 @@ class BuildDuckDbRequest(BaseModel):
 
 class CsvToParquetRequest(BaseModel):
     input_path: str = Field(..., description="Input CSV path or glob pattern.")
-    output_path: str = Field(..., description="Output parquet file path.")
+    output_path: str = Field(
+        ...,
+        description="Output parquet folder path (or explicit .parquet file path for single-file mode).",
+    )
     compression: str = Field(default="zstd", description="Parquet compression codec.")
 
     @field_validator("input_path", "output_path")
@@ -78,6 +81,7 @@ class CsvToParquetJobResponse(BaseModel):
     message: str
     processed_files: int = 0
     total_files: int = 0
+    skipped_files: int = 0
     current_file: str | None = None
     output_path: str | None = None
     started_at: str | None = None

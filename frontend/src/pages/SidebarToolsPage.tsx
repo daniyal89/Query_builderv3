@@ -14,6 +14,123 @@ interface FieldProps {
   children: React.ReactNode;
 }
 
+const PARQUET_FORM_STORAGE_KEY = "sidebar_tools_parquet_form_v1";
+const PARQUET_JOB_STORAGE_KEY = "sidebar_tools_parquet_job_v1";
+const BUILD_FORM_STORAGE_KEY = "sidebar_tools_build_form_v1";
+const BUILD_STATUS_STORAGE_KEY = "sidebar_tools_build_status_v1";
+
+type BuildJobStatus = {
+  status: "idle" | "running" | "completed" | "failed";
+  message: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
+type PersistedParquetJobState = {
+  jobId: string;
+  status: CsvParquetJobStatusResponse | null;
+  message: string;
+};
+
+function isParquetTerminalStatus(status: CsvParquetJobStatusResponse | null): boolean {
+  return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function readInitialParquetForm() {
+  const fallback = {
+    input_path: "./data/MAR_2026/*.csv.gz",
+    output_path: "./parquet/MAR_2026",
+    compression: "zstd",
+  };
+  try {
+    const raw = window.localStorage.getItem(PARQUET_FORM_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<typeof fallback>;
+    return {
+      input_path: typeof parsed.input_path === "string" ? parsed.input_path : fallback.input_path,
+      output_path: typeof parsed.output_path === "string" ? parsed.output_path : fallback.output_path,
+      compression: typeof parsed.compression === "string" ? parsed.compression : fallback.compression,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function readInitialParquetJobState(): { jobId: string | null; status: CsvParquetJobStatusResponse | null; message: string } {
+  try {
+    const raw = window.localStorage.getItem(PARQUET_JOB_STORAGE_KEY);
+    if (!raw) return { jobId: null, status: null, message: "" };
+    const parsed = JSON.parse(raw) as Partial<PersistedParquetJobState>;
+    const jobId = typeof parsed.jobId === "string" && parsed.jobId.trim() ? parsed.jobId : null;
+    const status = parsed.status ?? null;
+    const message = typeof parsed.message === "string" ? parsed.message : "";
+    return {
+      jobId: jobId && !isParquetTerminalStatus(status as CsvParquetJobStatusResponse | null) ? jobId : null,
+      status,
+      message,
+    };
+  } catch {
+    return { jobId: null, status: null, message: "" };
+  }
+}
+
+function readInitialBuildForm(): {
+  db_path: string;
+  input_path: string;
+  object_name: string;
+  object_type: "TABLE" | "VIEW";
+  replace: boolean;
+  month_label: string;
+} {
+  const fallback: {
+    db_path: string;
+    input_path: string;
+    object_name: string;
+    object_type: "TABLE" | "VIEW";
+    replace: boolean;
+    month_label: string;
+  } = {
+    db_path: "./monthly.duckdb",
+    input_path: "./data/MAR_2026/*.csv.gz",
+    object_name: "MASTER_MAR_2026",
+    object_type: "TABLE",
+    replace: true,
+    month_label: "MAR_2026",
+  };
+  try {
+    const raw = window.localStorage.getItem(BUILD_FORM_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<typeof fallback>;
+    return {
+      db_path: typeof parsed.db_path === "string" ? parsed.db_path : fallback.db_path,
+      input_path: typeof parsed.input_path === "string" ? parsed.input_path : fallback.input_path,
+      object_name: typeof parsed.object_name === "string" ? parsed.object_name : fallback.object_name,
+      object_type: parsed.object_type === "VIEW" ? "VIEW" : "TABLE",
+      replace: typeof parsed.replace === "boolean" ? parsed.replace : fallback.replace,
+      month_label: typeof parsed.month_label === "string" ? parsed.month_label : fallback.month_label,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function readInitialBuildStatus(): BuildJobStatus {
+  try {
+    const raw = window.localStorage.getItem(BUILD_STATUS_STORAGE_KEY);
+    if (!raw) return { status: "idle", message: "" };
+    const parsed = JSON.parse(raw) as Partial<BuildJobStatus>;
+    const status = parsed.status;
+    return {
+      status: status === "running" || status === "completed" || status === "failed" ? status : "idle",
+      message: typeof parsed.message === "string" ? parsed.message : "",
+      startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : undefined,
+      finishedAt: typeof parsed.finishedAt === "string" ? parsed.finishedAt : undefined,
+    };
+  } catch {
+    return { status: "idle", message: "" };
+  }
+}
+
 const Field: React.FC<FieldProps> = ({ label, help, children }) => (
   <div className="space-y-1">
     <label className="block text-sm font-semibold text-slate-700">{label}</label>
@@ -23,24 +140,29 @@ const Field: React.FC<FieldProps> = ({ label, help, children }) => (
 );
 
 export const SidebarToolsPage: React.FC = () => {
+  const initialBuildForm = useMemo(() => readInitialBuildForm(), []);
+  const initialBuildStatus = useMemo(() => readInitialBuildStatus(), []);
+  const initialParquetForm = useMemo(() => readInitialParquetForm(), []);
+  const initialParquetJobState = useMemo(() => readInitialParquetJobState(), []);
   const [buildForm, setBuildForm] = useState({
-    db_path: "./monthly.duckdb",
-    input_path: "./data/MAR_2026/*.csv.gz",
-    object_name: "MASTER_MAR_2026",
-    object_type: "TABLE" as "TABLE" | "VIEW",
-    replace: true,
-    month_label: "MAR_2026",
+    db_path: initialBuildForm.db_path,
+    input_path: initialBuildForm.input_path,
+    object_name: initialBuildForm.object_name,
+    object_type: initialBuildForm.object_type,
+    replace: initialBuildForm.replace,
+    month_label: initialBuildForm.month_label,
   });
   const [parquetForm, setParquetForm] = useState({
-    input_path: "./data/MAR_2026/*.csv.gz",
-    output_path: "./parquet/MAR_2026/master.parquet",
-    compression: "zstd",
+    input_path: initialParquetForm.input_path,
+    output_path: initialParquetForm.output_path,
+    compression: initialParquetForm.compression,
   });
-  const [buildMessage, setBuildMessage] = useState("");
-  const [parquetMessage, setParquetMessage] = useState("");
+  const [buildMessage, setBuildMessage] = useState(initialBuildStatus.message);
+  const [buildStatus, setBuildStatus] = useState<BuildJobStatus>(initialBuildStatus);
+  const [parquetMessage, setParquetMessage] = useState(initialParquetJobState.message);
   const [isBuildRunning, setIsBuildRunning] = useState(false);
-  const [parquetJobId, setParquetJobId] = useState<string | null>(null);
-  const [parquetStatus, setParquetStatus] = useState<CsvParquetJobStatusResponse | null>(null);
+  const [parquetJobId, setParquetJobId] = useState<string | null>(initialParquetJobState.jobId);
+  const [parquetStatus, setParquetStatus] = useState<CsvParquetJobStatusResponse | null>(initialParquetJobState.status);
   const [statusNote, setStatusNote] = useState("Use labels below and fill full paths before running.");
   const isParquetRunning = parquetStatus?.status === "queued" || parquetStatus?.status === "running" || parquetStatus?.status === "cancelling";
   const parquetProgress = useMemo(() => {
@@ -49,8 +171,32 @@ export const SidebarToolsPage: React.FC = () => {
   }, [parquetStatus]);
 
   useEffect(() => {
+    window.localStorage.setItem(BUILD_FORM_STORAGE_KEY, JSON.stringify(buildForm));
+  }, [buildForm]);
+
+  useEffect(() => {
+    window.localStorage.setItem(BUILD_STATUS_STORAGE_KEY, JSON.stringify(buildStatus));
+  }, [buildStatus]);
+
+  useEffect(() => {
+    window.localStorage.setItem(PARQUET_FORM_STORAGE_KEY, JSON.stringify(parquetForm));
+  }, [parquetForm]);
+
+  useEffect(() => {
+    if (!parquetJobId) {
+      window.localStorage.removeItem(PARQUET_JOB_STORAGE_KEY);
+      return;
+    }
+    const payload: PersistedParquetJobState = {
+      jobId: parquetJobId,
+      status: parquetStatus,
+      message: parquetMessage,
+    };
+    window.localStorage.setItem(PARQUET_JOB_STORAGE_KEY, JSON.stringify(payload));
+  }, [parquetJobId, parquetStatus, parquetMessage]);
+
+  useEffect(() => {
     if (!parquetJobId) return;
-    if (!isParquetRunning) return;
     const timer = window.setInterval(async () => {
       try {
         const latest = await getCsvToParquetJobStatus(parquetJobId);
@@ -78,7 +224,7 @@ export const SidebarToolsPage: React.FC = () => {
       }
     }, 1200);
     return () => window.clearInterval(timer);
-  }, [parquetJobId, isParquetRunning]);
+  }, [parquetJobId]);
 
   const applyUppclPreset = () => {
     setBuildForm({
@@ -91,7 +237,7 @@ export const SidebarToolsPage: React.FC = () => {
     });
     setParquetForm({
       input_path: "G:/MASTER/MAR_2026/*.csv.gz",
-      output_path: "G:/MASTER_PARQUET/MAR_2026/master.parquet",
+      output_path: "G:/MASTER_PARQUET/MAR_2026",
       compression: "snappy",
     });
     setStatusNote("UPPCL preset applied. Adjust month/path values if needed.");
@@ -100,11 +246,31 @@ export const SidebarToolsPage: React.FC = () => {
   const runBuild = async () => {
     setIsBuildRunning(true);
     setBuildMessage("");
+    setBuildStatus({
+      status: "running",
+      message: "Build running...",
+      startedAt: new Date().toISOString(),
+      finishedAt: undefined,
+    });
     try {
       const result = await runBuildDuckDb(buildForm);
-      setBuildMessage(result.message + (result.output_path ? ` Output: ${result.output_path}` : ""));
+      const finalMessage = result.message + (result.output_path ? ` Output: ${result.output_path}` : "");
+      setBuildMessage(finalMessage);
+      setBuildStatus({
+        status: "completed",
+        message: finalMessage,
+        startedAt: buildStatus.startedAt ?? new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+      });
     } catch (error: any) {
-      setBuildMessage(error?.response?.data?.detail || error?.message || "Build failed.");
+      const errorMessage = error?.response?.data?.detail || error?.message || "Build failed.";
+      setBuildMessage(errorMessage);
+      setBuildStatus({
+        status: "failed",
+        message: errorMessage,
+        startedAt: buildStatus.startedAt ?? new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+      });
     } finally {
       setIsBuildRunning(false);
     }
@@ -121,6 +287,7 @@ export const SidebarToolsPage: React.FC = () => {
         message: started.message,
         processed_files: 0,
         total_files: 0,
+        skipped_files: 0,
       });
       setParquetMessage(`CSV→Parquet job started. Job ID: ${started.job_id}`);
     } catch (error: any) {
@@ -235,6 +402,24 @@ export const SidebarToolsPage: React.FC = () => {
         <button onClick={runBuild} disabled={isBuildRunning} className="mt-3 rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
           {isBuildRunning ? "Running..." : "Run Build DuckDB"}
         </button>
+        <div className="mt-3 rounded-xl border border-blue-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-base font-semibold text-slate-900">Build DuckDB status</p>
+              <p className="text-xs text-slate-500">{buildStatus.message || "No build run yet."}</p>
+            </div>
+            <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700">{buildStatus.status}</span>
+          </div>
+          <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full bg-blue-600 transition-all"
+              style={{ width: `${buildStatus.status === "completed" ? 100 : buildStatus.status === "running" ? 60 : 0}%` }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            Stop is not available for this single-step backend operation. Status and form are persisted across route changes.
+          </p>
+        </div>
         <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python build_duckdb.py --db "${buildForm.db_path}" --input "${buildForm.input_path}" --object-name ${buildForm.object_name} --object-type ${buildForm.object_type}${buildForm.replace ? " --replace" : ""}${buildForm.month_label ? ` --month-label ${buildForm.month_label}` : ""}`}</pre>
         {buildMessage && <p className="mt-2 text-sm text-slate-700">{buildMessage}</p>}
       </div>
@@ -272,7 +457,7 @@ export const SidebarToolsPage: React.FC = () => {
               </button>
             </div>
           </Field>
-          <Field label="Output parquet file path" help="Example: G:/MASTER_PARQUET/MAR_2026/master.parquet">
+          <Field label="Output parquet folder path" help="Example: G:/MASTER_PARQUET/MAR_2026 (single file also supports .parquet path)">
             <div className="flex gap-2">
               <input
                 className="w-full rounded border p-2 md:col-span-2"
@@ -282,12 +467,22 @@ export const SidebarToolsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={async () => {
+                  const folder = await pickSystemFolder();
+                  if (folder) setParquetForm((p) => ({ ...p, output_path: folder }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Folder...
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
                   const path = await pickSystemSavePath("master.parquet", ".parquet");
                   if (path) setParquetForm((p) => ({ ...p, output_path: path }));
                 }}
                 className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
-                Browse...
+                File...
               </button>
             </div>
           </Field>
@@ -307,18 +502,24 @@ export const SidebarToolsPage: React.FC = () => {
         </div>
         <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_parquet.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}`}</pre>
         {parquetStatus && (
-          <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+          <div className="mt-3 rounded-xl border border-indigo-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="font-medium">Status: {parquetStatus.status}</p>
-              <p className="text-xs text-slate-500">
-                {parquetStatus.processed_files}/{parquetStatus.total_files} files
-              </p>
+              <div>
+                <p className="text-base font-semibold text-slate-900">CSV→Parquet status</p>
+                <p className="text-xs text-slate-500">{parquetStatus.message}</p>
+              </div>
+              <span className="rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700">{parquetStatus.status}</span>
             </div>
-            <div className="mt-2 h-2 w-full overflow-hidden rounded bg-slate-200">
-              <div className="h-full bg-emerald-600 transition-all" style={{ width: `${parquetProgress}%` }} />
+            <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+              <div className="h-full bg-indigo-600 transition-all" style={{ width: `${parquetProgress}%` }} />
+            </div>
+            <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-4">
+              <div><span className="font-semibold text-slate-800">Total:</span> {parquetStatus.total_files}</div>
+              <div><span className="font-semibold text-slate-800">Processed:</span> {parquetStatus.processed_files}</div>
+              <div><span className="font-semibold text-slate-800">Skipped:</span> {parquetStatus.skipped_files}</div>
+              <div><span className="font-semibold text-slate-800">Progress:</span> {parquetProgress}%</div>
             </div>
             {parquetStatus.current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {parquetStatus.current_file}</p>}
-            <p className="mt-1 text-xs text-slate-500">{parquetStatus.message}</p>
           </div>
         )}
         {parquetMessage && <p className="mt-2 text-sm text-slate-700">{parquetMessage}</p>}

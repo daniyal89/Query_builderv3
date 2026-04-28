@@ -128,6 +128,31 @@ def test_csv_to_parquet_job_start_status_and_stop(tmp_path: Path) -> None:
     status_response = client.get(f"/api/sidebar-tools/csv-to-parquet/status/{job_id}")
     assert status_response.status_code == 200, status_response.text
     assert status_response.json()["status"] in {"queued", "running", "completed"}
+    assert "skipped_files" in status_response.json()
 
     stop_response = client.post(f"/api/sidebar-tools/csv-to-parquet/stop/{job_id}")
     assert stop_response.status_code == 200, stop_response.text
+
+
+def test_csv_to_parquet_endpoint_skips_existing_output_file(tmp_path: Path) -> None:
+    source = tmp_path / "already.csv.gz"
+    with gzip.open(source, "wt", encoding="utf-8") as handle:
+        handle.write("KNO,VALUE\n123,1\n")
+
+    output_file = tmp_path / "already.parquet"
+    output_file.write_bytes(b"existing")
+    original_size = output_file.stat().st_size
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/csv-to-parquet",
+        json={
+            "input_path": str(source),
+            "output_path": str(output_file),
+            "compression": "zstd",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "Skipped conversion" in response.json()["message"]
+    assert output_file.stat().st_size == original_size
