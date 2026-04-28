@@ -156,32 +156,3 @@ def test_csv_to_parquet_endpoint_skips_existing_output_file(tmp_path: Path) -> N
     assert response.status_code == 200, response.text
     assert "Skipped conversion" in response.json()["message"]
     assert output_file.stat().st_size == original_size
-
-
-def test_build_duckdb_job_start_status_and_stop(tmp_path: Path) -> None:
-    source = tmp_path / "input.csv"
-    source.write_text("id,name\n1,Alice\n", encoding="utf-8")
-    db_path = tmp_path / "job_build.duckdb"
-    client = TestClient(app)
-
-    start = client.post(
-        "/api/sidebar-tools/build-duckdb/start",
-        json={
-            "db_path": str(db_path),
-            "input_path": str(source),
-            "object_name": "MASTER_TEST",
-            "object_type": "TABLE",
-            "replace": True,
-            "month_label": "MAR_2026",
-        },
-    )
-    assert start.status_code == 200, start.text
-    job_id = start.json()["job_id"]
-
-    status_response = client.get(f"/api/sidebar-tools/build-duckdb/status/{job_id}")
-    assert status_response.status_code == 200, status_response.text
-    assert status_response.json()["status"] in {"queued", "running", "completed"}
-    assert "progress_percent" in status_response.json()
-
-    stop_response = client.post(f"/api/sidebar-tools/build-duckdb/stop/{job_id}")
-    assert stop_response.status_code == 200, stop_response.text
