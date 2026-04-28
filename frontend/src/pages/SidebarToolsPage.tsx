@@ -33,7 +33,7 @@ export const SidebarToolsPage: React.FC = () => {
   });
   const [parquetForm, setParquetForm] = useState({
     input_path: "./data/MAR_2026/*.csv.gz",
-    output_path: "./parquet/MAR_2026/master.parquet",
+    output_path: "./parquet/MAR_2026",
     compression: "zstd",
   });
   const [buildMessage, setBuildMessage] = useState("");
@@ -91,7 +91,7 @@ export const SidebarToolsPage: React.FC = () => {
     });
     setParquetForm({
       input_path: "G:/MASTER/MAR_2026/*.csv.gz",
-      output_path: "G:/MASTER_PARQUET/MAR_2026/master.parquet",
+      output_path: "G:/MASTER_PARQUET/MAR_2026",
       compression: "snappy",
     });
     setStatusNote("UPPCL preset applied. Adjust month/path values if needed.");
@@ -121,6 +121,7 @@ export const SidebarToolsPage: React.FC = () => {
         message: started.message,
         processed_files: 0,
         total_files: 0,
+        skipped_files: 0,
       });
       setParquetMessage(`CSV→Parquet job started. Job ID: ${started.job_id}`);
     } catch (error: any) {
@@ -272,7 +273,7 @@ export const SidebarToolsPage: React.FC = () => {
               </button>
             </div>
           </Field>
-          <Field label="Output parquet file path" help="Example: G:/MASTER_PARQUET/MAR_2026/master.parquet">
+          <Field label="Output parquet folder path" help="Example: G:/MASTER_PARQUET/MAR_2026 (single file also supports .parquet path)">
             <div className="flex gap-2">
               <input
                 className="w-full rounded border p-2 md:col-span-2"
@@ -282,12 +283,22 @@ export const SidebarToolsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={async () => {
+                  const folder = await pickSystemFolder();
+                  if (folder) setParquetForm((p) => ({ ...p, output_path: folder }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Folder...
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
                   const path = await pickSystemSavePath("master.parquet", ".parquet");
                   if (path) setParquetForm((p) => ({ ...p, output_path: path }));
                 }}
                 className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
-                Browse...
+                File...
               </button>
             </div>
           </Field>
@@ -307,18 +318,24 @@ export const SidebarToolsPage: React.FC = () => {
         </div>
         <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_parquet.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}`}</pre>
         {parquetStatus && (
-          <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+          <div className="mt-3 rounded-xl border border-indigo-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="font-medium">Status: {parquetStatus.status}</p>
-              <p className="text-xs text-slate-500">
-                {parquetStatus.processed_files}/{parquetStatus.total_files} files
-              </p>
+              <div>
+                <p className="text-base font-semibold text-slate-900">CSV→Parquet status</p>
+                <p className="text-xs text-slate-500">{parquetStatus.message}</p>
+              </div>
+              <span className="rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold text-indigo-700">{parquetStatus.status}</span>
             </div>
-            <div className="mt-2 h-2 w-full overflow-hidden rounded bg-slate-200">
-              <div className="h-full bg-emerald-600 transition-all" style={{ width: `${parquetProgress}%` }} />
+            <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+              <div className="h-full bg-indigo-600 transition-all" style={{ width: `${parquetProgress}%` }} />
+            </div>
+            <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-4">
+              <div><span className="font-semibold text-slate-800">Total:</span> {parquetStatus.total_files}</div>
+              <div><span className="font-semibold text-slate-800">Processed:</span> {parquetStatus.processed_files}</div>
+              <div><span className="font-semibold text-slate-800">Skipped:</span> {parquetStatus.skipped_files}</div>
+              <div><span className="font-semibold text-slate-800">Progress:</span> {parquetProgress}%</div>
             </div>
             {parquetStatus.current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {parquetStatus.current_file}</p>}
-            <p className="mt-1 text-xs text-slate-500">{parquetStatus.message}</p>
           </div>
         )}
         {parquetMessage && <p className="mt-2 text-sm text-slate-700">{parquetMessage}</p>}

@@ -169,7 +169,8 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
         output_root.mkdir(parents=True, exist_ok=True)
         compression_sql = _sql_string_literal(payload.compression)
         reported_output_path = str(single_target if single_target is not None else output_root)
-        _update_csv_job(job_id, status="running", total_files=len(files), output_path=reported_output_path)
+        _update_csv_job(job_id, status="running", total_files=len(files), output_path=reported_output_path, skipped_files=0)
+        skipped_files = 0
 
         with duckdb.connect() as conn:
             for index, source_file in enumerate(files, start=1):
@@ -184,11 +185,22 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
 
                 target_file = single_target if single_target is not None else _parquet_target_for_input(output_root, input_root, source_file)
                 target_file.parent.mkdir(parents=True, exist_ok=True)
+                if target_file.exists():
+                    skipped_files += 1
+                    _update_csv_job(
+                        job_id,
+                        processed_files=index,
+                        skipped_files=skipped_files,
+                        current_file=str(source_file),
+                        message=f"Skipping existing parquet file ({index}/{len(files)}).",
+                    )
+                    continue
                 relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                 target_sql = _sql_string_literal(str(target_file))
                 _update_csv_job(
                     job_id,
                     processed_files=index - 1,
+                    skipped_files=skipped_files,
                     current_file=str(source_file),
                     message=f"Processing file {index}/{len(files)}...",
                 )
@@ -196,14 +208,18 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     f"COPY (SELECT * FROM {relation_sql}) "
                     f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
                 )
-                _update_csv_job(job_id, processed_files=index)
+                _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files)
 
         _update_csv_job(
             job_id,
             status="completed",
             current_file=None,
-            message=f"Parquet conversion completed successfully for {len(files)} file(s).",
+            message=(
+                f"Parquet conversion completed successfully for {len(files)} file(s). "
+                f"Skipped existing: {skipped_files}."
+            ),
             finished_at=datetime.now().isoformat(timespec="seconds"),
+            skipped_files=skipped_files,
         )
     except Exception as exc:
         _update_csv_job(
@@ -256,6 +272,11 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
 
         # Single-file mode keeps backward compatibility when output is an explicit parquet file.
         if len(matched_files) == 1 and output_path.suffix.lower() == ".parquet":
+            if output_path.exists():
+                return SidebarToolResponse(
+                    message="Skipped conversion because output parquet already exists.",
+                    output_path=str(output_path),
+                )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path_sql = _sql_string_literal(str(output_path))
             relation_sql = _resolve_csv_parquet_read_sql(str(matched_files[0]))
@@ -275,10 +296,14 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
         input_root = _infer_input_root(resolved_input, matched_files)
 
         converted_count = 0
+        skipped_count = 0
         with duckdb.connect() as conn:
             for source_file in matched_files:
                 target_file = _parquet_target_for_input(output_root, input_root, source_file)
                 target_file.parent.mkdir(parents=True, exist_ok=True)
+                if target_file.exists():
+                    skipped_count += 1
+                    continue
                 relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                 target_sql = _sql_string_literal(str(target_file))
                 conn.execute(
@@ -288,7 +313,7 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
                 converted_count += 1
 
         return SidebarToolResponse(
-            message=f"Parquet conversion completed successfully for {converted_count} file(s).",
+            message=f"Parquet conversion completed successfully for {converted_count} file(s). Skipped existing: {skipped_count}.",
             output_path=str(output_root),
         )
     except Exception as exc:
@@ -311,6 +336,7 @@ async def csv_to_parquet_start(payload: CsvToParquetRequest) -> CsvToParquetJobS
             "message": "CSV→Parquet conversion queued.",
             "processed_files": 0,
             "total_files": len(files),
+            "skipped_files": 0,
             "current_file": None,
             "output_path": str(single_target if single_target is not None else output_root),
             "started_at": datetime.now().isoformat(timespec="seconds"),
