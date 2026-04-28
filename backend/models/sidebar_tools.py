@@ -86,3 +86,19 @@ class CsvToParquetJobResponse(BaseModel):
     output_path: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
+
+
+class BuildDuckDbJobStartResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+
+
+class BuildDuckDbJobResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    output_path: str | None = None
+    progress_percent: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None

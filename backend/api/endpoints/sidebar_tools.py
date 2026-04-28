@@ -14,6 +14,8 @@ import duckdb
 from fastapi import APIRouter, HTTPException, status
 
 from backend.models.sidebar_tools import (
+    BuildDuckDbJobResponse,
+    BuildDuckDbJobStartResponse,
     BuildDuckDbRequest,
     CsvToParquetJobResponse,
     CsvToParquetJobStartResponse,
@@ -26,6 +28,9 @@ VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 CSV_PARQUET_JOBS: dict[str, dict[str, Any]] = {}
 CSV_PARQUET_CANCEL_EVENTS: dict[str, threading.Event] = {}
 CSV_PARQUET_JOBS_LOCK = threading.Lock()
+BUILD_DUCKDB_JOBS: dict[str, dict[str, Any]] = {}
+BUILD_DUCKDB_CANCEL_EVENTS: dict[str, threading.Event] = {}
+BUILD_DUCKDB_JOBS_LOCK = threading.Lock()
 
 
 def _sql_string_literal(value: str) -> str:
@@ -163,6 +168,74 @@ def _update_csv_job(job_id: str, **updates: Any) -> None:
         CSV_PARQUET_JOBS[job_id].update(updates)
 
 
+def _update_build_job(job_id: str, **updates: Any) -> None:
+    with BUILD_DUCKDB_JOBS_LOCK:
+        if job_id not in BUILD_DUCKDB_JOBS:
+            return
+        BUILD_DUCKDB_JOBS[job_id].update(updates)
+
+
+def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
+    if not VALID_OBJECT_NAME.fullmatch(payload.object_name):
+        raise ValueError("object_name must start with letter/_ and use only letters, numbers, underscore.")
+
+    db_path = Path(payload.db_path).expanduser().resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    object_sql = f'"{payload.object_name.replace(chr(34), chr(34) * 2)}"'
+    resolved_input = _resolve_existing_input_glob(payload.input_path)
+    relation_sql = _resolve_relation_sql(resolved_input)
+
+    with duckdb.connect(str(db_path)) as conn:
+        if payload.replace:
+            conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
+            conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+        conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
+
+    month_text = f" for {payload.month_label}" if payload.month_label else ""
+    return str(db_path), f"Created {payload.object_type} {payload.object_name}{month_text}."
+
+
+def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
+    try:
+        if BUILD_DUCKDB_CANCEL_EVENTS[job_id].is_set():
+            _update_build_job(
+                job_id,
+                status="cancelled",
+                message="Build cancelled before execution.",
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            return
+
+        _update_build_job(job_id, status="running", progress_percent=25, message="Preparing build...")
+        output_path, message = _execute_build_duckdb(payload)
+        if BUILD_DUCKDB_CANCEL_EVENTS[job_id].is_set():
+            _update_build_job(
+                job_id,
+                status="cancelled",
+                message="Stop requested. Build finished but marked cancelled.",
+                output_path=output_path,
+                progress_percent=100,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            return
+        _update_build_job(
+            job_id,
+            status="completed",
+            message=message,
+            output_path=output_path,
+            progress_percent=100,
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        _update_build_job(
+            job_id,
+            status="failed",
+            message=str(exc),
+            progress_percent=100,
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+
 def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
     try:
         files, output_root, input_root, single_target = _build_csv_to_parquet_targets(payload)
@@ -234,29 +307,52 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)
 async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
     try:
-        if not VALID_OBJECT_NAME.fullmatch(payload.object_name):
-            raise ValueError("object_name must start with letter/_ and use only letters, numbers, underscore.")
-
-        db_path = Path(payload.db_path).expanduser().resolve()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        object_sql = f'"{payload.object_name.replace(chr(34), chr(34) * 2)}"'
-        resolved_input = _resolve_existing_input_glob(payload.input_path)
-        relation_sql = _resolve_relation_sql(resolved_input)
-        with duckdb.connect(str(db_path)) as conn:
-            if payload.replace:
-                conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-                conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
-
-            conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
-
-        month_text = f" for {payload.month_label}" if payload.month_label else ""
-        return SidebarToolResponse(
-            message=f"Created {payload.object_type} {payload.object_name}{month_text}.",
-            output_path=str(db_path),
-        )
+        output_path, message = _execute_build_duckdb(payload)
+        return SidebarToolResponse(message=message, output_path=output_path)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/sidebar-tools/build-duckdb/start", response_model=BuildDuckDbJobStartResponse)
+async def build_duckdb_start(payload: BuildDuckDbRequest) -> BuildDuckDbJobStartResponse:
+    job_id = uuid.uuid4().hex
+    with BUILD_DUCKDB_JOBS_LOCK:
+        BUILD_DUCKDB_CANCEL_EVENTS[job_id] = threading.Event()
+        BUILD_DUCKDB_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "message": "Build job queued.",
+            "output_path": None,
+            "progress_percent": 0,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "finished_at": None,
+        }
+
+    threading.Thread(target=_run_build_duckdb_job, args=(job_id, payload), daemon=True).start()
+    return BuildDuckDbJobStartResponse(job_id=job_id, status="queued", message="Build DuckDB job started.")
+
+
+@router.get("/sidebar-tools/build-duckdb/status/{job_id}", response_model=BuildDuckDbJobResponse)
+async def build_duckdb_status(job_id: str) -> BuildDuckDbJobResponse:
+    with BUILD_DUCKDB_JOBS_LOCK:
+        job = BUILD_DUCKDB_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
+        return BuildDuckDbJobResponse(**job)
+
+
+@router.post("/sidebar-tools/build-duckdb/stop/{job_id}", response_model=BuildDuckDbJobResponse)
+async def build_duckdb_stop(job_id: str) -> BuildDuckDbJobResponse:
+    with BUILD_DUCKDB_JOBS_LOCK:
+        job = BUILD_DUCKDB_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
+        if job["status"] in {"completed", "failed", "cancelled"}:
+            return BuildDuckDbJobResponse(**job)
+        BUILD_DUCKDB_CANCEL_EVENTS[job_id].set()
+        job["status"] = "cancelling"
+        job["message"] = "Stop requested. Waiting for operation to finish..."
+        return BuildDuckDbJobResponse(**job)
 
 
 @router.post("/sidebar-tools/csv-to-parquet", response_model=SidebarToolResponse)

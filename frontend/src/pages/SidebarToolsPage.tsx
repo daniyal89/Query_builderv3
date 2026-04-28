@@ -1,8 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  BuildDuckDbJobStatusResponse,
   CsvParquetJobStatusResponse,
+  getBuildDuckDbJobStatus,
   getCsvToParquetJobStatus,
-  runBuildDuckDb,
+  startBuildDuckDbJob,
+  stopBuildDuckDbJob,
   startCsvToParquetJob,
   stopCsvToParquetJob,
 } from "../api/sidebarToolsApi";
@@ -164,7 +167,10 @@ export const SidebarToolsPage: React.FC = () => {
   const [parquetJobId, setParquetJobId] = useState<string | null>(initialParquetJobState.jobId);
   const [parquetStatus, setParquetStatus] = useState<CsvParquetJobStatusResponse | null>(initialParquetJobState.status);
   const [statusNote, setStatusNote] = useState("Use labels below and fill full paths before running.");
+  const [uppclPresetPaths, setUppclPresetPaths] = useState<UppclPresetPaths>(initialUppclPresetPaths);
+  const [toolHistory, setToolHistory] = useState<ToolHistoryItem[]>(initialToolHistory);
   const isParquetRunning = parquetStatus?.status === "queued" || parquetStatus?.status === "running" || parquetStatus?.status === "cancelling";
+  const isBuildRunning = buildStatus?.status === "queued" || buildStatus?.status === "running" || buildStatus?.status === "cancelling";
   const parquetProgress = useMemo(() => {
     if (!parquetStatus || parquetStatus.total_files <= 0) return 0;
     return Math.min(100, Math.round((parquetStatus.processed_files / parquetStatus.total_files) * 100));
@@ -203,7 +209,9 @@ export const SidebarToolsPage: React.FC = () => {
         setParquetStatus(latest);
         if (latest.status === "completed" || latest.status === "failed" || latest.status === "cancelled") {
           setParquetJobId(null);
-          setParquetMessage(latest.message + (latest.output_path ? ` Output: ${latest.output_path}` : ""));
+          const finalMessage = latest.message + (latest.output_path ? ` Output: ${latest.output_path}` : "");
+          setParquetMessage(finalMessage);
+          setToolHistory((current) => [{ id: `${Date.now()}-parquet`, tool: "parquet" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString() }, ...current].slice(0, 10));
         }
       } catch (error: any) {
         const detail = error?.response?.data?.detail || error?.message || "Failed to fetch conversion status.";
@@ -228,8 +236,8 @@ export const SidebarToolsPage: React.FC = () => {
 
   const applyUppclPreset = () => {
     setBuildForm({
-      db_path: "G:/MASTER/uppcl_latest.duckdb",
-      input_path: "G:/MASTER_PARQUET/MAR_2026/**/*.parquet",
+      db_path: uppclPresetPaths.build_db_path,
+      input_path: uppclPresetPaths.build_input_path,
       object_name: "master",
       object_type: "TABLE",
       replace: true,
@@ -243,8 +251,17 @@ export const SidebarToolsPage: React.FC = () => {
     setStatusNote("UPPCL preset applied. Adjust month/path values if needed.");
   };
 
+  const resetUppclPresetPaths = () => {
+    const defaults = getDefaultUppclPresetPaths();
+    setUppclPresetPaths(defaults);
+    setStatusNote("UPPCL preset paths reset to defaults.");
+  };
+
   const runBuild = async () => {
-    setIsBuildRunning(true);
+    if (!buildForm.db_path.trim() || !buildForm.input_path.trim() || !buildForm.object_name.trim()) {
+      setBuildMessage("Pre-check failed: db path, input path and object name are required.");
+      return;
+    }
     setBuildMessage("");
     setBuildStatus({
       status: "running",
@@ -277,6 +294,10 @@ export const SidebarToolsPage: React.FC = () => {
   };
 
   const runParquet = async () => {
+    if (!parquetForm.input_path.trim() || !parquetForm.output_path.trim()) {
+      setParquetMessage("Pre-check failed: input and output paths are required.");
+      return;
+    }
     setParquetMessage("");
     try {
       const started = await startCsvToParquetJob(parquetForm);
@@ -308,6 +329,18 @@ export const SidebarToolsPage: React.FC = () => {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
+      {(isBuildRunning || isParquetRunning) && (
+        <div className="sticky top-2 z-20 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-800 shadow-sm">
+          Active: {isBuildRunning ? `Build (${buildStatus?.status ?? "running"})` : ""}{isBuildRunning && isParquetRunning ? " | " : ""}{isParquetRunning ? `CSV→Parquet (${parquetStatus?.status ?? "running"})` : ""}
+        </div>
+      )}
+      {(buildStatus?.status === "failed" || parquetStatus?.status === "failed") && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          <p className="font-semibold">Error summary</p>
+          {buildStatus?.status === "failed" && <p>Build: {buildMessage}</p>}
+          {parquetStatus?.status === "failed" && <p>CSV→Parquet: {parquetMessage}</p>}
+        </div>
+      )}
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-2xl font-semibold text-slate-900">Data Tools</h1>
         <p className="mt-2 text-sm text-slate-600">
@@ -325,6 +358,45 @@ export const SidebarToolsPage: React.FC = () => {
           <span className="inline-flex items-center rounded bg-blue-50 px-3 py-1.5 text-xs text-blue-700">
             {statusNote}
           </span>
+        </div>
+        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <p className="text-sm font-semibold text-slate-800">UPPCL preset path settings</p>
+          <p className="mt-1 text-xs text-slate-500">Update once here. Apply button will use these saved values.</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <input
+              className="w-full rounded border p-2 text-sm"
+              value={uppclPresetPaths.build_db_path}
+              onChange={(e) => setUppclPresetPaths((p) => ({ ...p, build_db_path: e.target.value }))}
+              placeholder="Build DB path"
+            />
+            <input
+              className="w-full rounded border p-2 text-sm"
+              value={uppclPresetPaths.build_input_path}
+              onChange={(e) => setUppclPresetPaths((p) => ({ ...p, build_input_path: e.target.value }))}
+              placeholder="Build input path/glob"
+            />
+            <input
+              className="w-full rounded border p-2 text-sm"
+              value={uppclPresetPaths.parquet_input_path}
+              onChange={(e) => setUppclPresetPaths((p) => ({ ...p, parquet_input_path: e.target.value }))}
+              placeholder="Parquet input path/glob"
+            />
+            <input
+              className="w-full rounded border p-2 text-sm"
+              value={uppclPresetPaths.parquet_output_path}
+              onChange={(e) => setUppclPresetPaths((p) => ({ ...p, parquet_output_path: e.target.value }))}
+              placeholder="Parquet output path"
+            />
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={resetUppclPresetPaths}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            >
+              Reset preset paths
+            </button>
+          </div>
         </div>
       </div>
 
@@ -523,6 +595,22 @@ export const SidebarToolsPage: React.FC = () => {
           </div>
         )}
         {parquetMessage && <p className="mt-2 text-sm text-slate-700">{parquetMessage}</p>}
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">Recent job history</h2>
+        {toolHistory.length === 0 ? (
+          <p className="mt-2 text-sm text-slate-500">No completed jobs yet.</p>
+        ) : (
+          <div className="mt-3 space-y-2">
+            {toolHistory.map((item) => (
+              <div key={item.id} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
+                <span className="font-semibold uppercase">{item.tool}</span> • {item.status} • {new Date(item.timestamp).toLocaleString()}
+                <p className="mt-1 break-all">{item.message}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
