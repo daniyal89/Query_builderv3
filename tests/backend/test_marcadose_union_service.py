@@ -43,3 +43,12 @@ def test_apply_rownum_limit_wraps_branch_when_order_by_present() -> None:
     assert "qb_branch_1" in transformed
     assert "ORDER BY m.DISCOM" in transformed
     assert transformed.upper().count("ROWNUM <= 10") == 2
+
+
+def test_apply_union_uses_single_trailing_order_by_for_oracle_compat() -> None:
+    sql = "SELECT m.DISCOM FROM {{MASTER_TABLE}} m WHERE m.OPR_FLG = 'Y' ORDER BY 1"
+    transformed = MarcadoseUnionService.apply(sql, _config())
+
+    assert transformed.count("UNION ALL") == 1
+    assert transformed.upper().count("ORDER BY 1") == 1
+    assert transformed.rstrip().upper().endswith("ORDER BY 1")
