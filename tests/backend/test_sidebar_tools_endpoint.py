@@ -1,5 +1,7 @@
-from pathlib import Path
 import gzip
+import json
+import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +12,7 @@ from backend.api.endpoints.sidebar_tools import (
     _resolve_existing_input_glob,
 )
 from backend.app import app
+from backend.services.error_log_service import ErrorLogService
 
 
 def test_resolve_existing_input_glob_accepts_wrapped_quotes(tmp_path: Path) -> None:
@@ -185,3 +188,48 @@ def test_build_duckdb_job_start_status_and_stop(tmp_path: Path) -> None:
 
     stop_response = client.post(f"/api/sidebar-tools/build-duckdb/stop/{job_id}")
     assert stop_response.status_code == 200, stop_response.text
+
+
+def test_build_duckdb_job_failure_is_written_to_error_log(tmp_path: Path) -> None:
+    client = TestClient(app)
+
+    original_dir = ErrorLogService.ERROR_DIR
+    original_file = ErrorLogService.ERROR_FILE
+    ErrorLogService.ERROR_DIR = tmp_path
+    ErrorLogService.ERROR_FILE = tmp_path / "errors.log"
+
+    try:
+        start = client.post(
+            "/api/sidebar-tools/build-duckdb/start",
+            json={
+                "db_path": str(tmp_path / "missing_input.duckdb"),
+                "input_path": str(tmp_path / "not-there" / "*.csv"),
+                "object_name": "MASTER_FAIL",
+                "object_type": "VIEW",
+                "replace": True,
+                "month_label": "FEB_2026",
+            },
+        )
+        assert start.status_code == 200, start.text
+        job_id = start.json()["job_id"]
+
+        status_response = None
+        for _ in range(50):
+            status_response = client.get(f"/api/sidebar-tools/build-duckdb/status/{job_id}")
+            assert status_response.status_code == 200, status_response.text
+            if status_response.json()["status"] == "failed":
+                break
+            time.sleep(0.05)
+
+        assert status_response is not None
+        assert status_response.json()["status"] == "failed"
+        assert ErrorLogService.ERROR_FILE.exists()
+        lines = ErrorLogService.ERROR_FILE.read_text(encoding="utf-8").strip().splitlines()
+        assert lines
+        latest = json.loads(lines[-1])
+        assert latest["endpoint"] == "/api/sidebar-tools/build-duckdb/start"
+        assert latest["job_id"] == job_id
+        assert latest["stage"] == "background_worker"
+    finally:
+        ErrorLogService.ERROR_DIR = original_dir
+        ErrorLogService.ERROR_FILE = original_file

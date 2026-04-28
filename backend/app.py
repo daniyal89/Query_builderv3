@@ -46,14 +46,12 @@ def create_app() -> FastAPI:
     @application.exception_handler(HTTPException)
     async def log_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
         if request.url.path not in {"/api/query", "/api/query/preview"}:
-            ErrorLogService.append(
-                {
-                    "endpoint": request.url.path,
-                    "method": request.method,
-                    "status_code": exc.status_code,
-                    "error": str(exc.detail),
-                    "request_id": getattr(request.state, "request_id", "unknown"),
-                }
+            ErrorLogService.append_request_error(
+                request,
+                status_code=exc.status_code,
+                error=str(exc.detail),
+                detail=exc.detail,
+                exception_type=type(exc).__name__,
             )
         return JSONResponse(
             status_code=exc.status_code,
@@ -66,14 +64,12 @@ def create_app() -> FastAPI:
 
     @application.exception_handler(Exception)
     async def log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
-        ErrorLogService.append(
-            {
-                "endpoint": request.url.path,
-                "method": request.method,
-                "status_code": 500,
-                "error": str(exc),
-                "request_id": getattr(request.state, "request_id", "unknown"),
-            }
+        ErrorLogService.append_request_error(
+            request,
+            status_code=500,
+            error=str(exc),
+            detail="Internal Server Error",
+            exception_type=type(exc).__name__,
         )
         return JSONResponse(
             status_code=500,

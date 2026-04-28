@@ -218,8 +218,8 @@ class DuckDBService:
         assert self._conn is not None
         existing = self._conn.execute(
             "SELECT table_type FROM information_schema.tables "
-            "WHERE table_schema = current_schema() AND table_name = ? LIMIT 1",
-            [object_name],
+            "WHERE table_schema = current_schema() AND lower(table_name) = lower(?) LIMIT 1",
+            [object_name.strip()],
         ).fetchone()
         if not existing:
             return

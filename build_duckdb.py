@@ -55,8 +55,8 @@ def build_relation_sql(input_path: str) -> str:
 def drop_existing_object(conn: duckdb.DuckDBPyConnection, object_name: str) -> None:
     existing = conn.execute(
         "SELECT table_type FROM information_schema.tables "
-        "WHERE table_schema = current_schema() AND table_name = ? LIMIT 1",
-        [object_name],
+        "WHERE table_schema = current_schema() AND lower(table_name) = lower(?) LIMIT 1",
+        [object_name.strip()],
     ).fetchone()
     if not existing:
         return

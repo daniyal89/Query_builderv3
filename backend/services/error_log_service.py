@@ -12,7 +12,8 @@ from fastapi import Request
 class ErrorLogService:
     """Persist API error events into samples/error for local troubleshooting."""
 
-    ERROR_DIR = Path("samples") / "error"
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    ERROR_DIR = REPO_ROOT / "samples" / "error"
     ERROR_FILE = ERROR_DIR / "errors.log"
     _lock = threading.Lock()
 

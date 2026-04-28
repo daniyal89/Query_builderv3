@@ -12,6 +12,7 @@ from typing import Any
 
 import duckdb
 from fastapi import APIRouter, HTTPException, status
+from backend.services.error_log_service import ErrorLogService
 
 from backend.models.sidebar_tools import (
     BuildDuckDbJobResponse,
@@ -175,6 +176,22 @@ def _update_build_job(job_id: str, **updates: Any) -> None:
         BUILD_DUCKDB_JOBS[job_id].update(updates)
 
 
+def _drop_existing_duckdb_object(conn: duckdb.DuckDBPyConnection, object_name: str) -> None:
+    existing = conn.execute(
+        "SELECT table_type FROM information_schema.tables "
+        "WHERE table_schema = current_schema() AND lower(table_name) = lower(?) LIMIT 1",
+        [object_name.strip()],
+    ).fetchone()
+    if not existing:
+        return
+
+    object_sql = f'"{object_name.replace(chr(34), chr(34) * 2)}"'
+    if existing[0] == "VIEW":
+        conn.execute(f"DROP VIEW {object_sql}")
+    else:
+        conn.execute(f"DROP TABLE {object_sql}")
+
+
 def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     if not VALID_OBJECT_NAME.fullmatch(payload.object_name):
         raise ValueError("object_name must start with letter/_ and use only letters, numbers, underscore.")
@@ -187,8 +204,7 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
 
     with duckdb.connect(str(db_path)) as conn:
         if payload.replace:
-            conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-            conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+            _drop_existing_duckdb_object(conn, payload.object_name)
         conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
 
     month_text = f" for {payload.month_label}" if payload.month_label else ""
@@ -227,6 +243,18 @@ def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
             finished_at=datetime.now().isoformat(timespec="seconds"),
         )
     except Exception as exc:
+        ErrorLogService.append(
+            {
+                "endpoint": "/api/sidebar-tools/build-duckdb/start",
+                "method": "POST",
+                "status_code": 500,
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "job_id": job_id,
+                "payload": payload.model_dump(),
+                "stage": "background_worker",
+            }
+        )
         _update_build_job(
             job_id,
             status="failed",
@@ -295,6 +323,18 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
             skipped_files=skipped_files,
         )
     except Exception as exc:
+        ErrorLogService.append(
+            {
+                "endpoint": "/api/sidebar-tools/csv-to-parquet/start",
+                "method": "POST",
+                "status_code": 500,
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "job_id": job_id,
+                "payload": payload.model_dump(),
+                "stage": "background_worker",
+            }
+        )
         _update_csv_job(
             job_id,
             status="failed",

@@ -75,7 +75,7 @@ def test_create_object_replace_can_switch_table_to_view(tmp_path: Path) -> None:
     db.create_object_from_file(
         FileObjectRequest(
             file_path=str(csv_path),
-            object_name="master",
+            object_name="MASTER",
             object_type="TABLE",
             replace=True,
         )

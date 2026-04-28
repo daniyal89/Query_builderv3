@@ -52,3 +52,10 @@ def test_apply_union_uses_single_trailing_order_by_for_oracle_compat() -> None:
     assert transformed.count("UNION ALL") == 1
     assert transformed.upper().count("ORDER BY 1") == 1
     assert transformed.rstrip().upper().endswith("ORDER BY 1")
+
+
+def test_marcadose_union_defaults_enable_union_and_grand_total() -> None:
+    config = MarcadoseUnionConfig(month_tag="jan_2026", discoms=["DVVNL"])
+
+    assert config.enabled is True
+    assert config.add_grand_total is True

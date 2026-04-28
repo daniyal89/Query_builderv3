@@ -69,3 +69,9 @@ def test_append_request_error_includes_rich_request_context(tmp_path: Path) -> N
     finally:
         ErrorLogService.ERROR_DIR = original_dir
         ErrorLogService.ERROR_FILE = original_file
+
+
+def test_error_log_default_path_points_to_repo_samples_error() -> None:
+    expected = ErrorLogService.REPO_ROOT / "samples" / "error"
+    assert ErrorLogService.ERROR_DIR == expected
+    assert ErrorLogService.ERROR_FILE == expected / "errors.log"
