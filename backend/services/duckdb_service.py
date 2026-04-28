@@ -159,8 +159,7 @@ class DuckDBService:
                 relation_sql = self._build_projected_relation_sql(relation_sql, payload.header_names)
             object_sql = self._quote_identifier(object_name)
             if payload.replace:
-                self._conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-                self._conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+                self._drop_existing_object_unlocked(object_name)
             self._conn.execute(f"CREATE {object_type} {object_sql} AS SELECT * FROM {relation_sql}")
 
             columns = self._fetch_columns_unlocked(object_name)
@@ -214,6 +213,22 @@ class DuckDBService:
 
     def _fetch_table_names(self) -> list[str]:
         return [name for name, _ in self._fetch_table_entries_unlocked()]
+
+    def _drop_existing_object_unlocked(self, object_name: str) -> None:
+        assert self._conn is not None
+        existing = self._conn.execute(
+            "SELECT table_type FROM information_schema.tables "
+            "WHERE table_schema = current_schema() AND table_name = ? LIMIT 1",
+            [object_name],
+        ).fetchone()
+        if not existing:
+            return
+
+        object_sql = self._quote_identifier(object_name)
+        if existing[0] == "VIEW":
+            self._conn.execute(f"DROP VIEW {object_sql}")
+        else:
+            self._conn.execute(f"DROP TABLE {object_sql}")
 
     def _load_excel_extension_unlocked(self) -> None:
         assert self._conn is not None

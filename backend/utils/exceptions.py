@@ -7,6 +7,8 @@ Provides consistent, structured JSON error responses across all endpoints.
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from backend.services.error_log_service import ErrorLogService
+
 
 class DatabaseNotConnectedError(Exception):
     """Raised when an operation requires an active DuckDB connection but none exists."""
