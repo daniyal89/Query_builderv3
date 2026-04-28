@@ -21,18 +21,34 @@ const PARQUET_FORM_STORAGE_KEY = "sidebar_tools_parquet_form_v1";
 const PARQUET_JOB_STORAGE_KEY = "sidebar_tools_parquet_job_v1";
 const BUILD_FORM_STORAGE_KEY = "sidebar_tools_build_form_v1";
 const BUILD_STATUS_STORAGE_KEY = "sidebar_tools_build_status_v1";
+const UPPCL_PRESET_STORAGE_KEY = "sidebar_tools_uppcl_preset_paths_v1";
+const DATA_TOOLS_HISTORY_STORAGE_KEY = "sidebar_tools_job_history_v1";
 
-type BuildJobStatus = {
-  status: "idle" | "running" | "completed" | "failed";
-  message: string;
-  startedAt?: string;
-  finishedAt?: string;
+type UppclPresetPaths = {
+  build_db_path: string;
+  build_input_path: string;
+  parquet_input_path: string;
+  parquet_output_path: string;
 };
 
 type PersistedParquetJobState = {
   jobId: string;
   status: CsvParquetJobStatusResponse | null;
   message: string;
+};
+
+type PersistedBuildJobState = {
+  jobId: string;
+  status: BuildDuckDbJobStatusResponse | null;
+  message: string;
+};
+
+type ToolHistoryItem = {
+  id: string;
+  tool: "build" | "parquet";
+  status: string;
+  message: string;
+  timestamp: string;
 };
 
 function isParquetTerminalStatus(status: CsvParquetJobStatusResponse | null): boolean {
@@ -117,20 +133,61 @@ function readInitialBuildForm(): {
   }
 }
 
-function readInitialBuildStatus(): BuildJobStatus {
+function isBuildTerminalStatus(status: BuildDuckDbJobStatusResponse | null): boolean {
+  return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function readInitialBuildStatus(): { jobId: string | null; status: BuildDuckDbJobStatusResponse | null; message: string } {
   try {
     const raw = window.localStorage.getItem(BUILD_STATUS_STORAGE_KEY);
-    if (!raw) return { status: "idle", message: "" };
-    const parsed = JSON.parse(raw) as Partial<BuildJobStatus>;
-    const status = parsed.status;
+    if (!raw) return { jobId: null, status: null, message: "" };
+    const parsed = JSON.parse(raw) as Partial<PersistedBuildJobState>;
+    const jobId = typeof parsed.jobId === "string" && parsed.jobId.trim() ? parsed.jobId : null;
+    const status = parsed.status ?? null;
     return {
-      status: status === "running" || status === "completed" || status === "failed" ? status : "idle",
+      jobId: jobId && !isBuildTerminalStatus(status as BuildDuckDbJobStatusResponse | null) ? jobId : null,
+      status,
       message: typeof parsed.message === "string" ? parsed.message : "",
-      startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : undefined,
-      finishedAt: typeof parsed.finishedAt === "string" ? parsed.finishedAt : undefined,
     };
   } catch {
-    return { status: "idle", message: "" };
+    return { jobId: null, status: null, message: "" };
+  }
+}
+
+function getDefaultUppclPresetPaths(): UppclPresetPaths {
+  return {
+    build_db_path: "G:/MASTER/uppcl_latest.duckdb",
+    build_input_path: "G:/MASTER_PARQUET/MAR_2026/**/*.parquet",
+    parquet_input_path: "G:/MASTER/MAR_2026/*.csv.gz",
+    parquet_output_path: "G:/MASTER_PARQUET/MAR_2026",
+  };
+}
+
+function readInitialUppclPresetPaths(): UppclPresetPaths {
+  const fallback = getDefaultUppclPresetPaths();
+  try {
+    const raw = window.localStorage.getItem(UPPCL_PRESET_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<UppclPresetPaths>;
+    return {
+      build_db_path: typeof parsed.build_db_path === "string" ? parsed.build_db_path : fallback.build_db_path,
+      build_input_path: typeof parsed.build_input_path === "string" ? parsed.build_input_path : fallback.build_input_path,
+      parquet_input_path: typeof parsed.parquet_input_path === "string" ? parsed.parquet_input_path : fallback.parquet_input_path,
+      parquet_output_path: typeof parsed.parquet_output_path === "string" ? parsed.parquet_output_path : fallback.parquet_output_path,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function readInitialToolHistory(): ToolHistoryItem[] {
+  try {
+    const raw = window.localStorage.getItem(DATA_TOOLS_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ToolHistoryItem[];
+    return Array.isArray(parsed) ? parsed.slice(0, 10) : [];
+  } catch {
+    return [];
   }
 }
 
@@ -145,8 +202,10 @@ const Field: React.FC<FieldProps> = ({ label, help, children }) => (
 export const SidebarToolsPage: React.FC = () => {
   const initialBuildForm = useMemo(() => readInitialBuildForm(), []);
   const initialBuildStatus = useMemo(() => readInitialBuildStatus(), []);
+  const initialUppclPresetPaths = useMemo(() => readInitialUppclPresetPaths(), []);
   const initialParquetForm = useMemo(() => readInitialParquetForm(), []);
   const initialParquetJobState = useMemo(() => readInitialParquetJobState(), []);
+  const initialToolHistory = useMemo(() => readInitialToolHistory(), []);
   const [buildForm, setBuildForm] = useState({
     db_path: initialBuildForm.db_path,
     input_path: initialBuildForm.input_path,
@@ -156,14 +215,14 @@ export const SidebarToolsPage: React.FC = () => {
     month_label: initialBuildForm.month_label,
   });
   const [parquetForm, setParquetForm] = useState({
-    input_path: "./data/MAR_2026/*.csv.gz",
-    output_path: "./parquet/MAR_2026",
-    compression: "zstd",
+    input_path: initialParquetForm.input_path,
+    output_path: initialParquetForm.output_path,
+    compression: initialParquetForm.compression,
   });
   const [buildMessage, setBuildMessage] = useState(initialBuildStatus.message);
-  const [buildStatus, setBuildStatus] = useState<BuildJobStatus>(initialBuildStatus);
+  const [buildJobId, setBuildJobId] = useState<string | null>(initialBuildStatus.jobId);
+  const [buildStatus, setBuildStatus] = useState<BuildDuckDbJobStatusResponse | null>(initialBuildStatus.status);
   const [parquetMessage, setParquetMessage] = useState(initialParquetJobState.message);
-  const [isBuildRunning, setIsBuildRunning] = useState(false);
   const [parquetJobId, setParquetJobId] = useState<string | null>(initialParquetJobState.jobId);
   const [parquetStatus, setParquetStatus] = useState<CsvParquetJobStatusResponse | null>(initialParquetJobState.status);
   const [statusNote, setStatusNote] = useState("Use labels below and fill full paths before running.");
@@ -181,8 +240,25 @@ export const SidebarToolsPage: React.FC = () => {
   }, [buildForm]);
 
   useEffect(() => {
-    window.localStorage.setItem(BUILD_STATUS_STORAGE_KEY, JSON.stringify(buildStatus));
-  }, [buildStatus]);
+    if (!buildJobId) {
+      window.localStorage.removeItem(BUILD_STATUS_STORAGE_KEY);
+      return;
+    }
+    const payload: PersistedBuildJobState = {
+      jobId: buildJobId,
+      status: buildStatus,
+      message: buildMessage,
+    };
+    window.localStorage.setItem(BUILD_STATUS_STORAGE_KEY, JSON.stringify(payload));
+  }, [buildJobId, buildStatus, buildMessage]);
+
+  useEffect(() => {
+    window.localStorage.setItem(UPPCL_PRESET_STORAGE_KEY, JSON.stringify(uppclPresetPaths));
+  }, [uppclPresetPaths]);
+
+  useEffect(() => {
+    window.localStorage.setItem(DATA_TOOLS_HISTORY_STORAGE_KEY, JSON.stringify(toolHistory.slice(0, 10)));
+  }, [toolHistory]);
 
   useEffect(() => {
     window.localStorage.setItem(PARQUET_FORM_STORAGE_KEY, JSON.stringify(parquetForm));
@@ -234,6 +310,36 @@ export const SidebarToolsPage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [parquetJobId]);
 
+  useEffect(() => {
+    if (!buildJobId) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const latest = await getBuildDuckDbJobStatus(buildJobId);
+        setBuildStatus(latest);
+        if (latest.status === "completed" || latest.status === "failed" || latest.status === "cancelled") {
+          setBuildJobId(null);
+          const finalMessage = latest.message + (latest.output_path ? ` Output: ${latest.output_path}` : "");
+          setBuildMessage(finalMessage);
+          setToolHistory((current) => [{ id: `${Date.now()}-build`, tool: "build" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString() }, ...current].slice(0, 10));
+        }
+      } catch (error: any) {
+        const detail = error?.response?.data?.detail || error?.message || "Failed to fetch build status.";
+        setBuildMessage(detail);
+        setBuildJobId(null);
+        setBuildStatus((previous) =>
+          previous
+            ? {
+                ...previous,
+                status: "failed",
+                message: error?.response?.status === 404 ? "Background build job not found. Start a new build." : detail,
+              }
+            : null,
+        );
+      }
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [buildJobId]);
+
   const applyUppclPreset = () => {
     setBuildForm({
       db_path: uppclPresetPaths.build_db_path,
@@ -244,8 +350,8 @@ export const SidebarToolsPage: React.FC = () => {
       month_label: "MAR_2026",
     });
     setParquetForm({
-      input_path: "G:/MASTER/MAR_2026/*.csv.gz",
-      output_path: "G:/MASTER_PARQUET/MAR_2026",
+      input_path: uppclPresetPaths.parquet_input_path,
+      output_path: uppclPresetPaths.parquet_output_path,
       compression: "snappy",
     });
     setStatusNote("UPPCL preset applied. Adjust month/path values if needed.");
@@ -263,33 +369,31 @@ export const SidebarToolsPage: React.FC = () => {
       return;
     }
     setBuildMessage("");
-    setBuildStatus({
-      status: "running",
-      message: "Build running...",
-      startedAt: new Date().toISOString(),
-      finishedAt: undefined,
-    });
     try {
-      const result = await runBuildDuckDb(buildForm);
-      const finalMessage = result.message + (result.output_path ? ` Output: ${result.output_path}` : "");
-      setBuildMessage(finalMessage);
+      const started = await startBuildDuckDbJob(buildForm);
+      setBuildJobId(started.job_id);
       setBuildStatus({
-        status: "completed",
-        message: finalMessage,
-        startedAt: buildStatus.startedAt ?? new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
+        job_id: started.job_id,
+        status: "queued",
+        message: started.message,
+        progress_percent: 0,
       });
+      setBuildMessage(`Build DuckDB job started. Job ID: ${started.job_id}`);
     } catch (error: any) {
       const errorMessage = error?.response?.data?.detail || error?.message || "Build failed.";
       setBuildMessage(errorMessage);
-      setBuildStatus({
-        status: "failed",
-        message: errorMessage,
-        startedAt: buildStatus.startedAt ?? new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
-      });
-    } finally {
-      setIsBuildRunning(false);
+      setBuildStatus((previous) => (previous ? { ...previous, status: "failed", message: errorMessage } : null));
+    }
+  };
+
+  const stopBuild = async () => {
+    if (!buildJobId) return;
+    try {
+      const stopped = await stopBuildDuckDbJob(buildJobId);
+      setBuildStatus(stopped);
+      setBuildMessage(stopped.message);
+    } catch (error: any) {
+      setBuildMessage(error?.response?.data?.detail || error?.message || "Unable to stop build.");
     }
   };
 
@@ -471,26 +575,31 @@ export const SidebarToolsPage: React.FC = () => {
             </label>
           </Field>
         </div>
-        <button onClick={runBuild} disabled={isBuildRunning} className="mt-3 rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
-          {isBuildRunning ? "Running..." : "Run Build DuckDB"}
-        </button>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button onClick={runBuild} disabled={isBuildRunning} className="rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
+            {isBuildRunning ? "Running..." : "Run Build DuckDB"}
+          </button>
+          {isBuildRunning && (
+            <button onClick={stopBuild} disabled={buildStatus?.status === "cancelling"} className="rounded border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60">
+              {buildStatus?.status === "cancelling" ? "Stopping..." : "Stop build"}
+            </button>
+          )}
+        </div>
         <div className="mt-3 rounded-xl border border-blue-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <p className="text-base font-semibold text-slate-900">Build DuckDB status</p>
-              <p className="text-xs text-slate-500">{buildStatus.message || "No build run yet."}</p>
+              <p className="text-xs text-slate-500">{buildStatus?.message || "No build run yet."}</p>
             </div>
-            <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700">{buildStatus.status}</span>
+            <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700">{buildStatus?.status ?? "idle"}</span>
           </div>
           <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-100">
             <div
               className="h-full bg-blue-600 transition-all"
-              style={{ width: `${buildStatus.status === "completed" ? 100 : buildStatus.status === "running" ? 60 : 0}%` }}
+              style={{ width: `${buildStatus?.progress_percent ?? 0}%` }}
             />
           </div>
-          <p className="mt-2 text-xs text-slate-500">
-            Stop is not available for this single-step backend operation. Status and form are persisted across route changes.
-          </p>
+          <p className="mt-2 text-xs text-slate-500">Progress and active job state are persisted across route changes.</p>
         </div>
         <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python build_duckdb.py --db "${buildForm.db_path}" --input "${buildForm.input_path}" --object-name ${buildForm.object_name} --object-type ${buildForm.object_type}${buildForm.replace ? " --replace" : ""}${buildForm.month_label ? ` --month-label ${buildForm.month_label}` : ""}`}</pre>
         {buildMessage && <p className="mt-2 text-sm text-slate-700">{buildMessage}</p>}
