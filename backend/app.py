@@ -7,6 +7,7 @@ configures the SPA fallback so React Router handles client-side routes.
 """
 
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import settings
 from backend.api.router import api_router
 from backend.services.error_log_service import ErrorLogService
+from backend.utils.exceptions import register_exception_handlers
 
 
 def create_app() -> FastAPI:
@@ -31,6 +33,15 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+    register_exception_handlers(application)
+
+    @application.middleware("http")
+    async def attach_request_id(request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or str(uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     @application.exception_handler(HTTPException)
     async def log_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
@@ -41,9 +52,17 @@ def create_app() -> FastAPI:
                     "method": request.method,
                     "status_code": exc.status_code,
                     "error": str(exc.detail),
+                    "request_id": getattr(request.state, "request_id", "unknown"),
                 }
             )
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": "HTTPException",
+                "detail": exc.detail,
+                "request_id": getattr(request.state, "request_id", "unknown"),
+            },
+        )
 
     @application.exception_handler(Exception)
     async def log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
@@ -53,9 +72,17 @@ def create_app() -> FastAPI:
                 "method": request.method,
                 "status_code": 500,
                 "error": str(exc),
+                "request_id": getattr(request.state, "request_id", "unknown"),
             }
         )
-        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "InternalServerError",
+                "detail": "Internal Server Error",
+                "request_id": getattr(request.state, "request_id", "unknown"),
+            },
+        )
 
     # --- API routes (must be registered BEFORE the static-file mount) ---
     application.include_router(api_router)
