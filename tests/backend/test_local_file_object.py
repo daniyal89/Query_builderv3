@@ -1,3 +1,4 @@
+import duckdb
 from datetime import datetime
 from pathlib import Path
 
@@ -61,3 +62,38 @@ def test_file_preview_response_accepts_datetime_cells() -> None:
 
     assert payload.columns == ["dt"]
     assert len(payload.rows) == 1
+
+
+def test_create_object_replace_can_switch_table_to_view(tmp_path: Path) -> None:
+    db_path = tmp_path / "switch_type_local.duckdb"
+    csv_path = tmp_path / "source.csv"
+    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+    db = DuckDBService()
+    db.connect(str(db_path))
+
+    db.create_object_from_file(
+        FileObjectRequest(
+            file_path=str(csv_path),
+            object_name="master",
+            object_type="TABLE",
+            replace=True,
+        )
+    )
+    db.create_object_from_file(
+        FileObjectRequest(
+            file_path=str(csv_path),
+            object_name="master",
+            object_type="VIEW",
+            replace=True,
+        )
+    )
+
+    with duckdb.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = 'master'"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == "VIEW"

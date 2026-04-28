@@ -158,3 +158,45 @@ def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> N
 
     assert response.status_code == 400, response.text
     assert "No files found that match the pattern" in response.json()["detail"]
+
+
+def test_sidebar_build_duckdb_replace_can_switch_table_to_view(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_switch_type.duckdb"
+    csv_path = tmp_path / "switch.csv"
+    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+    client = TestClient(app)
+    create_table = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(csv_path),
+            "object_name": "master",
+            "object_type": "TABLE",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+    assert create_table.status_code == 200, create_table.text
+
+    replace_with_view = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(csv_path),
+            "object_name": "master",
+            "object_type": "VIEW",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+    assert replace_with_view.status_code == 200, replace_with_view.text
+
+    with duckdb.connect(str(db_path)) as conn:
+        obj_type = conn.execute(
+            "SELECT table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = 'master'"
+        ).fetchone()
+
+    assert obj_type is not None
+    assert obj_type[0] == "VIEW"
