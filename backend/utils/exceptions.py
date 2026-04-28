@@ -43,13 +43,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(DatabaseNotConnectedError)
     async def handle_database_not_connected(request: Request, exc: DatabaseNotConnectedError) -> JSONResponse:
-        ErrorLogService.append_request_error(
-            request,
-            status_code=409,
-            error=str(exc) or "Database is not connected.",
-            detail=str(exc) or "Database is not connected.",
-            exception_type=type(exc).__name__,
-        )
         return JSONResponse(
             status_code=409,
             content={
@@ -61,13 +54,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(InvalidPathError)
     async def handle_invalid_path(request: Request, exc: InvalidPathError) -> JSONResponse:
-        ErrorLogService.append_request_error(
-            request,
-            status_code=400,
-            error=str(exc) or "Invalid or inaccessible path.",
-            detail=str(exc) or "Invalid or inaccessible path.",
-            exception_type=type(exc).__name__,
-        )
         return JSONResponse(
             status_code=400,
             content={
@@ -79,13 +65,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(QueryBuildError)
     async def handle_query_build_error(request: Request, exc: QueryBuildError) -> JSONResponse:
-        ErrorLogService.append_request_error(
-            request,
-            status_code=422,
-            error=str(exc) or "Unable to construct query.",
-            detail=str(exc) or "Unable to construct query.",
-            exception_type=type(exc).__name__,
-        )
         return JSONResponse(
             status_code=422,
             content={
@@ -97,13 +76,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(CSVParseError)
     async def handle_csv_parse_error(request: Request, exc: CSVParseError) -> JSONResponse:
-        ErrorLogService.append_request_error(
-            request,
-            status_code=400,
-            error=str(exc) or "CSV parsing failed.",
-            detail=str(exc) or "CSV parsing failed.",
-            exception_type=type(exc).__name__,
-        )
         return JSONResponse(
             status_code=400,
             content={

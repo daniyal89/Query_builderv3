@@ -175,22 +175,6 @@ def _update_build_job(job_id: str, **updates: Any) -> None:
         BUILD_DUCKDB_JOBS[job_id].update(updates)
 
 
-def _drop_existing_duckdb_object(conn: duckdb.DuckDBPyConnection, object_name: str) -> None:
-    existing = conn.execute(
-        "SELECT table_type FROM information_schema.tables "
-        "WHERE table_schema = current_schema() AND table_name = ? LIMIT 1",
-        [object_name],
-    ).fetchone()
-    if not existing:
-        return
-
-    object_sql = f'"{object_name.replace(chr(34), chr(34) * 2)}"'
-    if existing[0] == "VIEW":
-        conn.execute(f"DROP VIEW {object_sql}")
-    else:
-        conn.execute(f"DROP TABLE {object_sql}")
-
-
 def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     if not VALID_OBJECT_NAME.fullmatch(payload.object_name):
         raise ValueError("object_name must start with letter/_ and use only letters, numbers, underscore.")
@@ -203,7 +187,8 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
 
     with duckdb.connect(str(db_path)) as conn:
         if payload.replace:
-            _drop_existing_duckdb_object(conn, payload.object_name)
+            conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
+            conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
         conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
 
     month_text = f" for {payload.month_label}" if payload.month_label else ""
