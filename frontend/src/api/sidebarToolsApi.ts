@@ -33,6 +33,7 @@ export interface CsvParquetJobStatusResponse {
   message: string;
   processed_files: number;
   total_files: number;
+  skipped_files: number;
   current_file?: string | null;
   output_path?: string | null;
   started_at?: string | null;
