@@ -25,6 +25,14 @@ def is_readable_input_file(path_str: str) -> bool:
         return False
 
 
+def _sql_string_literal(value: str) -> str:
+    return f"'{value.replace(chr(39), chr(39) * 2)}'"
+
+
+def _sql_string_list_literal(values: list[str]) -> str:
+    return "[" + ", ".join(_sql_string_literal(value) for value in values) + "]"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build a DuckDB table/view for older/current month files (csv/.gz/.parquet)."
@@ -41,6 +49,9 @@ def parse_args() -> argparse.Namespace:
 def build_relation_sql(input_path: str) -> str:
     sample = input_path.lower()
     if sample.endswith(".parquet") or ".parquet" in sample:
+        matches = [item for item in glob.glob(input_path, recursive=True) if is_readable_input_file(item)]
+        if matches:
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
         return f"read_parquet('{input_path}', union_by_name = true)"
     if (
         sample.endswith(".csv")
@@ -64,7 +75,7 @@ def build_relation_sql(input_path: str) -> str:
     if matches:
         first = matches[0].lower()
         if first.endswith(".parquet"):
-            return f"read_parquet('{search_path}', union_by_name = true)"
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
         if (
             first.endswith(".csv")
             or first.endswith(".csv.gz")

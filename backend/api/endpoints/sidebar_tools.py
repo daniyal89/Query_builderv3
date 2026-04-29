@@ -105,6 +105,10 @@ def _sql_string_literal(value: str) -> str:
     return f"'{value.replace(chr(39), chr(39) * 2)}'"
 
 
+def _sql_string_list_literal(values: list[str]) -> str:
+    return "[" + ", ".join(_sql_string_literal(value) for value in values) + "]"
+
+
 def _is_readable_input_file(path_str: str) -> bool:
     path = Path(path_str)
     if not path.is_file():
@@ -124,6 +128,9 @@ def _resolve_relation_sql(input_path: str) -> str:
     input_path_sql = _sql_string_literal(input_path)
 
     if ".parquet" in lowered:
+        matches = [item for item in glob.glob(input_path, recursive=True) if _is_readable_input_file(item)]
+        if matches:
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
         return f"read_parquet({input_path_sql}, union_by_name = true)"
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
         return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
@@ -132,7 +139,7 @@ def _resolve_relation_sql(input_path: str) -> str:
     if matches:
         sample = matches[0].lower()
         if sample.endswith(".parquet"):
-            return f"read_parquet({input_path_sql}, union_by_name = true)"
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
         if (
             sample.endswith(".csv")
             or sample.endswith(".csv.gz")

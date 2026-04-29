@@ -7,6 +7,7 @@ configures the SPA fallback so React Router handles client-side routes.
 """
 
 from pathlib import Path
+import subprocess
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -34,6 +35,28 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
     )
     register_exception_handlers(application)
+
+    @application.on_event("startup")
+    async def log_startup_version() -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        commit = "unknown"
+        summary = "unknown"
+        try:
+            commit = (
+                subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, text=True)
+                .strip()
+            )
+            summary = (
+                subprocess.check_output(["git", "log", "-1", "--pretty=%s"], cwd=repo_root, text=True)
+                .strip()
+            )
+        except Exception:
+            pass
+        ErrorLogService.append_system_event(
+            event="application_startup",
+            detail="Application startup detected.",
+            extra={"git_commit": commit, "git_summary": summary},
+        )
 
     @application.middleware("http")
     async def attach_request_id(request: Request, call_next):

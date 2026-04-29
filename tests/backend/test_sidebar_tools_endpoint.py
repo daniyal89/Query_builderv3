@@ -97,6 +97,7 @@ def test_resolve_relation_sql_uses_union_by_name_for_parquet_glob(tmp_path: Path
     sql = _resolve_relation_sql(str(tmp_path / "*"))
     assert "read_parquet" in sql
     assert "union_by_name = true" in sql
+    assert "[" in sql and "]" in sql
 
 
 def test_is_readable_input_file_skips_temporary_small_parquet(tmp_path: Path) -> None:
@@ -107,6 +108,18 @@ def test_is_readable_input_file_skips_temporary_small_parquet(tmp_path: Path) ->
 
     assert _is_readable_input_file(str(bad_tmp)) is False
     assert _is_readable_input_file(str(good_file)) is True
+
+
+def test_resolve_relation_sql_excludes_tmp_parquet_from_file_list(tmp_path: Path) -> None:
+    bad_tmp = tmp_path / "tmp_bad.parquet"
+    bad_tmp.write_bytes(b"bad")
+    good_file = tmp_path / "part-001.parquet"
+    duckdb.connect().execute("COPY (SELECT 1 AS id) TO ? (FORMAT PARQUET)", [str(good_file)])
+
+    sql = _resolve_relation_sql(str(tmp_path / "*.parquet"))
+
+    assert "part-001.parquet" in sql
+    assert "tmp_bad.parquet" not in sql
 
 
 def test_resolve_existing_input_glob_raises_when_no_match(tmp_path: Path) -> None:

@@ -62,3 +62,14 @@ class ErrorLogService:
         if extra:
             payload.update(extra)
         cls.append(payload)
+
+    @classmethod
+    def append_system_event(cls, *, event: str, detail: str, extra: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {
+            "event_type": "system",
+            "event": event,
+            "detail": detail,
+        }
+        if extra:
+            payload.update(extra)
+        cls.append(payload)
