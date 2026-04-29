@@ -54,3 +54,24 @@ async def preview_file_object_source(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.delete(
+    "/duckdb/objects/{object_name}",
+    summary="Delete a local DuckDB table/view by name",
+)
+async def delete_local_object(
+    object_name: str,
+    db: DuckDBService = Depends(get_connected_db),
+) -> dict[str, str]:
+    try:
+        object_type = db.drop_object(object_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    return {
+        "status": "deleted",
+        "message": f"{object_type.title()} '{object_name}' deleted.",
+    }

@@ -321,6 +321,17 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
       return undefined;
     }
 
+    if (state.mode === "REPORT" && !state.pivotConfig.values.trim()) {
+      setState((prev) => ({
+        ...prev,
+        generatedSql: "",
+        sqlText: prev.sourceMode === "builder" || !prev.isSqlDetached ? "" : prev.sqlText,
+        isPreviewLoading: false,
+        previewError: "Select a Values field before generating a report.",
+      }));
+      return undefined;
+    }
+
     const timer = window.setTimeout(async () => {
       setState((prev) => ({ ...prev, isPreviewLoading: true, previewError: null }));
 

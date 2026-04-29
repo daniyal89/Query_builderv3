@@ -114,6 +114,32 @@ class DuckDBService:
                 raise ValueError(f"Table '{table_name}' does not exist.")
             return self._fetch_columns_unlocked(table_name)
 
+    def drop_object(self, object_name: str) -> str:
+        self._ensure_connected()
+
+        cleaned = (object_name or "").strip()
+        if not cleaned:
+            raise ValueError("object_name cannot be empty.")
+
+        with self._lock:
+            assert self._conn is not None
+            existing = self._conn.execute(
+                "SELECT table_name, table_type FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND lower(table_name) = lower(?) LIMIT 1",
+                [cleaned],
+            ).fetchone()
+            if not existing:
+                raise ValueError(f"Local object '{cleaned}' does not exist.")
+
+            actual_name, object_type = existing[0], existing[1]
+            object_sql = self._quote_identifier(actual_name)
+            if object_type == "VIEW":
+                self._conn.execute(f"DROP VIEW {object_sql}")
+            else:
+                self._conn.execute(f"DROP TABLE {object_sql}")
+
+            return object_type
+
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
 
