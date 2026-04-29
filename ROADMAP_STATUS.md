@@ -59,8 +59,8 @@ _Last updated: 2026-04-28 (UTC)_
 
 ### Current status
 - 🔄 Data Tools UX improved significantly (progress/status/persistence/presets/history direction started).
-- ⏳ Importer component TODOs remain.
-- ⏳ Global API interceptor TODO remains.
+- 🔄 Importer component TODOs started: `FileDropZone`, `ImportProgress`, `PreviewGrid`, `MappingTable` implemented with baseline UI behaviors.
+- ✅ Global API interceptor added in `frontend/src/api/client.ts` (normalized error + request-id extraction).
 
 ---
 
