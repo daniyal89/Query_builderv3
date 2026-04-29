@@ -49,6 +49,7 @@ type ToolHistoryItem = {
   status: string;
   message: string;
   timestamp: string;
+  run_seconds?: number | null;
 };
 
 function isParquetTerminalStatus(status: CsvParquetJobStatusResponse | null): boolean {
@@ -139,6 +140,29 @@ function normalizeMonthSuffix(monthLabel: string): string {
 
 function isBuildTerminalStatus(status: BuildDuckDbJobStatusResponse | null): boolean {
   return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function formatDuration(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  const hh = Math.floor(safe / 3600);
+  const mm = Math.floor((safe % 3600) / 60);
+  const ss = safe % 60;
+  if (hh > 0) return `${hh}h ${mm}m ${ss}s`;
+  if (mm > 0) return `${mm}m ${ss}s`;
+  return `${ss}s`;
+}
+
+function parseIsoDate(value?: string | null): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function calculateRunSeconds(startedAt?: string | null, finishedAt?: string | null, nowMs?: number): number | null {
+  const start = parseIsoDate(startedAt);
+  if (!start) return null;
+  const end = parseIsoDate(finishedAt) ?? new Date(nowMs ?? Date.now());
+  return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 1000));
 }
 
 function readInitialBuildStatus(): { jobId: string | null; status: BuildDuckDbJobStatusResponse | null; message: string } {
@@ -232,8 +256,11 @@ export const SidebarToolsPage: React.FC = () => {
   const [statusNote, setStatusNote] = useState("Use labels below and fill full paths before running.");
   const [uppclPresetPaths, setUppclPresetPaths] = useState<UppclPresetPaths>(initialUppclPresetPaths);
   const [toolHistory, setToolHistory] = useState<ToolHistoryItem[]>(initialToolHistory);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
   const isParquetRunning = parquetStatus?.status === "queued" || parquetStatus?.status === "running" || parquetStatus?.status === "cancelling";
   const isBuildRunning = buildStatus?.status === "queued" || buildStatus?.status === "running" || buildStatus?.status === "cancelling";
+  const buildRunSeconds = calculateRunSeconds(buildStatus?.started_at, buildStatus?.finished_at, nowMs);
+  const parquetRunSeconds = calculateRunSeconds(parquetStatus?.started_at, parquetStatus?.finished_at, nowMs);
   const parquetProgress = useMemo(() => {
     if (!parquetStatus || parquetStatus.total_files <= 0) return 0;
     return Math.min(100, Math.round((parquetStatus.processed_files / parquetStatus.total_files) * 100));
@@ -265,6 +292,12 @@ export const SidebarToolsPage: React.FC = () => {
   }, [toolHistory]);
 
   useEffect(() => {
+    if (!isBuildRunning && !isParquetRunning) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isBuildRunning, isParquetRunning]);
+
+  useEffect(() => {
     window.localStorage.setItem(PARQUET_FORM_STORAGE_KEY, JSON.stringify(parquetForm));
   }, [parquetForm]);
 
@@ -291,7 +324,7 @@ export const SidebarToolsPage: React.FC = () => {
           setParquetJobId(null);
           const finalMessage = latest.message + (latest.output_path ? ` Output: ${latest.output_path}` : "");
           setParquetMessage(finalMessage);
-          setToolHistory((current) => [{ id: `${Date.now()}-parquet`, tool: "parquet" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString() }, ...current].slice(0, 10));
+          setToolHistory((current) => [{ id: `${Date.now()}-parquet`, tool: "parquet" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString(), run_seconds: calculateRunSeconds(latest.started_at, latest.finished_at) }, ...current].slice(0, 10));
         }
       } catch (error: any) {
         const detail = error?.response?.data?.detail || error?.message || "Failed to fetch conversion status.";
@@ -324,7 +357,7 @@ export const SidebarToolsPage: React.FC = () => {
           setBuildJobId(null);
           const finalMessage = latest.message + (latest.output_path ? ` Output: ${latest.output_path}` : "");
           setBuildMessage(finalMessage);
-          setToolHistory((current) => [{ id: `${Date.now()}-build`, tool: "build" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString() }, ...current].slice(0, 10));
+          setToolHistory((current) => [{ id: `${Date.now()}-build`, tool: "build" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString(), run_seconds: calculateRunSeconds(latest.started_at, latest.finished_at) }, ...current].slice(0, 10));
         }
       } catch (error: any) {
         const detail = error?.response?.data?.detail || error?.message || "Failed to fetch build status.";
@@ -454,6 +487,9 @@ export const SidebarToolsPage: React.FC = () => {
       {(isBuildRunning || isParquetRunning) && (
         <div className="sticky top-2 z-20 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-800 shadow-sm">
           Active: {isBuildRunning ? `Build (${buildStatus?.status ?? "running"})` : ""}{isBuildRunning && isParquetRunning ? " | " : ""}{isParquetRunning ? `CSV→Parquet (${parquetStatus?.status ?? "running"})` : ""}
+          <p className="mt-1 text-indigo-700">
+            Runtime: {isBuildRunning && buildRunSeconds !== null ? `Build ${formatDuration(buildRunSeconds)}` : ""}{isBuildRunning && isParquetRunning ? " | " : ""}{isParquetRunning && parquetRunSeconds !== null ? `CSV→Parquet ${formatDuration(parquetRunSeconds)}` : ""}
+          </p>
         </div>
       )}
       {(buildStatus?.status === "failed" || parquetStatus?.status === "failed") && (
@@ -618,6 +654,7 @@ export const SidebarToolsPage: React.FC = () => {
             />
           </div>
           <p className="mt-2 text-xs text-slate-500">Progress and active job state are persisted across route changes.</p>
+          {buildRunSeconds !== null && <p className="mt-1 text-xs text-slate-500">Runtime: {formatDuration(buildRunSeconds)}</p>}
         </div>
         <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python build_duckdb.py --db "${buildForm.db_path}" --input "${buildForm.input_path}" --object-name ${buildForm.object_name} --object-type ${buildForm.object_type}${buildForm.replace ? " --replace" : ""}${buildForm.month_label ? ` --month-label ${buildForm.month_label}` : ""}`}</pre>
         {buildMessage && <p className="mt-2 text-sm text-slate-700">{buildMessage}</p>}
@@ -718,6 +755,7 @@ export const SidebarToolsPage: React.FC = () => {
               <div><span className="font-semibold text-slate-800">Skipped:</span> {parquetStatus.skipped_files}</div>
               <div><span className="font-semibold text-slate-800">Progress:</span> {parquetProgress}%</div>
             </div>
+            {parquetRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(parquetRunSeconds)}</p>}
             {parquetStatus.current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {parquetStatus.current_file}</p>}
           </div>
         )}
@@ -732,7 +770,7 @@ export const SidebarToolsPage: React.FC = () => {
           <div className="mt-3 space-y-2">
             {toolHistory.map((item) => (
               <div key={item.id} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
-                <span className="font-semibold uppercase">{item.tool}</span> • {item.status} • {new Date(item.timestamp).toLocaleString()}
+                <span className="font-semibold uppercase">{item.tool}</span> • {item.status} • {new Date(item.timestamp).toLocaleString()}{typeof item.run_seconds === "number" ? ` • Runtime: ${formatDuration(item.run_seconds)}` : ""}
                 <p className="mt-1 break-all">{item.message}</p>
               </div>
             ))}
