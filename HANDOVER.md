@@ -13,6 +13,111 @@
 
 ---
 
+## Weekly Handover Update (Week ending 2026-04-28)
+
+This section captures **all major patches and function-structure changes shipped this week** so the next engineer can quickly understand what changed and where.
+
+### A) Sidebar Data Tools (CSV→Parquet / Build DuckDB)
+
+#### 1. CSV→Parquet pipeline became background-job based with control APIs
+- Added job lifecycle endpoints under sidebar tools:
+  - start job
+  - poll status
+  - stop/cancel job
+- Introduced in-memory job tracking maps and cooperative cancellation handling.
+- Structural impact:
+  - conversion logic now exists in worker/job functions instead of only synchronous request flow.
+  - API consumers should rely on status polling for long conversions.
+
+#### 2. Input glob and fallback logic significantly expanded
+- CSV matching now supports:
+  - directory input
+  - non-recursive to recursive fallback
+  - `.csv.gz` / `.gz` / `.csv` fallback matching
+- Structural impact:
+  - helper functions now infer input roots and derive stable output-relative targets for per-file parquet generation.
+
+#### 3. Output mode behavior changed from single target file assumptions to mixed mode
+- Output path now supports:
+  - folder mode (multi-file conversion, preserving relative source folders)
+  - explicit single `.parquet` file mode (backward compatible for single input case)
+- UI labels and defaults were updated to guide users toward folder mode by default.
+
+#### 4. Existing parquet outputs are now skipped (no overwrite)
+- New behavior in both sync and job flows:
+  - if target parquet already exists, conversion skips that file
+  - completion/status messages include skipped counts
+- New status contract field:
+  - `skipped_files` added to CSV→Parquet job response model and frontend type.
+
+#### 5. Sidebar CSV→Parquet status UI aligned with Drive/FTP style
+- Status card now shows:
+  - badge state
+  - fuller progress bar
+  - total/processed/skipped/progress metrics
+  - current file text
+- Structural impact:
+  - frontend status state now tracks `skipped_files` from job status API.
+
+#### 6. Compression validation and DuckDB execution safety hardening
+- Compression codec validation enforced via model validation.
+- DuckDB query execution path in sidebar tools moved to safer/cleaner patterns (context-managed execution in related patches).
+
+---
+
+### B) System picker reliability (Tk dialog/threading)
+- Fixed file/folder picker endpoint behavior for threading/runtime stability.
+- Structural impact:
+  - system dialog integration is now safer for repeated use from UI buttons (File/Folder/Browse patterns).
+
+---
+
+### C) Query execution hardening (Oracle + diagnostics)
+
+#### 1. SQL sanitization hardening for ORA-00911 and invalid characters
+- Added stronger normalization for smart quotes/control chars/unicode edge cases.
+- Added retries and compatibility fallbacks in Oracle execution path.
+
+#### 2. Query diagnostics/logging improved for debugging
+- Added richer error/attempt logging (including sanitized SQL representations and diagnostics improvements).
+- Structural impact:
+  - easier production root-cause analysis for malformed or transformed SQL.
+
+#### 3. Marcadose union/sample selection stability improvements
+- Multiple patches to union branch SQL shaping and object selection preferences.
+- Added safer fallback behavior when preferred monthly objects are missing.
+
+---
+
+### D) State persistence & UX continuity
+- Persisted long-running job state/workspace state across navigation/local reload for multiple pages (FTP/Drive/Query areas and related tools).
+- Structural impact:
+  - pages recover active job context rather than resetting blindly.
+
+---
+
+### E) Error logging and operational safety
+- Added/expanded centralized non-query API exception logging to `errors.log`.
+- Broadened path-safety and input validation around file system-bound operations.
+
+---
+
+### F) Tests and coverage updates this week
+- Added and updated backend tests for sidebar tools behavior including:
+  - status polling shape
+  - parquet conversion edge cases
+  - skip-existing output behavior
+- Regression and workflow coverage expanded in query/import/sidebar paths via multiple commits.
+
+---
+
+### G) Current operator notes (important)
+- For monthly CSV→Parquet runs, provide **output folder path** (recommended).
+- Single-file output is still supported by providing an explicit `.parquet` target with one input file.
+- Existing parquet targets are skipped by design in current behavior.
+
+---
+
 ## 2. Directory Tree
 
 ```
