@@ -32,6 +32,23 @@ const FORM_STORAGE_KEY = "ftp_download_form_state_v3";
 const PRESET_STORAGE_KEY = "ftp_download_preset_overrides_v3";
 const CUSTOM_PRESET_STORAGE_KEY = "ftp_download_custom_presets_v3";
 const JOB_STORAGE_KEY = "ftp_download_job_v1";
+const formatDuration = (seconds: number) => {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+};
+
+const runSeconds = (startedAt?: string | null, finishedAt?: string | null, nowMs?: number) => {
+  if (!startedAt) return null;
+  const start = new Date(startedAt).getTime();
+  const end = finishedAt ? new Date(finishedAt).getTime() : (nowMs ?? Date.now());
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.floor((end - start) / 1000));
+};
 
 const DEFAULT_PRESET_USERS: Record<string, string> = {
   MVVNL: "mvftpreport",
@@ -299,6 +316,7 @@ export const FtpDownloadPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(initialJobState.jobId);
   const [status, setStatus] = useState<FTPDownloadStatusResponse | null>(initialJobState.status);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
 
   useEffect(() => {
     const formState: PageFormState = {
@@ -333,6 +351,12 @@ export const FtpDownloadPage: React.FC = () => {
     const payload: PersistedJobState = { jobId, status };
     window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(payload));
   }, [jobId, status]);
+
+  useEffect(() => {
+    if (!isLoading) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isLoading]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -687,6 +711,9 @@ export const FtpDownloadPage: React.FC = () => {
           <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">FTP job status</p>
           <h2 className="mt-2 text-2xl font-bold text-emerald-900">{status.status === "completed" ? "Download complete" : status.status === "failed" ? "Download failed" : status.status === "cancelled" ? "Download stopped" : "Download in progress"}</h2>
           <p className="mt-2 text-sm text-gray-600">Current profile: {status.current_profile || "Waiting"}</p>
+          {runSeconds(status.started_at, status.finished_at, nowMs) !== null && (
+            <p className="mt-1 text-xs text-gray-600">Runtime: {formatDuration(runSeconds(status.started_at, status.finished_at, nowMs) ?? 0)}</p>
+          )}
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-xl bg-white p-4 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Profiles</p><p className="mt-2 text-2xl font-bold text-gray-900">{status.total_profiles}</p></div>
             <div className="rounded-xl bg-white p-4 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Files found</p><p className="mt-2 text-2xl font-bold text-gray-900">{status.total_files_found}</p></div>
