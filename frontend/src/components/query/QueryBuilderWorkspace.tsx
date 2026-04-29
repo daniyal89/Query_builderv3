@@ -150,6 +150,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   const [savedQueryName, setSavedQueryName] = useState("");
   const [savedQueries, setSavedQueries] = useState<SavedQueryItem[]>([]);
   const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>([]);
+  const [lastRunSeconds, setLastRunSeconds] = useState<number | null>(null);
   const loadingColumnTablesRef = useRef<Set<string>>(new Set());
   const loadedColumnTablesRef = useRef<Set<string>>(new Set());
 
@@ -450,8 +451,10 @@ WHERE 1 = 1`;
   };
 
   const runQuery = async () => {
+    const started = performance.now();
     const result = await executeQuery();
     if (!result) return;
+    setLastRunSeconds(Math.max(0, Math.round((performance.now() - started) / 1000)));
 
     const historyItem: QueryHistoryItem = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -805,6 +808,9 @@ WHERE 1 = 1`;
               onSqlChange={updateSqlText}
               onRun={runQuery}
             />
+            {lastRunSeconds !== null && (
+              <p className="mb-4 text-xs text-slate-500">Last query runtime: {lastRunSeconds}s</p>
+            )}
 
             {shouldShowSelectTableHint && (
               <div className="mb-6 flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-gray-200 bg-white">

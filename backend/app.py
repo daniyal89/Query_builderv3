@@ -7,6 +7,8 @@ configures the SPA fallback so React Router handles client-side routes.
 """
 
 from pathlib import Path
+import subprocess
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import settings
 from backend.api.router import api_router
 from backend.services.error_log_service import ErrorLogService
+from backend.utils.exceptions import register_exception_handlers
 
 
 def create_app() -> FastAPI:
@@ -31,31 +34,74 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+    register_exception_handlers(application)
+
+    @application.on_event("startup")
+    async def log_startup_version() -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        commit = "unknown"
+        summary = "unknown"
+        try:
+            commit = (
+                subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, text=True)
+                .strip()
+            )
+            summary = (
+                subprocess.check_output(["git", "log", "-1", "--pretty=%s"], cwd=repo_root, text=True)
+                .strip()
+            )
+        except Exception:
+            pass
+        ErrorLogService.append_system_event(
+            event="application_startup",
+            detail="Application startup detected.",
+            extra={"git_commit": commit, "git_summary": summary},
+        )
+
+    @application.middleware("http")
+    async def attach_request_id(request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or str(uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     @application.exception_handler(HTTPException)
     async def log_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
         if request.url.path not in {"/api/query", "/api/query/preview"}:
-            ErrorLogService.append(
-                {
-                    "endpoint": request.url.path,
-                    "method": request.method,
-                    "status_code": exc.status_code,
-                    "error": str(exc.detail),
-                }
+            ErrorLogService.append_request_error(
+                request,
+                status_code=exc.status_code,
+                error=str(exc.detail),
+                detail=exc.detail,
+                exception_type=type(exc).__name__,
             )
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": "HTTPException",
+                "detail": exc.detail,
+                "request_id": getattr(request.state, "request_id", "unknown"),
+            },
+        )
 
     @application.exception_handler(Exception)
     async def log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
-        ErrorLogService.append(
-            {
-                "endpoint": request.url.path,
-                "method": request.method,
-                "status_code": 500,
-                "error": str(exc),
-            }
+        ErrorLogService.append_request_error(
+            request,
+            status_code=500,
+            error=str(exc),
+            detail="Internal Server Error",
+            exception_type=type(exc).__name__,
         )
-        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "InternalServerError",
+                "detail": "Internal Server Error",
+                "request_id": getattr(request.state, "request_id", "unknown"),
+            },
+        )
 
     # --- API routes (must be registered BEFORE the static-file mount) ---
     application.include_router(api_router)
