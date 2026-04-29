@@ -31,11 +31,11 @@ function getDefaultMonthTag(): string {
 
 function createDefaultMarcadoseUnion(): MarcadoseUnionConfig {
   return {
-    enabled: false,
+    enabled: true,
     month_tag: getDefaultMonthTag(),
     discoms: [...MARCADOSE_DISCOMS],
     base_discom: "DVVNL",
-    add_grand_total: false,
+    add_grand_total: true,
     schema_name: "MERCADOS",
   };
 }
