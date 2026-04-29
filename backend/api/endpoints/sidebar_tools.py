@@ -95,6 +95,14 @@ def _resolve_existing_input_glob(input_path: str) -> str:
         if recursive_matches:
             return recursive_variant
 
+    if "/*" in normalized_path and "**" not in normalized_path:
+        recursive_any_variant = normalized_path.replace("/*", "/**/*")
+        recursive_any_matches = [
+            item for item in glob.glob(recursive_any_variant, recursive=True) if Path(item).is_file()
+        ]
+        if recursive_any_matches:
+            return recursive_any_variant
+
     if ".csv.gz" in normalized_path.lower():
         fallbacks = [
             re.sub(r"\.csv\.gz", ".gz", normalized_path, flags=re.IGNORECASE),

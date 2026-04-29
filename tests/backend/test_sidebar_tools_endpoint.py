@@ -77,6 +77,18 @@ def test_resolve_existing_input_glob_supports_recursive_from_non_recursive_patte
     assert resolved.endswith("/**/*.csv")
 
 
+def test_resolve_existing_input_glob_supports_recursive_from_trailing_star(tmp_path: Path) -> None:
+    nested = tmp_path / "FEB_2026" / "DVVNL"
+    nested.mkdir(parents=True, exist_ok=True)
+    parquet_path = nested / "inside.parquet"
+
+    duckdb.connect().execute("COPY (SELECT 1 AS id) TO ? (FORMAT PARQUET)", [str(parquet_path)])
+
+    resolved = _resolve_existing_input_glob(f"{tmp_path.as_posix()}/*")
+
+    assert resolved.endswith("/**/*")
+
+
 def test_resolve_existing_input_glob_raises_when_no_match(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="No files found"):
         _resolve_existing_input_glob(f"{tmp_path.as_posix()}/*.csv.gz")
