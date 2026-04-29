@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
 def build_relation_sql(input_path: str) -> str:
     sample = input_path.lower()
     if sample.endswith(".parquet") or ".parquet" in sample:
-        return f"read_parquet('{input_path}')"
+        return f"read_parquet('{input_path}', union_by_name = true)"
     if (
         sample.endswith(".csv")
         or ".csv" in sample
@@ -48,7 +48,7 @@ def build_relation_sql(input_path: str) -> str:
     if matches:
         first = matches[0].lower()
         if first.endswith(".parquet"):
-            return f"read_parquet('{search_path}')"
+            return f"read_parquet('{search_path}', union_by_name = true)"
         if (
             first.endswith(".csv")
             or first.endswith(".csv.gz")

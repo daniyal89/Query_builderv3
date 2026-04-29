@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from backend.api.endpoints.sidebar_tools import (
     _infer_input_root,
     _parquet_target_for_input,
+    _resolve_relation_sql,
     _resolve_existing_input_glob,
 )
 from backend.app import app
@@ -87,6 +88,14 @@ def test_resolve_existing_input_glob_supports_recursive_from_trailing_star(tmp_p
     resolved = _resolve_existing_input_glob(f"{tmp_path.as_posix()}/*")
 
     assert resolved.endswith("/**/*")
+
+
+def test_resolve_relation_sql_uses_union_by_name_for_parquet_glob(tmp_path: Path) -> None:
+    parquet_file = tmp_path / "a.parquet"
+    duckdb.connect().execute("COPY (SELECT 1 AS id) TO ? (FORMAT PARQUET)", [str(parquet_file)])
+    sql = _resolve_relation_sql(str(tmp_path / "*"))
+    assert "read_parquet" in sql
+    assert "union_by_name = true" in sql
 
 
 def test_resolve_existing_input_glob_raises_when_no_match(tmp_path: Path) -> None:

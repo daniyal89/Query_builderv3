@@ -7,7 +7,7 @@ import glob
 import threading
 import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import duckdb
@@ -34,6 +34,72 @@ BUILD_DUCKDB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 BUILD_DUCKDB_JOBS_LOCK = threading.Lock()
 
 
+def _previous_month_label(month_label: str) -> str | None:
+    cleaned = (month_label or "").strip().upper()
+    if not cleaned:
+        return None
+    try:
+        parsed = datetime.strptime(cleaned, "%b_%Y")
+    except ValueError:
+        return None
+    prev_month_last_day = parsed.replace(day=1) - timedelta(days=1)
+    return prev_month_last_day.strftime("%b_%Y").upper()
+
+
+def _archive_existing_master_if_needed(
+    conn: duckdb.DuckDBPyConnection,
+    object_name: str,
+    object_type: str,
+    month_label: str | None,
+) -> None:
+    if object_name.strip().lower() != "master" or object_type.upper() != "TABLE":
+        return
+
+    prev_label = _previous_month_label(month_label or "")
+    if not prev_label:
+        return
+
+    existing = conn.execute(
+        "SELECT table_type FROM information_schema.tables "
+        "WHERE table_schema = current_schema() AND lower(table_name) = 'master' LIMIT 1"
+    ).fetchone()
+    if not existing or existing[0] != "BASE TABLE":
+        return
+
+    archive_name = f"master_{prev_label}"
+    _drop_existing_duckdb_object(conn, archive_name)
+    conn.execute(f"ALTER TABLE \"master\" RENAME TO \"{archive_name}\"")
+
+
+
+
+def _month_code_mmyy(month_label: str) -> str | None:
+    cleaned = (month_label or "").strip().upper()
+    if not cleaned:
+        return None
+    for fmt in ("%b_%Y", "%m%y"):
+        try:
+            parsed = datetime.strptime(cleaned, fmt)
+            return parsed.strftime("%m%y")
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_master_object_name(object_name: str, object_type: str, month_label: str | None) -> str:
+    cleaned = (object_name or "").strip()
+    if object_type.upper() not in {"TABLE", "VIEW"}:
+        return cleaned
+
+    lowered = cleaned.lower()
+    if not (lowered == "master" or lowered.startswith("master_")):
+        return cleaned
+
+    month_code = _month_code_mmyy(month_label or "")
+    if not month_code:
+        raise ValueError("month_label is required for master table/view names and must be like MAR_2026 or 0326.")
+
+    return f"Master_{month_code}"
 def _sql_string_literal(value: str) -> str:
     return f"'{value.replace(chr(39), chr(39) * 2)}'"
 
@@ -43,7 +109,7 @@ def _resolve_relation_sql(input_path: str) -> str:
     input_path_sql = _sql_string_literal(input_path)
 
     if ".parquet" in lowered:
-        return f"read_parquet({input_path_sql})"
+        return f"read_parquet({input_path_sql}, union_by_name = true)"
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
         return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
@@ -51,7 +117,7 @@ def _resolve_relation_sql(input_path: str) -> str:
     if matches:
         sample = matches[0].lower()
         if sample.endswith(".parquet"):
-            return f"read_parquet({input_path_sql})"
+            return f"read_parquet({input_path_sql}, union_by_name = true)"
         if (
             sample.endswith(".csv")
             or sample.endswith(".csv.gz")
@@ -203,22 +269,23 @@ def _drop_existing_duckdb_object(conn: duckdb.DuckDBPyConnection, object_name: s
 
 
 def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
-    if not VALID_OBJECT_NAME.fullmatch(payload.object_name):
+    normalized_object_name = _normalize_master_object_name(payload.object_name, payload.object_type, payload.month_label)
+    if not VALID_OBJECT_NAME.fullmatch(normalized_object_name):
         raise ValueError("object_name must start with letter/_ and use only letters, numbers, underscore.")
 
     db_path = Path(payload.db_path).expanduser().resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    object_sql = f'"{payload.object_name.replace(chr(34), chr(34) * 2)}"'
+    object_sql = f'"{normalized_object_name.replace(chr(34), chr(34) * 2)}"'
     resolved_input = _resolve_existing_input_glob(payload.input_path)
     relation_sql = _resolve_relation_sql(resolved_input)
 
     with duckdb.connect(str(db_path)) as conn:
         if payload.replace:
-            _drop_existing_duckdb_object(conn, payload.object_name)
+            _drop_existing_duckdb_object(conn, normalized_object_name)
         conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
 
     month_text = f" for {payload.month_label}" if payload.month_label else ""
-    return str(db_path), f"Created {payload.object_type} {payload.object_name}{month_text}."
+    return str(db_path), f"Created {payload.object_type} {normalized_object_name}{month_text}."
 
 
 def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
