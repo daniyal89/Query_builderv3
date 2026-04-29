@@ -28,6 +28,13 @@ export async function getColumns(tableName: string, engine: QueryEngine = "duckd
   return response.data;
 }
 
+export async function deleteLocalObject(objectName: string): Promise<{ status: string; message: string }> {
+  const response = await apiClient.delete<{ status: string; message: string }>(
+    `/duckdb/objects/${encodeURIComponent(objectName)}`,
+  );
+  return response.data;
+}
+
 const SYSTEM_API_BASE = "/api/system";
 
 type SystemPathResponse = {

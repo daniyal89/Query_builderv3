@@ -8,7 +8,7 @@ frozen PyInstaller executable, falling back to the project root in dev mode.
 import sys
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _resolve_base_dir() -> Path:
@@ -29,8 +29,7 @@ class Settings(BaseSettings):
     BASE_DIR: Path = _resolve_base_dir()
     STATIC_DIR: Path = BASE_DIR / "frontend_dist"
 
-    class Config:
-        env_prefix = "DASHBOARD_"
+    model_config = SettingsConfigDict(env_prefix="DASHBOARD_")
 
 
 settings = Settings()

@@ -115,6 +115,56 @@ def test_sidebar_build_duckdb_detects_parquet_from_wildcard_without_extension(tm
     assert response.status_code == 200, response.text
 
 
+def test_sidebar_build_duckdb_accepts_directory_with_nested_parquet_files(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_parquet_dir.duckdb"
+    parquet_dir = tmp_path / "parquet_root"
+    nested = parquet_dir / "FEB_2026"
+    nested.mkdir(parents=True, exist_ok=True)
+    parquet_path = nested / "data.parquet"
+
+    duckdb.connect().execute("COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)])
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(parquet_dir),
+            "object_name": "MASTER_FROM_PARQUET_DIR",
+            "object_type": "VIEW",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_sidebar_build_duckdb_supports_trailing_star_pattern_for_nested_parquet(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_parquet_star.duckdb"
+    parquet_root = tmp_path / "FEB_parquet_2026"
+    nested = parquet_root / "DVVNL"
+    nested.mkdir(parents=True, exist_ok=True)
+    parquet_path = nested / "part-001.parquet"
+
+    duckdb.connect().execute("COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)])
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(parquet_root / "*"),
+            "object_name": "MASTER_FROM_PARQUET_STAR",
+            "object_type": "VIEW",
+            "replace": True,
+            "month_label": "FEB_2026",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+
 def test_sidebar_build_duckdb_detects_gz_csv_from_wildcard_without_extension(tmp_path: Path) -> None:
     db_path = tmp_path / "tools_gz.duckdb"
     csv_dir = tmp_path / "csv"
@@ -158,3 +208,78 @@ def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> N
 
     assert response.status_code == 400, response.text
     assert "No files found that match the pattern" in response.json()["detail"]
+
+
+def test_sidebar_build_duckdb_replace_can_switch_table_to_view(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_switch_type.duckdb"
+    csv_path = tmp_path / "switch.csv"
+    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+    client = TestClient(app)
+    create_table = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(csv_path),
+            "object_name": "master",
+            "object_type": "TABLE",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+    assert create_table.status_code == 200, create_table.text
+
+    replace_with_view = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(csv_path),
+            "object_name": "master",
+            "object_type": "VIEW",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+    assert replace_with_view.status_code == 200, replace_with_view.text
+
+    with duckdb.connect(str(db_path)) as conn:
+        obj_type = conn.execute(
+            "SELECT table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = 'master'"
+        ).fetchone()
+
+    assert obj_type is not None
+    assert obj_type[0] == "VIEW"
+
+
+def test_sidebar_build_duckdb_replace_is_case_insensitive_for_existing_object_lookup(tmp_path: Path) -> None:
+    db_path = tmp_path / "tools_switch_case.duckdb"
+    csv_path = tmp_path / "switch_case.csv"
+    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+    client = TestClient(app)
+    create_table = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(csv_path),
+            "object_name": "MASTER",
+            "object_type": "TABLE",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+    assert create_table.status_code == 200, create_table.text
+
+    replace_with_view = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json={
+            "db_path": str(db_path),
+            "input_path": str(csv_path),
+            "object_name": "master",
+            "object_type": "VIEW",
+            "replace": True,
+            "month_label": "",
+        },
+    )
+    assert replace_with_view.status_code == 200, replace_with_view.text

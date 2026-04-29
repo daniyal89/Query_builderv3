@@ -32,6 +32,53 @@ class MarcadoseUnionService:
     ORDER_BY_PATTERN = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 
     @classmethod
+    def _split_trailing_order_by(cls, sql: str) -> tuple[str, str | None]:
+        """Split trailing top-level ORDER BY so union branches stay Oracle-valid."""
+
+        in_single_quote = False
+        paren_depth = 0
+        last_top_level_order: int | None = None
+
+        i = 0
+        upper_sql = sql.upper()
+        while i < len(sql):
+            char = sql[i]
+
+            if char == "'":
+                if in_single_quote and i + 1 < len(sql) and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                in_single_quote = not in_single_quote
+                i += 1
+                continue
+
+            if in_single_quote:
+                i += 1
+                continue
+
+            if char == "(":
+                paren_depth += 1
+            elif char == ")":
+                paren_depth = max(paren_depth - 1, 0)
+
+            if paren_depth == 0 and upper_sql.startswith("ORDER BY", i):
+                before_char = sql[i - 1] if i > 0 else " "
+                if before_char.isspace():
+                    last_top_level_order = i
+
+            i += 1
+
+        if last_top_level_order is None:
+            return sql, None
+
+        before = sql[:last_top_level_order].rstrip()
+        order_by = sql[last_top_level_order:].strip()
+        if not order_by.upper().startswith("ORDER BY"):
+            return sql, None
+
+        return before, order_by
+
+    @classmethod
     def is_active(cls, config: MarcadoseUnionConfig | None) -> bool:
         return bool(config and config.month_tag and config.discoms)
 
@@ -103,14 +150,23 @@ class MarcadoseUnionService:
             branch_limit = int(fetch_match.group(1))
             base_sql = normalized[: fetch_match.start()].rstrip()
 
+        branch_base_sql = base_sql
+        union_order_by: str | None = None
+        if branch_limit is None:
+            branch_base_sql, union_order_by = cls._split_trailing_order_by(base_sql)
+
         branches: list[str] = []
         for index, discom in enumerate(selected, start=1):
-            branch_sql = cls._replace_for_discom(base_sql, config, discom)
+            branch_sql = cls._replace_for_discom(branch_base_sql, config, discom)
             if branch_limit is not None:
                 branch_sql = cls._apply_rownum_limit(branch_sql, branch_limit, index)
             branches.append(branch_sql)
 
-        return "\nUNION ALL\n".join(branches)
+        union_sql = "\nUNION ALL\n".join(branches)
+        if union_order_by:
+            return f"{union_sql}\n{union_order_by}"
+
+        return union_sql
 
     @classmethod
     def _apply_rownum_limit(cls, branch_sql: str, limit: int, branch_index: int) -> str:
