@@ -32,13 +32,13 @@ type UppclPresetPaths = {
 };
 
 type PersistedParquetJobState = {
-  jobId: string;
+  jobId: string | null;
   status: CsvParquetJobStatusResponse | null;
   message: string;
 };
 
 type PersistedBuildJobState = {
-  jobId: string;
+  jobId: string | null;
   status: BuildDuckDbJobStatusResponse | null;
   message: string;
 };
@@ -131,6 +131,10 @@ function readInitialBuildForm(): {
   } catch {
     return fallback;
   }
+}
+
+function normalizeMonthSuffix(monthLabel: string): string {
+  return monthLabel.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
 function isBuildTerminalStatus(status: BuildDuckDbJobStatusResponse | null): boolean {
@@ -240,7 +244,7 @@ export const SidebarToolsPage: React.FC = () => {
   }, [buildForm]);
 
   useEffect(() => {
-    if (!buildJobId) {
+    if (!buildJobId && !buildStatus && !buildMessage.trim()) {
       window.localStorage.removeItem(BUILD_STATUS_STORAGE_KEY);
       return;
     }
@@ -265,7 +269,7 @@ export const SidebarToolsPage: React.FC = () => {
   }, [parquetForm]);
 
   useEffect(() => {
-    if (!parquetJobId) {
+    if (!parquetJobId && !parquetStatus && !parquetMessage.trim()) {
       window.localStorage.removeItem(PARQUET_JOB_STORAGE_KEY);
       return;
     }
@@ -341,13 +345,14 @@ export const SidebarToolsPage: React.FC = () => {
   }, [buildJobId]);
 
   const applyUppclPreset = () => {
+    const monthLabel = "MAR_2026";
     setBuildForm({
       db_path: uppclPresetPaths.build_db_path,
       input_path: uppclPresetPaths.build_input_path,
-      object_name: "master",
+      object_name: `MASTER_${normalizeMonthSuffix(monthLabel)}`,
       object_type: "TABLE",
       replace: true,
-      month_label: "MAR_2026",
+      month_label: monthLabel,
     });
     setParquetForm({
       input_path: uppclPresetPaths.parquet_input_path,
@@ -368,9 +373,22 @@ export const SidebarToolsPage: React.FC = () => {
       setBuildMessage("Pre-check failed: db path, input path and object name are required.");
       return;
     }
+
+    const monthSuffix = normalizeMonthSuffix(buildForm.month_label);
+    const objectName = buildForm.object_name.trim();
+    if (objectName.toLowerCase() === "master" && monthSuffix) {
+      setBuildMessage(
+        `Safety check: use a month-specific object name like MASTER_${monthSuffix} to avoid replacing another month's master.`
+      );
+      return;
+    }
+
     setBuildMessage("");
     try {
-      const started = await startBuildDuckDbJob(buildForm);
+      const started = await startBuildDuckDbJob({
+        ...buildForm,
+        object_name: objectName,
+      });
       setBuildJobId(started.job_id);
       setBuildStatus({
         job_id: started.job_id,
