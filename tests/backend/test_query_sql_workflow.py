@@ -261,3 +261,43 @@ def test_query_report_adds_grand_total_row_for_duckdb_when_requested() -> None:
     body = response.json()
     assert body["source_mode"] == "builder"
     assert body["rows"][-1][0] == "GRAND TOTAL"
+
+
+def test_query_report_adds_grand_total_row_for_duckdb_by_default() -> None:
+    client = TestClient(app)
+    _connect_duckdb(client)
+
+    response = client.post(
+        "/api/query",
+        json={
+            "execution_mode": "builder",
+            "engine": "duckdb",
+            "table": "employees",
+            "select": [],
+            "filters": [],
+            "sort": [],
+            "joins": [],
+            "limit_rows": 1000,
+            "offset": 0,
+            "mode": "REPORT",
+            "pivot": {
+                "rows": ["department"],
+                "columns": [],
+                "values": "id",
+                "func": "COUNT",
+            },
+            "group_by": [],
+            "aggregates": [],
+            "marcadose_union": {
+                "month_tag": "apr_2026",
+                "discoms": ["DVVNL"],
+                "base_discom": "DVVNL",
+                "schema_name": "MERCADOS",
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source_mode"] == "builder"
+    assert body["rows"][-1][0] == "GRAND TOTAL"
