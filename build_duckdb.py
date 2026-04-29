@@ -8,6 +8,30 @@ import glob
 from pathlib import Path
 import duckdb
 
+MIN_PARQUET_FILE_BYTES = 16
+
+
+def is_readable_input_file(path_str: str) -> bool:
+    path = Path(path_str)
+    if not path.is_file():
+        return False
+    if path.suffix.lower() != ".parquet":
+        return True
+    if path.name.lower().startswith("tmp_"):
+        return False
+    try:
+        return path.stat().st_size >= MIN_PARQUET_FILE_BYTES
+    except OSError:
+        return False
+
+
+def _sql_string_literal(value: str) -> str:
+    return f"'{value.replace(chr(39), chr(39) * 2)}'"
+
+
+def _sql_string_list_literal(values: list[str]) -> str:
+    return "[" + ", ".join(_sql_string_literal(value) for value in values) + "]"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -25,7 +49,10 @@ def parse_args() -> argparse.Namespace:
 def build_relation_sql(input_path: str) -> str:
     sample = input_path.lower()
     if sample.endswith(".parquet") or ".parquet" in sample:
-        return f"read_parquet('{input_path}')"
+        matches = [item for item in glob.glob(input_path, recursive=True) if is_readable_input_file(item)]
+        if matches:
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
+        return f"read_parquet('{input_path}', union_by_name = true)"
     if (
         sample.endswith(".csv")
         or ".csv" in sample
@@ -36,20 +63,44 @@ def build_relation_sql(input_path: str) -> str:
     ):
         return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
 
-    matches = glob.glob(input_path, recursive=True)
+    search_path = input_path
+    matches = [item for item in glob.glob(search_path, recursive=True) if is_readable_input_file(item)]
+    if not matches and "/*" in input_path and "**" not in input_path:
+        recursive_variant = input_path.replace("/*", "/**/*")
+        recursive_matches = [item for item in glob.glob(recursive_variant, recursive=True) if is_readable_input_file(item)]
+        if recursive_matches:
+            search_path = recursive_variant
+            matches = recursive_matches
+
     if matches:
         first = matches[0].lower()
         if first.endswith(".parquet"):
-            return f"read_parquet('{input_path}')"
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
         if (
             first.endswith(".csv")
             or first.endswith(".csv.gz")
             or first.endswith(".tsv")
             or first.endswith(".gz")
         ):
-            return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
+            return f"read_csv_auto('{search_path}', union_by_name = true, filename = true)"
 
-    return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
+    raise ValueError(f"No readable files matched '{input_path}'.")
+
+
+def drop_existing_object(conn: duckdb.DuckDBPyConnection, object_name: str) -> None:
+    existing = conn.execute(
+        "SELECT table_type FROM information_schema.tables "
+        "WHERE table_schema = current_schema() AND lower(table_name) = lower(?) LIMIT 1",
+        [object_name.strip()],
+    ).fetchone()
+    if not existing:
+        return
+
+    object_sql = f'"{object_name.replace(chr(34), chr(34) * 2)}"'
+    if existing[0] == "VIEW":
+        conn.execute(f"DROP VIEW {object_sql}")
+    else:
+        conn.execute(f"DROP TABLE {object_sql}")
 
 
 def main() -> int:
@@ -62,8 +113,7 @@ def main() -> int:
     object_sql = f'"{object_name}"'
 
     if args.replace:
-        conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-        conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+        drop_existing_object(conn, args.object_name)
 
     relation_sql = build_relation_sql(args.input)
     conn.execute(f"CREATE {args.object_type} {object_sql} AS SELECT * FROM {relation_sql}")

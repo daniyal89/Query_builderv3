@@ -7,6 +7,8 @@ Provides consistent, structured JSON error responses across all endpoints.
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from backend.services.error_log_service import ErrorLogService
+
 
 class DatabaseNotConnectedError(Exception):
     """Raised when an operation requires an active DuckDB connection but none exists."""
@@ -33,7 +35,80 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     Maps each custom exception class to an appropriate HTTP status code
     and returns a consistent JSON error envelope:
-    {"error": "<ExceptionClassName>", "detail": "<message>"}
+    {"error": "<ExceptionClassName>", "detail": "<message>", "request_id": "<id>"}
     """
-    # TODO: Register handlers for each custom exception
-    pass
+
+    def _request_id_from(request: Request) -> str:
+        return getattr(request.state, "request_id", "unknown")
+
+    @app.exception_handler(DatabaseNotConnectedError)
+    async def handle_database_not_connected(request: Request, exc: DatabaseNotConnectedError) -> JSONResponse:
+        ErrorLogService.append_request_error(
+            request,
+            status_code=409,
+            error=str(exc) or "Database is not connected.",
+            detail=str(exc) or "Database is not connected.",
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "DatabaseNotConnectedError",
+                "detail": str(exc) or "Database is not connected.",
+                "request_id": _request_id_from(request),
+            },
+        )
+
+    @app.exception_handler(InvalidPathError)
+    async def handle_invalid_path(request: Request, exc: InvalidPathError) -> JSONResponse:
+        ErrorLogService.append_request_error(
+            request,
+            status_code=400,
+            error=str(exc) or "Invalid or inaccessible path.",
+            detail=str(exc) or "Invalid or inaccessible path.",
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "InvalidPathError",
+                "detail": str(exc) or "Invalid or inaccessible path.",
+                "request_id": _request_id_from(request),
+            },
+        )
+
+    @app.exception_handler(QueryBuildError)
+    async def handle_query_build_error(request: Request, exc: QueryBuildError) -> JSONResponse:
+        ErrorLogService.append_request_error(
+            request,
+            status_code=422,
+            error=str(exc) or "Unable to construct query.",
+            detail=str(exc) or "Unable to construct query.",
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "QueryBuildError",
+                "detail": str(exc) or "Unable to construct query.",
+                "request_id": _request_id_from(request),
+            },
+        )
+
+    @app.exception_handler(CSVParseError)
+    async def handle_csv_parse_error(request: Request, exc: CSVParseError) -> JSONResponse:
+        ErrorLogService.append_request_error(
+            request,
+            status_code=400,
+            error=str(exc) or "CSV parsing failed.",
+            detail=str(exc) or "CSV parsing failed.",
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "CSVParseError",
+                "detail": str(exc) or "CSV parsing failed.",
+                "request_id": _request_id_from(request),
+            },
+        )
