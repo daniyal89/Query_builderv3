@@ -8,6 +8,22 @@ import glob
 from pathlib import Path
 import duckdb
 
+MIN_PARQUET_FILE_BYTES = 16
+
+
+def is_readable_input_file(path_str: str) -> bool:
+    path = Path(path_str)
+    if not path.is_file():
+        return False
+    if path.suffix.lower() != ".parquet":
+        return True
+    if path.name.lower().startswith("tmp_"):
+        return False
+    try:
+        return path.stat().st_size >= MIN_PARQUET_FILE_BYTES
+    except OSError:
+        return False
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -37,10 +53,10 @@ def build_relation_sql(input_path: str) -> str:
         return f"read_csv_auto('{input_path}', union_by_name = true, filename = true)"
 
     search_path = input_path
-    matches = [item for item in glob.glob(search_path, recursive=True) if Path(item).is_file()]
+    matches = [item for item in glob.glob(search_path, recursive=True) if is_readable_input_file(item)]
     if not matches and "/*" in input_path and "**" not in input_path:
         recursive_variant = input_path.replace("/*", "/**/*")
-        recursive_matches = [item for item in glob.glob(recursive_variant, recursive=True) if Path(item).is_file()]
+        recursive_matches = [item for item in glob.glob(recursive_variant, recursive=True) if is_readable_input_file(item)]
         if recursive_matches:
             search_path = recursive_variant
             matches = recursive_matches

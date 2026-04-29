@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from backend.api.endpoints.sidebar_tools import (
     _infer_input_root,
+    _is_readable_input_file,
     _parquet_target_for_input,
     _resolve_relation_sql,
     _resolve_existing_input_glob,
@@ -96,6 +97,16 @@ def test_resolve_relation_sql_uses_union_by_name_for_parquet_glob(tmp_path: Path
     sql = _resolve_relation_sql(str(tmp_path / "*"))
     assert "read_parquet" in sql
     assert "union_by_name = true" in sql
+
+
+def test_is_readable_input_file_skips_temporary_small_parquet(tmp_path: Path) -> None:
+    bad_tmp = tmp_path / "tmp_partial.parquet"
+    bad_tmp.write_bytes(b"tiny")
+    good_file = tmp_path / "part-001.parquet"
+    duckdb.connect().execute("COPY (SELECT 1 AS id) TO ? (FORMAT PARQUET)", [str(good_file)])
+
+    assert _is_readable_input_file(str(bad_tmp)) is False
+    assert _is_readable_input_file(str(good_file)) is True
 
 
 def test_resolve_existing_input_glob_raises_when_no_match(tmp_path: Path) -> None:

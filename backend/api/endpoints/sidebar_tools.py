@@ -32,6 +32,7 @@ CSV_PARQUET_JOBS_LOCK = threading.Lock()
 BUILD_DUCKDB_JOBS: dict[str, dict[str, Any]] = {}
 BUILD_DUCKDB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 BUILD_DUCKDB_JOBS_LOCK = threading.Lock()
+MIN_PARQUET_FILE_BYTES = 16
 
 
 def _previous_month_label(month_label: str) -> str | None:
@@ -104,6 +105,20 @@ def _sql_string_literal(value: str) -> str:
     return f"'{value.replace(chr(39), chr(39) * 2)}'"
 
 
+def _is_readable_input_file(path_str: str) -> bool:
+    path = Path(path_str)
+    if not path.is_file():
+        return False
+    if path.suffix.lower() != ".parquet":
+        return True
+    if path.name.lower().startswith("tmp_"):
+        return False
+    try:
+        return path.stat().st_size >= MIN_PARQUET_FILE_BYTES
+    except OSError:
+        return False
+
+
 def _resolve_relation_sql(input_path: str) -> str:
     lowered = input_path.lower()
     input_path_sql = _sql_string_literal(input_path)
@@ -113,7 +128,7 @@ def _resolve_relation_sql(input_path: str) -> str:
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
         return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
-    matches = [item for item in glob.glob(input_path, recursive=True) if Path(item).is_file()]
+    matches = [item for item in glob.glob(input_path, recursive=True) if _is_readable_input_file(item)]
     if matches:
         sample = matches[0].lower()
         if sample.endswith(".parquet"):
@@ -148,23 +163,23 @@ def _resolve_existing_input_glob(input_path: str) -> str:
     if normalized_as_path.is_dir():
         for candidate in ("**/*.parquet", "**/*.csv.gz", "**/*.gz", "**/*.csv", "**/*.tsv", "**/*.txt"):
             pattern = str((normalized_as_path / candidate).as_posix())
-            if any(Path(item).is_file() for item in glob.glob(pattern, recursive=True)):
+            if any(_is_readable_input_file(item) for item in glob.glob(pattern, recursive=True)):
                 return pattern
 
-    matches = [item for item in glob.glob(normalized_path, recursive=True) if Path(item).is_file()]
+    matches = [item for item in glob.glob(normalized_path, recursive=True) if _is_readable_input_file(item)]
     if matches:
         return normalized_path
 
     if "/*." in normalized_path:
         recursive_variant = normalized_path.replace("/*.", "/**/*.")
-        recursive_matches = [item for item in glob.glob(recursive_variant, recursive=True) if Path(item).is_file()]
+        recursive_matches = [item for item in glob.glob(recursive_variant, recursive=True) if _is_readable_input_file(item)]
         if recursive_matches:
             return recursive_variant
 
     if "/*" in normalized_path and "**" not in normalized_path:
         recursive_any_variant = normalized_path.replace("/*", "/**/*")
         recursive_any_matches = [
-            item for item in glob.glob(recursive_any_variant, recursive=True) if Path(item).is_file()
+            item for item in glob.glob(recursive_any_variant, recursive=True) if _is_readable_input_file(item)
         ]
         if recursive_any_matches:
             return recursive_any_variant
@@ -176,12 +191,12 @@ def _resolve_existing_input_glob(input_path: str) -> str:
         ]
         for fallback in fallbacks:
             fallback_matches = glob.glob(fallback, recursive=True)
-            if any(Path(item).is_file() for item in fallback_matches):
+            if any(_is_readable_input_file(item) for item in fallback_matches):
                 return fallback
             if "/*." in fallback:
                 recursive_fallback = fallback.replace("/*.", "/**/*.")
                 recursive_fallback_matches = [
-                    item for item in glob.glob(recursive_fallback, recursive=True) if Path(item).is_file()
+                    item for item in glob.glob(recursive_fallback, recursive=True) if _is_readable_input_file(item)
                 ]
                 if recursive_fallback_matches:
                     return recursive_fallback
