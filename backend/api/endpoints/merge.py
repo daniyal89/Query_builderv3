@@ -126,9 +126,9 @@ async def enrich_data(
     fetch_columns: str = Form(
         ..., description="JSON encoded array of column names to fetch from the Master Table"
     ),
-    composite_key: str = Form(..., description="Secondary key strategy (e.g. DISCOM or DIV_CODE)"),
-    mapped_acct_id_col: str = Form(..., description="Uploaded column mapped to ACCT_ID"),
-    mapped_secondary_col: str = Form(..., description="Uploaded column mapped to secondary key"),
+    join_keys: str = Form(
+        ..., description="JSON encoded array of join key mapping objects"
+    ),
     db: DuckDBService = Depends(get_connected_db),
 ) -> StreamingResponse:
     del db_path
@@ -137,6 +137,11 @@ async def enrich_data(
             columns_to_fetch = json.loads(fetch_columns)
         except json.JSONDecodeError as exc:
             raise ValueError("fetch_columns must be a valid JSON array") from exc
+
+        try:
+            keys_to_join = json.loads(join_keys)
+        except json.JSONDecodeError as exc:
+            raise ValueError("join_keys must be a valid JSON array") from exc
 
         filename = (file.filename or "").lower()
         contents = await file.read()
@@ -153,9 +158,7 @@ async def enrich_data(
             conn=db._conn,
             master_table=master_table,
             fetch_columns=columns_to_fetch,
-            mapped_acct_id_col=mapped_acct_id_col,
-            mapped_secondary_col=mapped_secondary_col,
-            secondary_key_type=composite_key,
+            join_keys=keys_to_join,
         )
 
         output = io.BytesIO()

@@ -2,8 +2,12 @@
  * merge.types.ts - TypeScript interfaces for merge and enrichment flows.
  */
 
-export type CompositeKey = "Acc_id+DISCOM" | "Acc_id+DIV_CODE";
 export type OutputFormat = "xlsx" | "csv";
+
+export interface JoinKeyMapping {
+  fileColumn: string;
+  tableColumn: string;
+}
 
 export interface DetectedColumn {
   name: string;
@@ -37,7 +41,7 @@ export interface FolderMergeResponse {
 export interface EnrichmentRequest {
   merge_id: string;
   master_table: string;
-  composite_key: CompositeKey;
+  join_keys: JoinKeyMapping[];
   fetch_columns: string[];
   output_format: OutputFormat;
 }

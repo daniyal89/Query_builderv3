@@ -5,7 +5,10 @@
 // @ts-nocheck
 import { useState } from "react";
 import { enrichData, uploadSheets } from "../api/mergeApi";
-import type { MergeWizardState } from "../types/merge.types";
+import type {
+  JoinKeyMapping,
+  MergeWizardState,
+} from "../types/merge.types";
 
 function getRequestErrorMessage(err: any, fallback: string, operation: "upload" | "merge" | "enrich"): string {
   const detail = err?.response?.data?.detail;
@@ -65,9 +68,7 @@ export function useMergeWizard() {
     outputFormat: "xlsx" | "csv",
     dbPath: string,
     mergedFile: File,
-    mappedAcctIdCol: string,
-    mappedSecondaryCol: string,
-    secondaryColType: string
+    joinKeys: JoinKeyMapping[]
   ) => {
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
     try {
@@ -75,10 +76,8 @@ export function useMergeWizard() {
         dbPath,
         masterTable,
         fetchColumns,
-        secondaryColType,
-        mergedFile,
-        mappedAcctIdCol,
-        mappedSecondaryCol
+        joinKeys,
+        mergedFile
       );
 
       const url = window.URL.createObjectURL(new Blob([blob]));
