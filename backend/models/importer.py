@@ -5,7 +5,14 @@ Defines the column-mapping payload and import result used by
 POST /api/upload-csv.
 """
 
+import re
+from pathlib import PurePath
+
 from pydantic import BaseModel, Field
+from pydantic import field_validator
+
+
+VALID_TARGET_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ColumnMapping(BaseModel):
@@ -29,6 +36,25 @@ class CSVMappingPayload(BaseModel):
         default=False,
         description="If true, auto-create the target table from CSV schema.",
     )
+
+    @field_validator("file_id")
+    @classmethod
+    def validate_file_id(cls, value: str) -> str:
+        normalized = (value or "").strip()
+        pure = PurePath(normalized)
+        if not normalized or pure.is_absolute() or pure.name != normalized or any(part == ".." for part in pure.parts):
+            raise ValueError("file_id is invalid.")
+        return normalized
+
+    @field_validator("target_table")
+    @classmethod
+    def validate_target_table(cls, value: str) -> str:
+        normalized = (value or "").strip()
+        if not VALID_TARGET_TABLE.fullmatch(normalized):
+            raise ValueError(
+                "target_table must start with a letter or underscore and contain only letters, numbers, and underscores."
+            )
+        return normalized
 
 
 class ImportResult(BaseModel):

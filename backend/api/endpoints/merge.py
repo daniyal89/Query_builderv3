@@ -18,8 +18,13 @@ from backend.models.merge import (
 )
 from backend.services.duckdb_service import DuckDBService
 from backend.services.merge_service import MergeService
+from backend.utils.path_safety import sanitize_local_path_input
+from backend.utils.upload_limits import enforce_total_upload_limit, read_upload_bytes
 
 router = APIRouter()
+MAX_UPLOAD_SHEETS_FILE_BYTES = 100 * 1024 * 1024
+MAX_UPLOAD_SHEETS_TOTAL_BYTES = 500 * 1024 * 1024
+MAX_ENRICH_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
 @router.post(
@@ -31,22 +36,30 @@ async def upload_sheets(
     files: List[UploadFile] = File(
         ..., description="One or more Excel (.xlsx) or CSV files to merge."
     ),
-    db: DuckDBService = Depends(get_connected_db),
 ) -> UploadSheetsResponse:
-    del db
-
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
 
     file_ids: list[str] = []
     all_columns: list[DetectedColumn] = []
     col_name_counter: Counter = Counter()
+    total_upload_bytes = 0
 
     for uploaded_file in files:
         file_id = str(uuid.uuid4())[:8]
         file_ids.append(file_id)
         filename = uploaded_file.filename or "unknown"
-        contents = await uploaded_file.read()
+        contents = await read_upload_bytes(
+            uploaded_file,
+            max_bytes=MAX_UPLOAD_SHEETS_FILE_BYTES,
+            label=f"Uploaded file '{filename}'",
+        )
+        total_upload_bytes += len(contents)
+        enforce_total_upload_limit(
+            total_upload_bytes,
+            MAX_UPLOAD_SHEETS_TOTAL_BYTES,
+            "Combined upload size",
+        )
 
         try:
             if filename.lower().endswith(".csv"):
@@ -106,6 +119,8 @@ def merge_folder(payload: FolderMergeRequest) -> FolderMergeResponse:
         return FolderMergeResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc
 
@@ -131,8 +146,9 @@ async def enrich_data(
     ),
     db: DuckDBService = Depends(get_connected_db),
 ) -> StreamingResponse:
-    del db_path
     try:
+        sanitize_local_path_input(db_path, "db_path")
+
         try:
             columns_to_fetch = json.loads(fetch_columns)
         except json.JSONDecodeError as exc:
@@ -144,7 +160,7 @@ async def enrich_data(
             raise ValueError("join_keys must be a valid JSON array") from exc
 
         filename = (file.filename or "").lower()
-        contents = await file.read()
+        contents = await read_upload_bytes(file, max_bytes=MAX_ENRICH_UPLOAD_BYTES, label="Enrichment upload")
 
         if filename.endswith(".csv"):
             dataframe = pd.read_csv(io.BytesIO(contents))
@@ -183,5 +199,7 @@ async def enrich_data(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc

@@ -11,7 +11,9 @@ Also includes the local folder merge flow used by the sidebar import page.
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from backend.utils.path_safety import sanitize_local_path_input
 
 
 # ─────────────────────────── Phase 1: Upload Sheets ───────────────────────────
@@ -57,6 +59,11 @@ class FolderMergeRequest(BaseModel):
         default=True,
         description="Whether to scan all nested subfolders recursively.",
     )
+
+    @field_validator("source_folder", "output_path")
+    @classmethod
+    def validate_local_paths(cls, value: str, info) -> str:
+        return sanitize_local_path_input(value, info.field_name)
 
 
 class FolderMergeResponse(BaseModel):

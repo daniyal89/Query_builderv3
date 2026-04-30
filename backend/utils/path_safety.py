@@ -13,7 +13,11 @@ def sanitize_local_path_input(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name} cannot be empty.")
     if normalized.startswith('"') and normalized.endswith('"'):
         normalized = normalized[1:-1].strip()
-    return os.path.expandvars(os.path.expanduser(normalized))
+    expanded = os.path.expandvars(os.path.expanduser(normalized))
+    pure = PurePath(expanded)
+    if any(part == ".." for part in pure.parts):
+        raise ValueError(f"{field_name} cannot include path traversal segments.")
+    return expanded
 
 
 def validate_relative_subpath(value: str, field_name: str) -> str:
