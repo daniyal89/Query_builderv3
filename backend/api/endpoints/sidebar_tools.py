@@ -36,20 +36,33 @@ BUILD_DUCKDB_JOBS_LOCK = threading.Lock()
 MIN_PARQUET_FILE_BYTES = 16
 
 
+def _read_lookup_file(file_path: str) -> pd.DataFrame:
+    path = Path(file_path)
+    if path.suffix.lower() == ".csv":
+        return pd.read_csv(file_path, encoding="utf-8", encoding_errors="replace", low_memory=False)
+    return pd.read_excel(file_path)
+
+
 def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    hir_raw = pd.read_excel(hir_file)
+    hir_raw = _read_lookup_file(hir_file)
     hir_raw["DIV_CODE"] = hir_raw.get("DIV_CODE", "").astype(str)
     hir_div = hir_raw[["DIV_CODE", "DISCOM", "CIR_SP_ID", "ZON_SP_ID", "DIV_NAME", "CIRCLE_NAME", "ZONE_NAME"]].drop_duplicates("DIV_CODE")
     hir_sdo = hir_raw[["SDO_SP_ID", "SDO_NAME"]].rename(columns={"SDO_SP_ID": "SUB_DIV_CODE"}).drop_duplicates("SUB_DIV_CODE")
 
-    supp = pd.read_excel(supp_mapper_file)
+    supp = _read_lookup_file(supp_mapper_file)
     supp["SUPPLY_TYPE"] = supp.get("SUPPLY_TYPE", "").astype(str)
     supp = supp.drop_duplicates("SUPPLY_TYPE")
     return hir_div, hir_sdo, supp
 
 
-def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> None:
-    df = pd.read_csv(source_file, encoding="utf-8", encoding_errors="replace")
+def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> bool:
+    """Enrich a CSV and write to parquet. Returns False if the file was empty/unreadable."""
+    try:
+        df = pd.read_csv(source_file, encoding="utf-8", encoding_errors="replace")
+    except pd.errors.EmptyDataError:
+        return False
+    if df.empty or len(df.columns) == 0:
+        return False
     if "BILLED_AMOUNT" in df.columns and "TOTAL_AMT" not in df.columns:
         df["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
     if "SDO_CODE" in df.columns and "SUB_DIV_CODE" not in df.columns:
@@ -67,14 +80,19 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
         df = df.merge(supp, on="SUPPLY_TYPE", how="left")
 
     unit = df.get("LOAD_UNIT", "").astype(str).str.upper().str.strip()
-    load = pd.to_numeric(df.get("LOAD", 0), errors="coerce")
-    load_kw = pd.Series(pd.NA, index=df.index, dtype="float64")
+    load = pd.to_numeric(df.get("LOAD", 0), errors="coerce").fillna(0.0)
+    load_kw = pd.Series(float("nan"), index=df.index, dtype="float64")
     load_kw = load_kw.mask(unit.eq("KW"), load.round(0))
     load_kw = load_kw.mask(unit.eq("KVA"), load.round(0) * 0.9)
     load_kw = load_kw.mask(unit.isin(["HP", "BHP"]), load.round(0) * 0.746)
     df["LOAD_KW"] = load_kw
     df["MONTH"] = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%b_%Y").upper()
+    # Convert mixed-type object columns to string to prevent ArrowInvalid errors
+    for col in df.columns:
+        if df[col].dtype == "object":
+            df[col] = df[col].astype(str)
     df.to_parquet(target_file, compression=compression, index=False)
+    return True
 
 
 def _previous_month_label(month_label: str) -> str | None:
@@ -448,7 +466,10 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     message=f"Processing file {index}/{len(files)}...",
                 )
                 if lookup_mode:
-                    _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp)
+                    if not _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp):
+                        skipped_files += 1
+                        _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files, message=f"Skipping empty file ({index}/{len(files)}).")
+                        continue
                 else:
                     relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                     target_sql = _sql_string_literal(str(target_file))
@@ -595,7 +616,9 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
                     skipped_count += 1
                     continue
                 if lookup_mode:
-                    _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp)
+                    if not _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp):
+                        skipped_count += 1
+                        continue
                 else:
                     relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                     target_sql = _sql_string_literal(str(target_file))

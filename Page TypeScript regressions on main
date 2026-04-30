@@ -1,0 +1,30 @@
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{0}: reset: moving to origin/main
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{1}: reset: moving to origin/main
+[33md2ad08c[m HEAD@{2}: commit: Fix SidebarToolsPage TypeScript regressions on main
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{3}: checkout: moving from main to main
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{4}: reset: moving to origin/main
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{5}: reset: moving to origin/main
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{6}: reset: moving to origin/main
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{7}: checkout: moving from main to main
+[33m0c3208a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{8}: pull --tags origin main: Fast-forward
+[33m63fb7e8[m HEAD@{9}: pull --tags origin main: Fast-forward
+[33mcfad65e[m HEAD@{10}: pull --tags origin main: Fast-forward
+[33m77ff185[m HEAD@{11}: checkout: moving from main to main
+[33m77ff185[m HEAD@{12}: pull --tags origin main: Fast-forward
+[33mba18463[m HEAD@{13}: pull --tags origin main: Fast-forward
+[33m4048fcc[m HEAD@{14}: pull --tags origin main: Fast-forward
+[33mc2b6248[m HEAD@{15}: pull --tags origin main: Fast-forward
+[33m870eb17[m HEAD@{16}: pull --tags origin main: Fast-forward
+[33mbc79ceb[m HEAD@{17}: pull --tags origin main: Fast-forward
+[33m8bff17d[m HEAD@{18}: pull --tags origin main: Fast-forward
+[33mec5cb62[m HEAD@{19}: pull --tags origin main: Fast-forward
+[33m635937b[m HEAD@{20}: pull --tags origin main: Fast-forward
+[33m932d2f5[m HEAD@{21}: pull --tags origin main: Fast-forward
+[33md7dda35[m HEAD@{22}: pull --tags origin main: Fast-forward
+[33m154cd20[m HEAD@{23}: pull --tags origin main: Fast-forward
+[33mb061fac[m HEAD@{24}: pull --tags origin main: Fast-forward
+[33m576e720[m HEAD@{25}: pull --tags origin main: Fast-forward
+[33m9d6e7e9[m HEAD@{26}: pull --tags origin main: Fast-forward
+[33m859843a[m HEAD@{27}: pull --tags origin main: Fast-forward
+[33m878a3e6[m HEAD@{28}: pull --tags origin main: Fast-forward
+[33m08714e7[m HEAD@{29}: pull --tags origin main: Fast-forward

@@ -4,13 +4,8 @@
 
 // @ts-nocheck
 import { useState } from "react";
-import { enrichData, mergeSheets, uploadSheets } from "../api/mergeApi";
-import type {
-  ColumnResolution,
-  CompositeKey,
-  ConflictResolutionMap,
-  MergeWizardState,
-} from "../types/merge.types";
+import { enrichData, uploadSheets } from "../api/mergeApi";
+import type { MergeWizardState } from "../types/merge.types";
 
 function getRequestErrorMessage(err: any, fallback: string, operation: "upload" | "merge" | "enrich"): string {
   const detail = err?.response?.data?.detail;
@@ -37,9 +32,6 @@ export function useMergeWizard() {
   const [state, setState] = useState<MergeWizardState>({
     step: "upload",
     uploadResult: null,
-    resolutions: [],
-    compositeKey: null,
-    mergeResult: null,
     enrichResult: null,
     isLoading: false,
     error: null,
@@ -49,13 +41,10 @@ export function useMergeWizard() {
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
     try {
       const result = await uploadSheets(files);
-      const initialResolutions: ColumnResolution[] = [];
-
       setState((prev) => ({
         ...prev,
         step: "enrich",
         uploadResult: result,
-        resolutions: initialResolutions,
         isLoading: false,
         uploadedFile: files[0],
       }));
@@ -68,31 +57,7 @@ export function useMergeWizard() {
     }
   };
 
-  const handleResolveConflicts = async (resolutions: ColumnResolution[], compositeKey: CompositeKey) => {
-    if (!state.uploadResult) return;
 
-    setState((prev) => ({ ...prev, isLoading: true, error: null, resolutions, compositeKey }));
-    try {
-      const payload: ConflictResolutionMap = {
-        file_ids: state.uploadResult.file_ids,
-        resolutions,
-        composite_key: compositeKey,
-      };
-      const result = await mergeSheets(payload);
-      setState((prev) => ({
-        ...prev,
-        step: "enrich",
-        mergeResult: result,
-        isLoading: false,
-      }));
-    } catch (err: any) {
-      setState((prev) => ({
-        ...prev,
-        isLoading: false,
-        error: getRequestErrorMessage(err, "Failed to merge sheets", "merge"),
-      }));
-    }
-  };
 
   const handleEnrich = async (
     masterTable: string,
@@ -155,9 +120,6 @@ export function useMergeWizard() {
     setState({
       step: "upload",
       uploadResult: null,
-      resolutions: [],
-      compositeKey: null,
-      mergeResult: null,
       enrichResult: null,
       isLoading: false,
       error: null,
@@ -167,7 +129,6 @@ export function useMergeWizard() {
   return {
     state,
     handleUpload,
-    handleResolveConflicts,
     handleEnrich,
     resetWizard,
   };

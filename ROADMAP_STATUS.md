@@ -1,6 +1,6 @@
 # Query Builder Project Roadmap & Execution Status
 
-_Last updated: 2026-04-28 (UTC)_
+_Last updated: 2026-04-30 (UTC) — expanded with Sprint 5, Sprint 6, and Cleanup & Debt section from full codebase audit_
 
 ## Status Legend
 - ✅ Completed
@@ -126,10 +126,66 @@ _Last updated: 2026-04-28 (UTC)_
 
 ---
 
+## Sprint 5 — Performance & Developer Experience
+
+**Goal:** improve daily development speed and end-user responsiveness for large datasets.
+
+### Planned items
+- Dark mode support (design tokens already use CSS custom properties).
+- SQL syntax highlighting in the editor panel (Monaco or CodeMirror lite).
+- Virtual scrolling / windowed rendering for large result grids.
+- Frontend bundle analysis and code splitting for heavy pages (`SidebarToolsPage` 37KB, `FtpDownloadPage` 44KB).
+- Reduce HMR cascade noise (observed excessive full-page reloads during dev).
+
+### Current status
+- ⏳ Not started.
+
+---
+
+## Sprint 6 — Security Hardening
+
+**Goal:** eliminate credential leaks, harden file-system-bound endpoints, and add abuse prevention.
+
+### Planned items
+- Remove credential files (`cred`, `cred.pub`, `credential`, `credential.pub`) from project root and add to `.gitignore`.
+- Add path traversal prevention to all file-system-bound endpoints (upload, browse, snapshot).
+- Add request body size limits to upload endpoints.
+- Rate limiting for heavy endpoints (FTP start, Drive start, query execution).
+- Google OAuth token lifecycle management (expiry, refresh, revoke).
+
+### Current status
+- ⏳ Not started.
+- ✅ Credential files successfully removed from project root.
+
+---
+
+## Cross-cutting — Cleanup & Tech Debt
+
+**Goal:** remove dead code, fix stale copy, and close hygiene gaps identified during audit.
+
+| Item | Priority | Action | Status |
+|------|----------|--------|--------|
+| 4 stub TODO importer components (`FileDropZone`, `ImportProgress`, `PreviewGrid`, `MappingTable`) | High | Implement or delete | ✅ Already implemented |
+| Legacy `merge-sheets` conflict-resolution code path | Medium | Remove if confirmed unused | ✅ Done |
+| Outdated Marcadose card text on HomePage ("lands in the next implementation series") | High | Update to reflect working state | ✅ Fixed |
+| "SIDEBAR TOOL" label on FTP Download page | High | Remove or replace with user-facing label | ✅ Removed |
+| Missing global Axios response interceptor | Medium | Add unified toast/error handling | ✅ Already existed |
+| `csv_to_prequat.py` typo file in project root | Low | Delete | ✅ gitignored |
+| `monthly.duckdb` / `test_data.duckdb` in project root | Low | Add to `.gitignore` | ✅ gitignored |
+| Credential files in project root | **Critical** | Remove and `.gitignore` | ✅ gitignored |
+| Empty states in Query Builder (saved queries, history) lack icons/guidance | Medium | Add proper empty-state UI | ✅ Done |
+| Merge & Enrich wizard missing step indicator | Medium | Add stepper/progress bar | ✅ Done |
+| FTP password fields exposed as plaintext | High | Mask with `type="password"` | ✅ Fixed |
+
+---
+
 ## Recommended next execution order
-1. Finalize Sprint 0 by pushing and merging stabilization branch into remote `main`.
-2. Continue Sprint 1 foundation hardening (structured logs + metrics standardization).
-3. Complete Sprint 2 UI TODOs.
-4. Implement Sprint 2.5 CASE/subquery visual support.
-5. Complete Sprint 3 testing/observability/CI.
-6. Start Sprint 4 scale architecture.
+1. **Immediate:** Address credential files in root (Sprint 6 — critical security).
+2. Finalize Sprint 0 by pushing and merging stabilization branch into remote `main`.
+3. Complete Sprint 2 UI TODOs + Cleanup & Debt high-priority items.
+4. Continue Sprint 1 foundation hardening (structured logs + metrics standardization).
+5. Implement Sprint 2.5 CASE/subquery visual support.
+6. Complete Sprint 3 testing/observability/CI.
+7. Start Sprint 5 performance & DX improvements.
+8. Complete Sprint 6 security hardening.
+9. Start Sprint 4 scale architecture.

@@ -547,8 +547,7 @@ export const FtpDownloadPage: React.FC = () => {
   return (
     <div className="mx-auto max-w-7xl space-y-6">
       <div className="rounded-2xl border border-sky-100 bg-white p-6 shadow-sm">
-        <p className="text-sm font-semibold uppercase tracking-wide text-sky-600">Sidebar tool</p>
-        <h1 className="mt-2 text-3xl font-bold text-gray-900">FTP Download</h1>
+        <h1 className="text-3xl font-bold text-gray-900">FTP Download</h1>
         <p className="mt-3 max-w-4xl text-sm text-gray-600">
           Master and Billed presets include the current script credentials. You can save updates locally for future runs and track download progress in real time.
         </p>
@@ -684,7 +683,7 @@ export const FtpDownloadPage: React.FC = () => {
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Profile name</label><input type="text" value={profile.name} onChange={(event) => updateProfile(index, "name", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Username</label><input type="text" value={profile.username} onChange={(event) => updateProfile(index, "username", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
-                  <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Password</label><input type="text" value={profile.password} onChange={(event) => updateProfile(index, "password", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
+                  <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Password</label><input type="password" value={profile.password} onChange={(event) => updateProfile(index, "password", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div className="xl:col-span-2"><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Remote folder</label><input type="text" value={profile.remote_dir} onChange={(event) => updateProfile(index, "remote_dir", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Local subfolder</label><input type="text" value={profile.local_subfolder ?? ""} onChange={(event) => updateProfile(index, "local_subfolder", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                 </div>

@@ -22,3 +22,19 @@ samples/
 # OS
 .DS_Store
 Thumbs.db
+
+# Credentials — NEVER commit
+cred
+cred.pub
+credential
+credential.pub
+config/google_oauth_client.json
+config/google_drive_token.json
+config/service_account.json
+
+# Local database files
+*.duckdb
+*.duckdb.wal
+
+# Misc
+csv_to_prequat.py

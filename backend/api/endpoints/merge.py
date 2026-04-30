@@ -10,12 +10,10 @@ from fastapi.responses import StreamingResponse
 
 from backend.api.deps import get_connected_db
 from backend.models.merge import (
-    ConflictResolutionMap,
     DetectedColumn,
     EnrichmentResponse,
     FolderMergeRequest,
     FolderMergeResponse,
-    MergeSheetsResponse,
     UploadSheetsResponse,
 )
 from backend.services.duckdb_service import DuckDBService
@@ -90,26 +88,7 @@ async def upload_sheets(
     )
 
 
-@router.post(
-    "/merge-sheets",
-    response_model=MergeSheetsResponse,
-    summary="Apply conflict resolution and merge uploaded sheets",
-    description=(
-        "Accepts the ConflictResolutionMap from the UI, applies column "
-        "renaming/ignoring, concatenates the resolved sheets into a single "
-        "dataset, and returns a preview with the merge_id for enrichment."
-    ),
-)
-async def merge_sheets(
-    payload: ConflictResolutionMap,
-    db: DuckDBService = Depends(get_connected_db),
-) -> MergeSheetsResponse:
-    del payload
-    del db
-    # TODO: Load uploaded files by file_ids, apply resolutions,
-    # concatenate into a single DataFrame, store as temp table,
-    # and return merge_id plus preview.
-    raise HTTPException(status_code=501, detail="Merge sheets flow is not implemented yet.")
+
 
 
 @router.post(

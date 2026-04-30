@@ -18,25 +18,6 @@ export interface UploadSheetsResponse {
   conflicts: string[];
 }
 
-export interface ColumnResolution {
-  source_file: string;
-  source_column: string;
-  action: "map" | "ignore";
-  standard_name?: string;
-}
-
-export interface ConflictResolutionMap {
-  file_ids: string[];
-  resolutions: ColumnResolution[];
-  composite_key: CompositeKey;
-}
-
-export interface MergeSheetsResponse {
-  merged_columns: string[];
-  total_rows: number;
-  preview_rows: Record<string, unknown>[];
-  merge_id: string;
-}
 
 export interface FolderMergeRequest {
   source_folder: string;
@@ -70,11 +51,8 @@ export interface EnrichmentResponse {
 }
 
 export interface MergeWizardState {
-  step: "upload" | "resolve" | "enrich" | "download";
+  step: "upload" | "enrich" | "download";
   uploadResult: UploadSheetsResponse | null;
-  resolutions: ColumnResolution[];
-  compositeKey: CompositeKey | null;
-  mergeResult: MergeSheetsResponse | null;
   enrichResult: EnrichmentResponse | null;
   isLoading: boolean;
   error: string | null;

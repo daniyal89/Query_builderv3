@@ -734,7 +734,10 @@ WHERE 1 = 1`;
                 </div>
                 <div className="max-h-36 space-y-2 overflow-y-auto">
                   {savedQueries.length === 0 ? (
-                    <p className="text-xs text-slate-500">No saved queries yet.</p>
+                    <div className="flex flex-col items-center gap-1 py-3 text-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" /></svg>
+                      <p className="text-xs text-slate-400">Name and save a query above to reuse it later.</p>
+                    </div>
                   ) : (
                     savedQueries.map((item) => (
                       <div
@@ -766,7 +769,10 @@ WHERE 1 = 1`;
                 </p>
                 <div className="max-h-36 space-y-2 overflow-y-auto">
                   {queryHistory.length === 0 ? (
-                    <p className="text-xs text-slate-500">No query history yet.</p>
+                    <div className="flex flex-col items-center gap-1 py-3 text-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <p className="text-xs text-slate-400">Run a query to see recent history here.</p>
+                    </div>
                   ) : (
                     queryHistory.map((item) => (
                       <div

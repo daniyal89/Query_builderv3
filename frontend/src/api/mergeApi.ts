@@ -4,10 +4,8 @@
 
 import apiClient from "./client";
 import type {
-  ConflictResolutionMap,
   FolderMergeRequest,
   FolderMergeResponse,
-  MergeSheetsResponse,
   UploadSheetsResponse,
 } from "../types/merge.types";
 
@@ -25,11 +23,6 @@ export async function uploadSheets(files: File[]): Promise<UploadSheetsResponse>
     },
     timeout: LONG_RUNNING_TIMEOUT_MS,
   });
-  return response.data;
-}
-
-export async function mergeSheets(payload: ConflictResolutionMap): Promise<MergeSheetsResponse> {
-  const response = await apiClient.post<MergeSheetsResponse>("/merge-sheets", payload);
   return response.data;
 }
 

@@ -7,14 +7,22 @@
 
 /** Format a number with locale-aware thousand separators. */
 export function formatNumber(value: number): string {
-  // TODO: Implement with Intl.NumberFormat
-  return String(value);
+  if (value == null) return "";
+  return new Intl.NumberFormat().format(value);
 }
 
 /** Format a date string or Date object into a readable format. */
 export function formatDate(value: string | Date): string {
-  // TODO: Implement with Intl.DateTimeFormat
-  return String(value);
+  if (!value) return "";
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 /** Truncate a string to maxLength, appending "…" if truncated. */

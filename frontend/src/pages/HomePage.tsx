@@ -62,8 +62,7 @@ export const HomePage: React.FC = () => {
           <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Remote</p>
           <h2 className="mt-2 text-xl font-semibold text-gray-900">Query Builder (Marcadose)</h2>
           <p className="mt-2 text-sm text-gray-500">
-            Save Oracle credentials in the browser now. Read-only Oracle execution lands in the next implementation
-            series.
+            Connect to Marcadose Oracle for read-only queries, monthly master table selection, and DISCOM UNION reports.
           </p>
           <div className="mt-4 flex items-center justify-between gap-4">
             <Link to="/query/marcadose" className="inline-flex text-sm font-semibold text-blue-600 hover:text-blue-800">
