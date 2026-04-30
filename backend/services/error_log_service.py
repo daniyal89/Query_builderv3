@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-import json
-import threading
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
-
 from fastapi import Request
+
+from backend.utils.logger import app_logger
 
 
 class ErrorLogService:
-    """Persist API error events into samples/error for local troubleshooting."""
-
-    REPO_ROOT = Path(__file__).resolve().parents[2]
-    ERROR_DIR = REPO_ROOT / "samples" / "error"
-    ERROR_FILE = ERROR_DIR / "errors.log"
-    _lock = threading.Lock()
+    """Wrapper over the central structured logger for backward compatibility."""
 
     @staticmethod
     def _request_context(request: Request) -> dict[str, Any]:
@@ -31,15 +23,8 @@ class ErrorLogService:
 
     @classmethod
     def append(cls, event: dict[str, Any]) -> None:
-        payload = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            **event,
-        }
-        cls.ERROR_DIR.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(payload, ensure_ascii=False)
-        with cls._lock:
-            with cls.ERROR_FILE.open("a", encoding="utf-8") as handle:
-                handle.write(f"{line}\n")
+        """Legacy generic append method."""
+        app_logger.error(event.get("error", "Error logged via append"), extra_info=event)
 
     @classmethod
     def append_request_error(
@@ -58,10 +43,12 @@ class ErrorLogService:
             "error": error,
             "detail": detail,
             "exception_type": exception_type,
+            "event": "request_error",
         }
         if extra:
             payload.update(extra)
-        cls.append(payload)
+        
+        app_logger.error(f"Request Error: {request.method} {request.url.path} - {error}", extra_info=payload)
 
     @classmethod
     def append_system_event(cls, *, event: str, detail: str, extra: dict[str, Any] | None = None) -> None:
@@ -72,4 +59,5 @@ class ErrorLogService:
         }
         if extra:
             payload.update(extra)
-        cls.append(payload)
+            
+        app_logger.info(f"System Event: {event}", extra_info=payload)

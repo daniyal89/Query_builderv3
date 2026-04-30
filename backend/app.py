@@ -8,6 +8,7 @@ configures the SPA fallback so React Router handles client-side routes.
 
 from pathlib import Path
 import subprocess
+import time
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +19,7 @@ from backend.config import settings
 from backend.api.router import api_router
 from backend.services.error_log_service import ErrorLogService
 from backend.utils.exceptions import register_exception_handlers
+from backend.utils.logger import app_logger
 
 
 def create_app() -> FastAPI:
@@ -59,11 +61,31 @@ def create_app() -> FastAPI:
         )
 
     @application.middleware("http")
-    async def attach_request_id(request: Request, call_next):
+    async def attach_request_id_and_log(request: Request, call_next):
         request_id = request.headers.get("x-request-id") or str(uuid4())
         request.state.request_id = request_id
+        
+        start_time = time.perf_counter()
+        
         response = await call_next(request)
+        
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
         response.headers["X-Request-ID"] = request_id
+        
+        # Log successful requests and handled client errors (exclude static files to reduce noise)
+        if request.url.path.startswith("/api/"):
+            app_logger.info(
+                f"{request.method} {request.url.path} {response.status_code}",
+                extra_info={
+                    "event": "api_request",
+                    "method": request.method,
+                    "endpoint": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                    "request_id": request_id,
+                }
+            )
+            
         return response
 
     @application.exception_handler(HTTPException)
