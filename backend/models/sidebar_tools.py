@@ -45,10 +45,14 @@ class CsvToParquetRequest(BaseModel):
         description="Output parquet folder path (or explicit .parquet file path for single-file mode).",
     )
     compression: str = Field(default="zstd", description="Parquet compression codec.")
+    hir_file: str | None = Field(default=None, description="Optional HIR Excel file path for enrichment join.")
+    supp_mapper_file: str | None = Field(default=None, description="Optional suppMapper Excel file path for enrichment join.")
 
-    @field_validator("input_path", "output_path")
+    @field_validator("input_path", "output_path", "hir_file", "supp_mapper_file")
     @classmethod
-    def validate_paths(cls, value: str) -> str:
+    def validate_paths(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return sanitize_local_path_input(value, "path")
 
     @field_validator("compression")

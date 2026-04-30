@@ -13,6 +13,8 @@ export interface CsvToParquetPayload {
   input_path: string;
   output_path: string;
   compression: string;
+  hir_file?: string;
+  supp_mapper_file?: string;
 }
 
 export interface SidebarToolResponse {

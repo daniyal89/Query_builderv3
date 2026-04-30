@@ -61,6 +61,8 @@ function readInitialParquetForm() {
     input_path: "./data/MAR_2026/*.csv.gz",
     output_path: "./parquet/MAR_2026",
     compression: "zstd",
+    hir_file: "",
+    supp_mapper_file: "",
   };
   try {
     const raw = window.localStorage.getItem(PARQUET_FORM_STORAGE_KEY);
@@ -70,6 +72,8 @@ function readInitialParquetForm() {
       input_path: typeof parsed.input_path === "string" ? parsed.input_path : fallback.input_path,
       output_path: typeof parsed.output_path === "string" ? parsed.output_path : fallback.output_path,
       compression: typeof parsed.compression === "string" ? parsed.compression : fallback.compression,
+      hir_file: typeof parsed.hir_file === "string" ? parsed.hir_file : fallback.hir_file,
+      supp_mapper_file: typeof parsed.supp_mapper_file === "string" ? parsed.supp_mapper_file : fallback.supp_mapper_file,
     };
   } catch {
     return fallback;
@@ -246,6 +250,8 @@ export const SidebarToolsPage: React.FC = () => {
     input_path: initialParquetForm.input_path,
     output_path: initialParquetForm.output_path,
     compression: initialParquetForm.compression,
+    hir_file: initialParquetForm.hir_file,
+    supp_mapper_file: initialParquetForm.supp_mapper_file,
   });
   const [buildMessage, setBuildMessage] = useState(initialBuildStatus.message);
   const [buildJobId, setBuildJobId] = useState<string | null>(initialBuildStatus.jobId);
@@ -391,6 +397,8 @@ export const SidebarToolsPage: React.FC = () => {
       input_path: uppclPresetPaths.parquet_input_path,
       output_path: uppclPresetPaths.parquet_output_path,
       compression: "snappy",
+      hir_file: "",
+      supp_mapper_file: "",
     });
     setStatusNote("UPPCL preset applied. Adjust month/path values if needed.");
   };
@@ -455,7 +463,11 @@ export const SidebarToolsPage: React.FC = () => {
     }
     setParquetMessage("");
     try {
-      const started = await startCsvToParquetJob(parquetForm);
+      const started = await startCsvToParquetJob({
+        ...parquetForm,
+        hir_file: parquetForm.hir_file.trim() || undefined,
+        supp_mapper_file: parquetForm.supp_mapper_file.trim() || undefined,
+      });
       setParquetJobId(started.job_id);
       setParquetStatus({
         job_id: started.job_id,
@@ -725,6 +737,36 @@ export const SidebarToolsPage: React.FC = () => {
           <Field label="Compression codec" help="Recommended: snappy or zstd">
             <input className="w-full rounded border p-2" value={parquetForm.compression} onChange={(e) => setParquetForm((p) => ({ ...p, compression: e.target.value }))} />
           </Field>
+          <Field label="HIR lookup Excel (optional)" help="When provided with suppMapper, conversion enriches rows and adds LOAD_KW.">
+            <div className="flex gap-2">
+              <input className="w-full rounded border p-2" value={parquetForm.hir_file} onChange={(e) => setParquetForm((p) => ({ ...p, hir_file: e.target.value }))} />
+              <button
+                type="button"
+                onClick={async () => {
+                  const path = await pickSystemFile("data");
+                  if (path) setParquetForm((p) => ({ ...p, hir_file: path }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                File...
+              </button>
+            </div>
+          </Field>
+          <Field label="suppMapper Excel (optional)" help="When provided with HIR, joins SUPPLY_TYPE and adds CATEGORY columns.">
+            <div className="flex gap-2">
+              <input className="w-full rounded border p-2" value={parquetForm.supp_mapper_file} onChange={(e) => setParquetForm((p) => ({ ...p, supp_mapper_file: e.target.value }))} />
+              <button
+                type="button"
+                onClick={async () => {
+                  const path = await pickSystemFile("data");
+                  if (path) setParquetForm((p) => ({ ...p, supp_mapper_file: path }));
+                }}
+                className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                File...
+              </button>
+            </div>
+          </Field>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button onClick={runParquet} disabled={isParquetRunning} className="rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60">
@@ -736,7 +778,7 @@ export const SidebarToolsPage: React.FC = () => {
             </button>
           )}
         </div>
-        <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_parquet.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}`}</pre>
+        <pre className="mt-3 overflow-x-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{`python csv_to_parquet.py --input "${parquetForm.input_path}" --output "${parquetForm.output_path}" --compression ${parquetForm.compression}${parquetForm.hir_file ? ` --hir-file "${parquetForm.hir_file}"` : ""}${parquetForm.supp_mapper_file ? ` --supp-mapper-file "${parquetForm.supp_mapper_file}"` : ""}`}</pre>
         {parquetStatus && (
           <div className="mt-3 rounded-xl border border-indigo-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">

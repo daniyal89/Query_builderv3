@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import duckdb
+import pandas as pd
 from fastapi import APIRouter, HTTPException, status
 from backend.services.error_log_service import ErrorLogService
 
@@ -33,6 +34,47 @@ BUILD_DUCKDB_JOBS: dict[str, dict[str, Any]] = {}
 BUILD_DUCKDB_CANCEL_EVENTS: dict[str, threading.Event] = {}
 BUILD_DUCKDB_JOBS_LOCK = threading.Lock()
 MIN_PARQUET_FILE_BYTES = 16
+
+
+def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    hir_raw = pd.read_excel(hir_file)
+    hir_raw["DIV_CODE"] = hir_raw.get("DIV_CODE", "").astype(str)
+    hir_div = hir_raw[["DIV_CODE", "DISCOM", "CIR_SP_ID", "ZON_SP_ID", "DIV_NAME", "CIRCLE_NAME", "ZONE_NAME"]].drop_duplicates("DIV_CODE")
+    hir_sdo = hir_raw[["SDO_SP_ID", "SDO_NAME"]].rename(columns={"SDO_SP_ID": "SUB_DIV_CODE"}).drop_duplicates("SUB_DIV_CODE")
+
+    supp = pd.read_excel(supp_mapper_file)
+    supp["SUPPLY_TYPE"] = supp.get("SUPPLY_TYPE", "").astype(str)
+    supp = supp.drop_duplicates("SUPPLY_TYPE")
+    return hir_div, hir_sdo, supp
+
+
+def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> None:
+    df = pd.read_csv(source_file, encoding="utf-8", encoding_errors="replace")
+    if "BILLED_AMOUNT" in df.columns and "TOTAL_AMT" not in df.columns:
+        df["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
+    if "SDO_CODE" in df.columns and "SUB_DIV_CODE" not in df.columns:
+        df["SUB_DIV_CODE"] = df["SDO_CODE"].astype(str)
+    df["ACCT_ID"] = df.get("ACCT_ID", "").astype(str)
+    df = df[df["ACCT_ID"].str.fullmatch(r"\d+", na=False)]
+    if "DIV_CODE" in df.columns:
+        df["DIV_CODE"] = df["DIV_CODE"].astype(str)
+        df = df.merge(hir_div, on="DIV_CODE", how="left")
+    if "SUB_DIV_CODE" in df.columns:
+        df["SUB_DIV_CODE"] = df["SUB_DIV_CODE"].astype(str)
+        df = df.merge(hir_sdo, on="SUB_DIV_CODE", how="left")
+    if "SUPPLY_TYPE" in df.columns:
+        df["SUPPLY_TYPE"] = df["SUPPLY_TYPE"].astype(str)
+        df = df.merge(supp, on="SUPPLY_TYPE", how="left")
+
+    unit = df.get("LOAD_UNIT", "").astype(str).str.upper().str.strip()
+    load = pd.to_numeric(df.get("LOAD", 0), errors="coerce")
+    load_kw = pd.Series(pd.NA, index=df.index, dtype="float64")
+    load_kw = load_kw.mask(unit.eq("KW"), load.round(0))
+    load_kw = load_kw.mask(unit.eq("KVA"), load.round(0) * 0.9)
+    load_kw = load_kw.mask(unit.isin(["HP", "BHP"]), load.round(0) * 0.746)
+    df["LOAD_KW"] = load_kw
+    df["MONTH"] = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%b_%Y").upper()
+    df.to_parquet(target_file, compression=compression, index=False)
 
 
 def _previous_month_label(month_label: str) -> str | None:
@@ -368,6 +410,9 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
         files, output_root, input_root, single_target = _build_csv_to_parquet_targets(payload)
         output_root.mkdir(parents=True, exist_ok=True)
         compression_sql = _sql_string_literal(payload.compression)
+        lookup_mode = bool(payload.hir_file and payload.supp_mapper_file)
+        if lookup_mode:
+            hir_div, hir_sdo, supp = _load_lookup_tables(payload.hir_file or "", payload.supp_mapper_file or "")
         reported_output_path = str(single_target if single_target is not None else output_root)
         _update_csv_job(job_id, status="running", total_files=len(files), output_path=reported_output_path, skipped_files=0)
         skipped_files = 0
@@ -395,8 +440,6 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                         message=f"Skipping existing parquet file ({index}/{len(files)}).",
                     )
                     continue
-                relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
-                target_sql = _sql_string_literal(str(target_file))
                 _update_csv_job(
                     job_id,
                     processed_files=index - 1,
@@ -404,10 +447,15 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     current_file=str(source_file),
                     message=f"Processing file {index}/{len(files)}...",
                 )
-                conn.execute(
-                    f"COPY (SELECT * FROM {relation_sql}) "
-                    f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
-                )
+                if lookup_mode:
+                    _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp)
+                else:
+                    relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
+                    target_sql = _sql_string_literal(str(target_file))
+                    conn.execute(
+                        f"COPY (SELECT * FROM {relation_sql}) "
+                        f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                    )
                 _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files)
 
         _update_csv_job(
@@ -417,6 +465,7 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
             message=(
                 f"Parquet conversion completed successfully for {len(files)} file(s). "
                 f"Skipped existing: {skipped_files}."
+                + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
             ),
             finished_at=datetime.now().isoformat(timespec="seconds"),
             skipped_files=skipped_files,
@@ -504,6 +553,9 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
             raise ValueError(f"No readable files matched '{resolved_input}'.")
 
         compression_sql = _sql_string_literal(payload.compression)
+        lookup_mode = bool(payload.hir_file and payload.supp_mapper_file)
+        if lookup_mode:
+            hir_div, hir_sdo, supp = _load_lookup_tables(payload.hir_file or "", payload.supp_mapper_file or "")
 
         # Single-file mode keeps backward compatibility when output is an explicit parquet file.
         if len(matched_files) == 1 and output_path.suffix.lower() == ".parquet":
@@ -516,12 +568,15 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
             output_path_sql = _sql_string_literal(str(output_path))
             relation_sql = _resolve_csv_parquet_read_sql(str(matched_files[0]))
             with duckdb.connect() as conn:
-                conn.execute(
-                    f"COPY (SELECT * FROM {relation_sql}) "
-                    f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
-                )
+                if lookup_mode:
+                    _apply_csv_enrichment(matched_files[0], output_path, payload.compression, hir_div, hir_sdo, supp)
+                else:
+                    conn.execute(
+                        f"COPY (SELECT * FROM {relation_sql}) "
+                        f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                    )
             return SidebarToolResponse(
-                message="Parquet conversion completed successfully.",
+                message="Parquet conversion completed successfully." + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else ""),
                 output_path=str(output_path),
             )
 
@@ -539,16 +594,20 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
                 if target_file.exists():
                     skipped_count += 1
                     continue
-                relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
-                target_sql = _sql_string_literal(str(target_file))
-                conn.execute(
-                    f"COPY (SELECT * FROM {relation_sql}) "
-                    f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
-                )
+                if lookup_mode:
+                    _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp)
+                else:
+                    relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
+                    target_sql = _sql_string_literal(str(target_file))
+                    conn.execute(
+                        f"COPY (SELECT * FROM {relation_sql}) "
+                        f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                    )
                 converted_count += 1
 
         return SidebarToolResponse(
-            message=f"Parquet conversion completed successfully for {converted_count} file(s). Skipped existing: {skipped_count}.",
+            message=f"Parquet conversion completed successfully for {converted_count} file(s). Skipped existing: {skipped_count}."
+            + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else ""),
             output_path=str(output_root),
         )
     except Exception as exc:
