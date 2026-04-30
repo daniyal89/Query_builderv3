@@ -13,12 +13,30 @@ export interface CsvToParquetPayload {
   input_path: string;
   output_path: string;
   compression: string;
+  hir_file?: string;
+  supp_mapper_file?: string;
 }
 
 export interface SidebarToolResponse {
   status: string;
   message: string;
   output_path?: string;
+}
+
+export interface BuildDuckDbJobStartResponse {
+  job_id: string;
+  status: "queued" | "running" | "cancelling" | "cancelled" | "completed" | "failed";
+  message: string;
+}
+
+export interface BuildDuckDbJobStatusResponse {
+  job_id: string;
+  status: "queued" | "running" | "cancelling" | "cancelled" | "completed" | "failed";
+  message: string;
+  output_path?: string | null;
+  progress_percent: number;
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
 export interface CsvParquetJobStartResponse {
@@ -33,6 +51,7 @@ export interface CsvParquetJobStatusResponse {
   message: string;
   processed_files: number;
   total_files: number;
+  skipped_files: number;
   current_file?: string | null;
   output_path?: string | null;
   started_at?: string | null;
@@ -41,6 +60,21 @@ export interface CsvParquetJobStatusResponse {
 
 export async function runBuildDuckDb(payload: BuildDuckDbPayload): Promise<SidebarToolResponse> {
   const { data } = await apiClient.post<SidebarToolResponse>("/sidebar-tools/build-duckdb", payload);
+  return data;
+}
+
+export async function startBuildDuckDbJob(payload: BuildDuckDbPayload): Promise<BuildDuckDbJobStartResponse> {
+  const { data } = await apiClient.post<BuildDuckDbJobStartResponse>("/sidebar-tools/build-duckdb/start", payload);
+  return data;
+}
+
+export async function getBuildDuckDbJobStatus(jobId: string): Promise<BuildDuckDbJobStatusResponse> {
+  const { data } = await apiClient.get<BuildDuckDbJobStatusResponse>(`/sidebar-tools/build-duckdb/status/${jobId}`);
+  return data;
+}
+
+export async function stopBuildDuckDbJob(jobId: string): Promise<BuildDuckDbJobStatusResponse> {
+  const { data } = await apiClient.post<BuildDuckDbJobStatusResponse>(`/sidebar-tools/build-duckdb/stop/${jobId}`);
   return data;
 }
 

@@ -5,6 +5,23 @@ import type { DriveAuthConfig, DriveAuthMode, DriveAuthStatusResponse, DriveJobS
 
 const STORAGE_KEY = "drive_upload_master_form_v2";
 const JOB_STORAGE_KEY = "drive_upload_master_job_v1";
+const formatDuration = (seconds: number) => {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+};
+
+const runSeconds = (startedAt?: string | null, finishedAt?: string | null, nowMs?: number) => {
+  if (!startedAt) return null;
+  const start = new Date(startedAt).getTime();
+  const end = finishedAt ? new Date(finishedAt).getTime() : (nowMs ?? Date.now());
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.floor((end - start) / 1000));
+};
 
 function getErrorMessage(error: unknown): string {
   if (
@@ -87,9 +104,10 @@ function buildAuth(state: FormState): DriveAuthConfig {
   };
 }
 
-const StatusCard: React.FC<{ status: DriveJobStatusResponse | null }> = ({ status }) => {
+const StatusCard: React.FC<{ status: DriveJobStatusResponse | null; nowMs: number }> = ({ status, nowMs }) => {
   if (!status) return null;
   const percent = status.total_items > 0 ? Math.min(100, Math.round((status.processed_items / status.total_items) * 100)) : 0;
+  const seconds = runSeconds(status.started_at, status.finished_at, nowMs);
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -109,6 +127,7 @@ const StatusCard: React.FC<{ status: DriveJobStatusResponse | null }> = ({ statu
         <div><b>Skipped</b><br />{status.skipped_items}</div>
         <div><b>Failed</b><br />{status.failed_items}</div>
       </div>
+      {seconds !== null && <p className="mt-3 text-xs text-slate-500">Runtime: {formatDuration(seconds)}</p>}
       {status.errors.length > 0 && (
         <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
           <b>Errors</b>
@@ -159,6 +178,7 @@ export const UploadMasterDrivePage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(initialJobState.isLoading);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -176,6 +196,12 @@ export const UploadMasterDrivePage: React.FC = () => {
   useEffect(() => {
     getDriveAuthStatus().then(setAuthStatus).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!isLoading) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isLoading]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -346,7 +372,7 @@ export const UploadMasterDrivePage: React.FC = () => {
         </div>
       </form>
 
-      <StatusCard status={status} />
+      <StatusCard status={status} nowMs={nowMs} />
     </div>
   );
 };

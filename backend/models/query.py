@@ -106,11 +106,11 @@ class PivotConfig(BaseModel):
 class MarcadoseUnionConfig(BaseModel):
     """Monthly Marcadose master-table replacement and UNION ALL configuration."""
 
-    enabled: bool = Field(default=False, description="Whether to expand the query across selected DISCOM tables.")
+    enabled: bool = Field(default=True, description="Whether to expand the query across selected DISCOM tables.")
     month_tag: str = Field(default="", description="Monthly tag used in CM_master_data_<month>_<discom>.")
     discoms: list[str] = Field(default_factory=list, description="Selected DISCOM codes.")
     base_discom: str = Field(default="DVVNL", description="Single/base DISCOM used when union mode is off.")
-    add_grand_total: bool = Field(default=False, description="Append a grand total row for Generate Report outputs.")
+    add_grand_total: bool = Field(default=True, description="Append a grand total row for Generate Report outputs.")
     schema_name: str = Field(default="MERCADOS", description="Oracle schema that owns monthly master tables.")
 
     @model_validator(mode="after")
