@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import settings
 from backend.api.router import api_router
 from backend.services.error_log_service import ErrorLogService
+from backend.services.job_runtime import job_runtime
 from backend.utils.exceptions import register_exception_handlers
 from backend.utils.logger import app_logger
 
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
 
     @application.on_event("startup")
     async def log_startup_version() -> None:
+        job_runtime.initialize()
         repo_root = Path(__file__).resolve().parents[1]
         commit = "unknown"
         summary = "unknown"
@@ -100,6 +102,7 @@ def create_app() -> FastAPI:
             )
         return JSONResponse(
             status_code=exc.status_code,
+            headers=exc.headers,
             content={
                 "error": "HTTPException",
                 "detail": exc.detail,

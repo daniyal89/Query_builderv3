@@ -248,12 +248,17 @@ class QueryBuilderService:
         return table_name.strip(), column_name.strip()
 
     @staticmethod
+    def _join_reference_name(join: Any) -> str:
+        return join.reference_name() if hasattr(join, "reference_name") else (getattr(join, "alias", None) or join.table).strip()
+
+    @staticmethod
     def _build_alias_map(payload: QueryPayload) -> dict[str, str]:
         aliases = {payload.table: "t0"}
         for index, join in enumerate(payload.joins, start=1):
-            if join.table in aliases:
-                raise ValueError(f"Joined table '{join.table}' is duplicated.")
-            aliases[join.table] = f"t{index}"
+            join_reference = QueryBuilderService._join_reference_name(join)
+            if join_reference in aliases:
+                raise ValueError(f"Joined table reference '{join_reference}' is duplicated.")
+            aliases[join_reference] = f"t{index}"
         return aliases
 
     @staticmethod
@@ -279,7 +284,8 @@ class QueryBuilderService:
         available_tables = {payload.table}
 
         for join in payload.joins:
-            join_alias = alias_by_table[join.table]
+            join_reference = QueryBuilderService._join_reference_name(join)
+            join_alias = alias_by_table[join_reference]
             join_conditions: list[str] = []
 
             for condition in join.conditions:
@@ -291,16 +297,16 @@ class QueryBuilderService:
                 right_table, _, right_expr = QueryBuilderService._resolve_column_expression(
                     condition.right_column,
                     alias_by_table,
-                    join.table,
+                    join_reference,
                 )
 
-                if left_table == join.table or left_table not in available_tables:
+                if left_table == join_reference or left_table not in available_tables:
                     raise ValueError(
-                        f"Join '{join.table}' can only reference the base table or earlier joins on the left side."
+                        f"Join '{join_reference}' can only reference the base table or earlier joins on the left side."
                     )
-                if right_table != join.table:
+                if right_table != join_reference:
                     raise ValueError(
-                        f"Join '{join.table}' must match against its own table on the right side of each condition."
+                        f"Join '{join_reference}' must match against its own table on the right side of each condition."
                     )
 
                 join_conditions.append(f"{left_expr} = {right_expr}")
@@ -309,7 +315,7 @@ class QueryBuilderService:
                 f"{join.join_type} JOIN {QueryBuilderService._quote_relation_identifier(join.table)} {join_alias} "
                 f"ON {' AND '.join(join_conditions)}"
             )
-            available_tables.add(join.table)
+            available_tables.add(join_reference)
 
         return " ".join(clauses)
 
@@ -320,24 +326,25 @@ class QueryBuilderService:
         engine: EngineName,
         start_param_index: int = 1,
     ) -> tuple[str, list[Any]]:
-        select_expressions: list[str] = []
+        computed_expressions: list[str] = []
+        selected_expressions: list[str] = []
         
         # Build computed columns from CASE expressions
         case_sqls, case_params = QueryBuilderService._build_case_expressions(
             payload, engine, alias_by_table, start_param_index
         )
-        select_expressions.extend(case_sqls)
+        computed_expressions.extend(case_sqls)
 
         # Build function columns
         func_sqls = QueryBuilderService._build_function_columns(payload, alias_by_table)
-        select_expressions.extend(func_sqls)
+        computed_expressions.extend(func_sqls)
 
         if not payload.select or payload.select == ["*"]:
             if payload.joins:
-                select_expressions.insert(0, ", ".join(f"{alias}.*" for alias in alias_by_table.values()))
+                selected_expressions.append(", ".join(f"{alias}.*" for alias in alias_by_table.values()))
             else:
-                select_expressions.insert(0, "*")
-            return ", ".join(select_expressions), case_params
+                selected_expressions.append("*")
+            return ", ".join([*selected_expressions, *computed_expressions]), case_params
 
         for column_ref in payload.select:
             table_name, column_name, expression = QueryBuilderService._resolve_column_expression(
@@ -347,11 +354,13 @@ class QueryBuilderService:
             )
             if payload.joins:
                 alias_name = f"{table_name}.{column_name}"
-                select_expressions.insert(0, f"{expression} AS {QueryBuilderService._quote_identifier(alias_name)}")
+                selected_expressions.append(
+                    f"{expression} AS {QueryBuilderService._quote_identifier(alias_name)}"
+                )
             else:
-                select_expressions.insert(0, expression)
+                selected_expressions.append(expression)
         
-        return ", ".join(select_expressions), case_params
+        return ", ".join([*selected_expressions, *computed_expressions]), case_params
 
     @staticmethod
     def _build_condition_sql(

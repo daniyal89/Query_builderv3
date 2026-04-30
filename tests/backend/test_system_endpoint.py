@@ -34,3 +34,29 @@ def test_pick_save_path_post_handles_main_thread_runtime_error(monkeypatch):
 
     assert response.status_code == 503
     assert "main thread" in response.json()["detail"].lower()
+
+
+def test_pick_save_path_post_sanitizes_filename_and_extension(monkeypatch):
+    from backend.api.endpoints import system
+
+    captured: dict[str, str] = {}
+
+    def _capture(suggested_name, default_extension):
+        captured["suggested_name"] = suggested_name
+        captured["default_extension"] = default_extension
+        return "C:/tmp/clean.csv"
+
+    monkeypatch.setattr(system, "_pick_save_path_dialog", _capture)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/system/pick-save-path",
+        json={"default_file_name": "../evil.txt", "default_extension": "../../exe"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"path": "C:/tmp/clean.csv"}
+    assert captured == {
+        "suggested_name": "evil.txt",
+        "default_extension": ".csv",
+    }

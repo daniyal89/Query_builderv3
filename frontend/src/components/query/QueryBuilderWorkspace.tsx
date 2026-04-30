@@ -20,6 +20,7 @@ import { ResultsGrid } from "./ResultsGrid";
 import { SortControl } from "./SortControl";
 import { SqlEditorPanel } from "./SqlEditorPanel";
 import { TableSelector } from "./TableSelector";
+import type { SqlSuggestionItem } from "./HighlightedSqlEditor";
 
 interface QueryBuilderWorkspaceProps {
   engine: QueryEngine;
@@ -274,6 +275,41 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     () => reportColumns.map((column) => column.key),
     [reportColumns]
   );
+
+  const manualSqlSuggestions = useMemo(() => {
+    const suggestions = new Map<string, SqlSuggestionItem>();
+
+    metadataTables.forEach((table) => {
+      suggestions.set(table.table_name, {
+        value: table.table_name,
+        label: table.table_name,
+        detail: `${table.columns.length} columns`,
+        kind: "table",
+      });
+    });
+
+    availableColumns.forEach((column) => {
+      if (!suggestions.has(column.columnName)) {
+        suggestions.set(column.columnName, {
+          value: column.columnName,
+          label: column.label,
+          detail: `${column.referenceName} - ${column.dtype}`,
+          kind: "column",
+        });
+      }
+
+      if (!suggestions.has(column.label)) {
+        suggestions.set(column.label, {
+          value: column.label,
+          label: column.label,
+          detail: column.dtype,
+          kind: "column",
+        });
+      }
+    });
+
+    return Array.from(suggestions.values());
+  }, [availableColumns, metadataTables]);
 
   const shouldShowSelectTableHint =
     !state.table && state.sourceMode === "builder" && !state.sqlText.trim();
@@ -837,6 +873,7 @@ WHERE 1 = 1`;
                 !state.previewError &&
                 !state.isPreviewLoading
               }
+              manualSqlSuggestions={manualSqlSuggestions}
               onSelectSourceMode={setSourceMode}
               onResetFromBuilder={resetSqlToBuilder}
               onSqlChange={updateSqlText}

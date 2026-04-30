@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from backend.models.ftp_download import (
     FTPDownloadRequest,
@@ -6,6 +6,7 @@ from backend.models.ftp_download import (
     FTPDownloadStatusResponse,
 )
 from backend.services.ftp_download_service import FTPDownloadService
+from backend.utils.rate_limits import enforce_rate_limit
 
 router = APIRouter()
 
@@ -15,8 +16,9 @@ router = APIRouter()
     response_model=FTPDownloadStartResponse,
     summary="Start a background FTP download job",
 )
-def start_ftp_download(payload: FTPDownloadRequest) -> FTPDownloadStartResponse:
+def start_ftp_download(request: Request, payload: FTPDownloadRequest) -> FTPDownloadStartResponse:
     try:
+        enforce_rate_limit(request, "ftp_download_start")
         result = FTPDownloadService.start_download(
             host=payload.host,
             port=payload.port,
@@ -31,6 +33,8 @@ def start_ftp_download(payload: FTPDownloadRequest) -> FTPDownloadStartResponse:
             profiles=payload.profiles,
         )
         return FTPDownloadStartResponse(**result)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

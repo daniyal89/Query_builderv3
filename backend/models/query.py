@@ -38,6 +38,7 @@ FilterOperator = Literal[
 
 QueryExecutionMode = Literal["builder", "sql"]
 JoinType = Literal["INNER", "LEFT", "RIGHT"]
+JOIN_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class FilterCondition(BaseModel):
@@ -108,13 +109,26 @@ class JoinClause(BaseModel):
     """A JOIN clause attached to the query builder payload."""
 
     table: str = Field(..., description="Target table or view to join.")
+    alias: str | None = Field(
+        default=None,
+        description="Optional reference name used to distinguish repeated joins against the same table.",
+    )
     join_type: JoinType = Field(default="INNER", description="Supported join type.")
     conditions: list[JoinCondition] = Field(default_factory=list, description="Equality predicates combined with AND.")
+
+    def reference_name(self) -> str:
+        return (self.alias or self.table).strip()
 
     @model_validator(mode="after")
     def validate_join(self) -> "JoinClause":
         if not self.table.strip():
             raise ValueError("Each join needs a target table.")
+        if self.alias is not None:
+            self.alias = self.alias.strip() or None
+            if self.alias and not JOIN_ALIAS_PATTERN.fullmatch(self.alias):
+                raise ValueError(
+                    "Join alias must start with a letter or underscore and contain only letters, numbers, and underscores."
+                )
         if not self.conditions:
             raise ValueError("Each join needs at least one matching column pair.")
         return self
@@ -228,9 +242,10 @@ class QueryPayload(BaseModel):
         if self.execution_mode == "builder":
             seen_tables = {self.table.strip()}
             for join in self.joins:
-                if join.table in seen_tables:
-                    raise ValueError("Each joined table can only be used once in the visual builder.")
-                seen_tables.add(join.table)
+                join_reference = join.reference_name()
+                if join_reference in seen_tables:
+                    raise ValueError("Each joined table alias/reference must be unique in the visual builder.")
+                seen_tables.add(join_reference)
         return self
 
 

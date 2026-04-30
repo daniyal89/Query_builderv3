@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 from fastapi import Request
 
@@ -8,6 +10,11 @@ from backend.utils.logger import app_logger
 
 class ErrorLogService:
     """Wrapper over the central structured logger for backward compatibility."""
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    REPO_ROOT = _REPO_ROOT
+    ERROR_DIR = _REPO_ROOT / "samples" / "error"
+    ERROR_FILE = ERROR_DIR / "errors.log"
 
     @staticmethod
     def _request_context(request: Request) -> dict[str, Any]:
@@ -22,8 +29,16 @@ class ErrorLogService:
         }
 
     @classmethod
+    def _write_event(cls, payload: dict[str, Any]) -> None:
+        cls.ERROR_DIR.mkdir(parents=True, exist_ok=True)
+        with cls.ERROR_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False))
+            handle.write("\n")
+
+    @classmethod
     def append(cls, event: dict[str, Any]) -> None:
         """Legacy generic append method."""
+        cls._write_event(event)
         app_logger.error(event.get("error", "Error logged via append"), extra={"extra_info": event})
 
     @classmethod
@@ -47,7 +62,8 @@ class ErrorLogService:
         }
         if extra:
             payload.update(extra)
-        
+
+        cls._write_event(payload)
         app_logger.error(f"Request Error: {request.method} {request.url.path} - {error}", extra={"extra_info": payload})
 
     @classmethod

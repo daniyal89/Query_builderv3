@@ -24,6 +24,14 @@
     --qb-error: #dc2626;
   }
 
+  .dark {
+    --qb-bg: #020617;
+    --qb-surface: #0f172a;
+    --qb-text: #e2e8f0;
+    --qb-text-muted: #94a3b8;
+    --qb-border: #1e293b;
+  }
+
   html,
   body {
     margin: 0;
@@ -32,9 +40,105 @@
       "Helvetica Neue", Arial, sans-serif;
     background: var(--qb-bg);
     color: var(--qb-text);
+    transition: background-color 180ms ease, color 180ms ease;
+  }
+
+  body,
+  #root {
+    min-height: 100vh;
   }
 
   * {
     box-sizing: border-box;
+  }
+
+  .dark input:not([type="checkbox"]):not([type="radio"]),
+  .dark textarea,
+  .dark select {
+    background-color: #0b1220;
+    border-color: #334155;
+    color: #e2e8f0;
+  }
+
+  .dark input::placeholder,
+  .dark textarea::placeholder {
+    color: #64748b;
+  }
+}
+
+@layer utilities {
+  .dark .bg-white {
+    background-color: #0f172a;
+  }
+
+  .dark .bg-gray-50,
+  .dark .bg-slate-50 {
+    background-color: #020617;
+  }
+
+  .dark .bg-gray-100,
+  .dark .bg-slate-100 {
+    background-color: #111827;
+  }
+
+  .dark .bg-gray-50\/50 {
+    background-color: rgba(15, 23, 42, 0.72);
+  }
+
+  .dark .text-gray-900,
+  .dark .text-slate-900 {
+    color: #f8fafc;
+  }
+
+  .dark .text-gray-800,
+  .dark .text-slate-800 {
+    color: #e2e8f0;
+  }
+
+  .dark .text-gray-700,
+  .dark .text-slate-700 {
+    color: #cbd5e1;
+  }
+
+  .dark .text-gray-600,
+  .dark .text-slate-600 {
+    color: #94a3b8;
+  }
+
+  .dark .text-gray-500,
+  .dark .text-slate-500 {
+    color: #64748b;
+  }
+
+  .dark .text-gray-400,
+  .dark .text-slate-400 {
+    color: #64748b;
+  }
+
+  .dark .border-gray-200,
+  .dark .border-slate-200 {
+    border-color: #1e293b;
+  }
+
+  .dark .border-gray-300,
+  .dark .border-slate-300 {
+    border-color: #334155;
+  }
+
+  .dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+  .dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]),
+  .dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+    border-color: #1e293b;
+  }
+
+  .dark .shadow-sm,
+  .dark .shadow,
+  .dark .shadow-lg {
+    box-shadow: 0 16px 48px rgba(2, 6, 23, 0.38);
+  }
+
+  .dark .hover\:bg-gray-50:hover,
+  .dark .hover\:bg-slate-50:hover {
+    background-color: #111827;
   }
 }

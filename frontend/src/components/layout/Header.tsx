@@ -7,6 +7,7 @@ import { useLocation } from "react-router-dom";
 import { useAppContext } from "../../context/AppContext";
 import { useConnection } from "../../hooks/useConnection";
 import { useMarcadoseConnection } from "../../hooks/useMarcadoseConnection";
+import type { ThemeMode } from "../../hooks/useThemeMode";
 
 function getPageTitle(pathname: string, dbPath: string): string {
   if (pathname.startsWith("/query/local")) return "Query Builder (Local)";
@@ -18,17 +19,23 @@ function getPageTitle(pathname: string, dbPath: string): string {
   return dbPath ? dbPath.split("\\").pop()?.split("/").pop() || "Data Dashboard" : "Data Dashboard";
 }
 
-export const Header: React.FC = () => {
+interface HeaderProps {
+  theme: ThemeMode;
+  onToggleTheme: () => void;
+}
+
+export const Header: React.FC<HeaderProps> = ({ theme, onToggleTheme }) => {
   const location = useLocation();
   const { duckdbConnection, marcadoseConnection } = useAppContext();
   const { disconnect } = useConnection();
   const { disconnect: disconnectMarcadose } = useMarcadoseConnection();
+  const nextThemeLabel = theme === "dark" ? "Light mode" : "Dark mode";
 
   return (
-    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4 shadow-sm">
+    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4 shadow-sm transition-colors dark:border-slate-800 dark:bg-slate-900">
       <div className="flex items-center space-x-4">
         <h1
-          className="max-w-sm overflow-hidden text-ellipsis whitespace-nowrap text-lg font-semibold text-slate-800"
+          className="max-w-sm overflow-hidden text-ellipsis whitespace-nowrap text-lg font-semibold text-slate-800 dark:text-slate-100"
           title={getPageTitle(location.pathname, duckdbConnection.dbPath)}
         >
           {getPageTitle(location.pathname, duckdbConnection.dbPath)}
@@ -36,6 +43,15 @@ export const Header: React.FC = () => {
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-3">
+        <button
+          type="button"
+          onClick={onToggleTheme}
+          aria-label={`Switch to ${nextThemeLabel}`}
+          className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+        >
+          {nextThemeLabel}
+        </button>
+
         <span
           className={`inline-flex items-center space-x-2 rounded-full px-3 py-1 text-sm font-medium ${
             duckdbConnection.isConnected ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"

@@ -3,14 +3,13 @@ import mimetypes
 import os
 import re
 import sys
-import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any, Optional
-from urllib import parse, request
+from urllib import error, parse, request
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -21,6 +20,11 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 from backend.config import settings
+from backend.services.job_runtime import (
+    BackgroundJobCancelled,
+    BackgroundJobPolicy,
+    job_runtime,
+)
 from backend.models.google_drive import DriveAuthConfig
 
 
@@ -56,9 +60,10 @@ class _DriveJobCancelled(Exception):
 
 
 class GoogleDriveService:
-    _jobs: dict[str, dict[str, Any]] = {}
-    _jobs_lock = threading.Lock()
-    _cancel_events: dict[str, threading.Event] = {}
+    UPLOAD_JOB_TYPE = "google_drive.upload"
+    DOWNLOAD_JOB_TYPE = "google_drive.download"
+    UPLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
+    DOWNLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
 
     @classmethod
     def start_upload(
@@ -80,13 +85,33 @@ class GoogleDriveService:
             auth = auth.model_copy(update={"mode": "oauth"})
 
         job_id = str(uuid.uuid4())
-        cls._create_job(job_id, "upload", f"Queued upload from {source}")
-        worker = threading.Thread(
-            target=cls._run_upload_job,
-            args=(job_id, auth, source, parent_folder_id.strip(), root_folder_name, skip_existing, max_workers),
-            daemon=True,
+        job_runtime.start_job(
+            job_type=cls.UPLOAD_JOB_TYPE,
+            job_id=job_id,
+            initial_snapshot=cls._create_job(
+                job_id,
+                "upload",
+                f"Queued upload from {source}",
+            ),
+            payload={
+                "auth": auth.model_dump(mode="json"),
+                "local_folder": str(source),
+                "parent_folder_id": parent_folder_id.strip(),
+                "root_folder_name": root_folder_name,
+                "skip_existing": skip_existing,
+                "max_workers": max_workers,
+            },
+            policy=cls.UPLOAD_JOB_POLICY,
+            worker=lambda running_job_id: cls._run_upload_job(
+                running_job_id,
+                auth,
+                source,
+                parent_folder_id.strip(),
+                root_folder_name,
+                skip_existing,
+                max_workers,
+            ),
         )
-        worker.start()
         return {"job_id": job_id, "status": "queued"}
 
     @classmethod
@@ -107,84 +132,97 @@ class GoogleDriveService:
         output_path.mkdir(parents=True, exist_ok=True)
 
         job_id = str(uuid.uuid4())
-        cls._create_job(job_id, "download", f"Queued download to {output_path}", output_path=str(output_path))
-        worker = threading.Thread(
-            target=cls._run_download_job,
-            args=(job_id, auth, original_link, target_id, output_path, overwrite_existing, export_google_files),
-            daemon=True,
+        job_runtime.start_job(
+            job_type=cls.DOWNLOAD_JOB_TYPE,
+            job_id=job_id,
+            initial_snapshot=cls._create_job(
+                job_id,
+                "download",
+                f"Queued download to {output_path}",
+                output_path=str(output_path),
+            ),
+            payload={
+                "auth": auth.model_dump(mode="json"),
+                "drive_link_or_id": original_link,
+                "resolved_drive_id": target_id,
+                "output_folder": str(output_path),
+                "overwrite_existing": overwrite_existing,
+                "export_google_files": export_google_files,
+            },
+            policy=cls.DOWNLOAD_JOB_POLICY,
+            worker=lambda running_job_id: cls._run_download_job(
+                running_job_id,
+                auth,
+                original_link,
+                target_id,
+                output_path,
+                overwrite_existing,
+                export_google_files,
+            ),
         )
-        worker.start()
         return {"job_id": job_id, "status": "queued"}
 
     @classmethod
     def get_job_status(cls, job_id: str) -> Optional[dict[str, Any]]:
-        with cls._jobs_lock:
-            job = cls._jobs.get(job_id)
-            return dict(job) if job else None
+        return job_runtime.get_job(job_id)
 
     @classmethod
     def stop_job(cls, job_id: str) -> Optional[dict[str, Any]]:
-        with cls._jobs_lock:
-            job = cls._jobs.get(job_id)
-            if not job:
-                return None
-            if job.get("status") in {"completed", "failed", "cancelled"}:
-                return dict(job)
-            event = cls._cancel_events.get(job_id)
-            if event:
-                event.set()
-            job["status"] = "cancelling"
-            job["message"] = "Stop requested. Waiting for the current file operation to finish..."
-            return dict(job)
+        return job_runtime.stop_job(
+            job_id,
+            "Stop requested. Waiting for the current file operation to finish...",
+        )
 
     @classmethod
     def _is_cancelled(cls, job_id: str) -> bool:
-        event = cls._cancel_events.get(job_id)
-        return bool(event and event.is_set())
+        return job_runtime.is_cancelled(job_id)
 
     @classmethod
     def _raise_if_cancelled(cls, job_id: str) -> None:
-        if cls._is_cancelled(job_id):
+        try:
+            job_runtime.raise_if_cancelled(job_id)
+        except BackgroundJobCancelled:
             raise _DriveJobCancelled()
 
     @classmethod
-    def get_auth_status(cls) -> dict[str, Any]:
+    def get_auth_status(cls, message_override: Optional[str] = None) -> dict[str, Any]:
         client_path = cls._resolve_oauth_client_path(None, raise_if_missing=False)
         token_path = cls._resolve_token_path(None)
-        token_exists = token_path.is_file()
-        token_valid = False
-        if token_exists:
-            try:
-                creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-                token_valid = bool(creds and creds.valid)
-            except Exception:
-                token_valid = False
-
-        if client_path:
-            if token_valid:
-                message = "Google login is ready."
-            elif token_exists:
-                message = "Google login token exists but may need refresh."
-            else:
-                message = "Google OAuth client is configured. Click Sign in with Google when needed."
-            configured = True
-        else:
-            configured = False
-            message = (
-                "Public file links can still be tried. For private links, put your OAuth desktop client JSON at "
-                f"{cls._default_oauth_client_path()} or set QUERY_BUILDER_GOOGLE_OAUTH_CLIENT_JSON."
-            )
-        return {
-            "configured": configured,
-            "token_exists": token_exists,
-            "token_valid": token_valid,
-            "message": message,
-        }
+        token_exists = cls._has_cached_oauth_token(token_path)
+        creds = cls._load_cached_oauth_credentials(token_path) if token_exists else None
+        token_valid = bool(creds and creds.valid)
+        return cls._build_auth_status(
+            client_path=client_path,
+            token_exists=token_exists,
+            token_valid=token_valid,
+            message_override=message_override,
+        )
 
     @classmethod
     def login_google(cls) -> dict[str, Any]:
         cls._get_drive_service(DriveAuthConfig(mode="oauth"))
-        return cls.get_auth_status()
+        return cls.get_auth_status("Google login is ready.")
+
+    @classmethod
+    def logout_google(cls, token_override: Optional[str] = None) -> dict[str, Any]:
+        token_path = cls._resolve_token_path(token_override)
+        if not cls._has_cached_oauth_token(token_path):
+            return cls.get_auth_status("No cached Google login token was found.")
+
+        creds = cls._load_cached_oauth_credentials(token_path)
+        remote_revoked = cls._revoke_cached_oauth_tokens(creds)
+
+        cls._clear_cached_oauth_token(token_path)
+        if cls._has_cached_oauth_token(token_path):
+            raise ValueError(f"Could not remove cached Google login token: {token_path}")
+
+        if remote_revoked:
+            message = "Signed out from Google Drive and cleared the cached login token."
+        elif creds:
+            message = "Cleared the cached Google login token. Remote revoke could not be confirmed."
+        else:
+            message = "Cleared the cached Google login token."
+        return cls.get_auth_status(message)
 
     @staticmethod
     def extract_drive_id(value: str) -> str:
@@ -206,50 +244,41 @@ class GoogleDriveService:
         return ""
 
     @classmethod
-    def _create_job(cls, job_id: str, job_type: str, message: str, output_path: Optional[str] = None) -> None:
-        with cls._jobs_lock:
-            cls._cancel_events[job_id] = threading.Event()
-            cls._jobs[job_id] = {
-                "job_id": job_id,
-                "status": "queued",
-                "job_type": job_type,
-                "message": message,
-                "total_items": 0,
-                "processed_items": 0,
-                "uploaded_items": 0,
-                "downloaded_items": 0,
-                "skipped_items": 0,
-                "failed_items": 0,
-                "output_path": output_path,
-                "errors": [],
-                "started_at": datetime.now().isoformat(timespec="seconds"),
-                "finished_at": None,
-            }
+    def _create_job(cls, job_id: str, job_type: str, message: str, output_path: Optional[str] = None) -> dict[str, Any]:
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "job_type": job_type,
+            "message": message,
+            "total_items": 0,
+            "processed_items": 0,
+            "uploaded_items": 0,
+            "downloaded_items": 0,
+            "skipped_items": 0,
+            "failed_items": 0,
+            "output_path": output_path,
+            "errors": [],
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "finished_at": None,
+        }
 
     @classmethod
     def _update_job(cls, job_id: str, **updates: Any) -> None:
-        with cls._jobs_lock:
-            if job_id not in cls._jobs:
-                return
-            cls._jobs[job_id].update(updates)
+        job_runtime.update_job(job_id, **updates)
 
     @classmethod
     def _increment_job(cls, job_id: str, **increments: int) -> None:
-        with cls._jobs_lock:
-            if job_id not in cls._jobs:
-                return
-            for key, amount in increments.items():
-                cls._jobs[job_id][key] = int(cls._jobs[job_id].get(key, 0)) + amount
+        job_runtime.increment_job(job_id, **increments)
 
     @classmethod
     def _add_error(cls, job_id: str, message: str) -> None:
-        with cls._jobs_lock:
-            if job_id not in cls._jobs:
-                return
-            errors = list(cls._jobs[job_id].get("errors", []))
+        def mutate(snapshot: dict[str, Any]) -> None:
+            errors = list(snapshot.get("errors", []))
             errors.append(message)
-            cls._jobs[job_id]["errors"] = errors[-100:]
-            cls._jobs[job_id]["failed_items"] = int(cls._jobs[job_id].get("failed_items", 0)) + 1
+            snapshot["errors"] = errors[-100:]
+            snapshot["failed_items"] = int(snapshot.get("failed_items", 0)) + 1
+
+        job_runtime.mutate_job(job_id, mutate, last_error=message)
 
     @classmethod
     def _finish_job(cls, job_id: str, failed: bool = False, message: Optional[str] = None) -> None:
@@ -281,6 +310,36 @@ class GoogleDriveService:
         return cls._user_config_dir() / "google_oauth_client.json"
 
     @classmethod
+    def _build_auth_status(
+        cls,
+        client_path: Optional[Path],
+        token_exists: bool,
+        token_valid: bool,
+        message_override: Optional[str] = None,
+    ) -> dict[str, Any]:
+        configured = bool(client_path)
+        if message_override is not None:
+            message = message_override
+        elif configured:
+            if token_valid:
+                message = "Google login is ready."
+            elif token_exists:
+                message = "Google login token exists but may need refresh."
+            else:
+                message = "Google OAuth client is configured. Click Sign in with Google when needed."
+        else:
+            message = (
+                "Public file links can still be tried. For private links, put your OAuth desktop client JSON at "
+                f"{cls._default_oauth_client_path()} or set QUERY_BUILDER_GOOGLE_OAUTH_CLIENT_JSON."
+            )
+        return {
+            "configured": configured,
+            "token_exists": token_exists,
+            "token_valid": token_valid,
+            "message": message,
+        }
+
+    @classmethod
     def _resolve_token_path(cls, token_override: Optional[str]) -> Path:
         if token_override and token_override.strip():
             return Path(token_override).expanduser()
@@ -308,6 +367,68 @@ class GoogleDriveService:
             )
         return None
 
+    @staticmethod
+    def _has_cached_oauth_token(token_path: Path) -> bool:
+        try:
+            return token_path.is_file() and token_path.stat().st_size > 0
+        except OSError:
+            return token_path.is_file()
+
+    @staticmethod
+    def _clear_cached_oauth_token(token_path: Path) -> None:
+        try:
+            token_path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            pass
+        except OSError:
+            pass
+
+        try:
+            token_path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"Could not remove cached Google login token: {exc}") from exc
+
+    @staticmethod
+    def _load_cached_oauth_credentials(token_path: Path) -> Optional[Credentials]:
+        try:
+            return Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        except Exception:
+            return None
+
+    @classmethod
+    def _revoke_cached_oauth_tokens(cls, creds: Optional[Credentials]) -> bool:
+        if creds is None:
+            return False
+        for token in (getattr(creds, "refresh_token", None), getattr(creds, "token", None)):
+            if cls._revoke_oauth_token(token):
+                return True
+        return False
+
+    @staticmethod
+    def _revoke_oauth_token(token: Optional[str]) -> bool:
+        clean_token = (token or "").strip()
+        if not clean_token:
+            return False
+        revoke_request = request.Request(
+            "https://oauth2.googleapis.com/revoke",
+            data=parse.urlencode({"token": clean_token}).encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(revoke_request, timeout=15) as response:
+                status_code = getattr(response, "status", 200)
+            return 200 <= status_code < 300
+        except error.HTTPError as exc:
+            if exc.code == 400:
+                return False
+            return False
+        except Exception:
+            return False
+
     @classmethod
     def _get_drive_service(cls, auth: DriveAuthConfig):
         if auth.mode == "service_account":
@@ -320,9 +441,7 @@ class GoogleDriveService:
         client_path = cls._resolve_oauth_client_path(auth.oauth_client_json_path)
         assert client_path is not None
         token_path = cls._resolve_token_path(auth.token_json_path)
-        creds: Optional[Credentials] = None
-        if token_path.is_file():
-            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        creds = cls._load_cached_oauth_credentials(token_path) if token_path.is_file() else None
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
@@ -528,11 +647,7 @@ class GoogleDriveService:
 
     @classmethod
     def _clear_errors(cls, job_id: str) -> None:
-        with cls._jobs_lock:
-            if job_id in cls._jobs:
-                cls._jobs[job_id]["errors"] = []
-                cls._jobs[job_id]["failed_items"] = 0
-                cls._jobs[job_id]["processed_items"] = 0
+        job_runtime.update_job(job_id, errors=[], failed_items=0, processed_items=0)
 
     @staticmethod
     def _get_metadata(service, file_id: str) -> dict[str, Any]:

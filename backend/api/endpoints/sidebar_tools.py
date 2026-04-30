@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import glob
-import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -12,8 +11,13 @@ from typing import Any
 
 import duckdb
 import pandas as pd
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from backend.services.error_log_service import ErrorLogService
+from backend.services.job_runtime import (
+    BackgroundJobCancelled,
+    BackgroundJobPolicy,
+    job_runtime,
+)
 
 from backend.models.sidebar_tools import (
     BuildDuckDbJobResponse,
@@ -24,23 +28,24 @@ from backend.models.sidebar_tools import (
     CsvToParquetRequest,
     SidebarToolResponse,
 )
+from backend.utils.path_safety import sanitize_local_path_input
+from backend.utils.rate_limits import enforce_rate_limit
 
 router = APIRouter()
 VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-CSV_PARQUET_JOBS: dict[str, dict[str, Any]] = {}
-CSV_PARQUET_CANCEL_EVENTS: dict[str, threading.Event] = {}
-CSV_PARQUET_JOBS_LOCK = threading.Lock()
-BUILD_DUCKDB_JOBS: dict[str, dict[str, Any]] = {}
-BUILD_DUCKDB_CANCEL_EVENTS: dict[str, threading.Event] = {}
-BUILD_DUCKDB_JOBS_LOCK = threading.Lock()
 MIN_PARQUET_FILE_BYTES = 16
+CSV_TO_PARQUET_JOB_TYPE = "sidebar.csv_to_parquet"
+BUILD_DUCKDB_JOB_TYPE = "sidebar.build_duckdb"
+CSV_TO_PARQUET_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_seconds=1)
+BUILD_DUCKDB_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_seconds=1)
 
 
 def _read_lookup_file(file_path: str) -> pd.DataFrame:
-    path = Path(file_path)
+    sanitized_path = sanitize_local_path_input(file_path, "lookup_file")
+    path = Path(sanitized_path)
     if path.suffix.lower() == ".csv":
-        return pd.read_csv(file_path, encoding="utf-8", encoding_errors="replace", low_memory=False)
-    return pd.read_excel(file_path)
+        return pd.read_csv(sanitized_path, encoding="utf-8", encoding_errors="replace", low_memory=False)
+    return pd.read_excel(sanitized_path)
 
 
 def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -220,7 +225,7 @@ def _resolve_csv_parquet_read_sql(input_path: str) -> str:
 
 
 def _resolve_existing_input_glob(input_path: str) -> str:
-    cleaned = input_path.replace("\u00A0", " ").strip().strip('"').strip("'")
+    cleaned = sanitize_local_path_input(input_path.replace("\u00A0", " "), "input_path").strip().strip('"').strip("'")
     normalized_path = cleaned.replace("\\", "/")
     normalized_as_path = Path(normalized_path).expanduser()
 
@@ -307,7 +312,7 @@ def _parquet_target_for_input(output_root: Path, input_root: Path, source_file: 
 
 def _build_csv_to_parquet_targets(payload: CsvToParquetRequest) -> tuple[list[Path], Path, Path, Path | None]:
     resolved_input = _resolve_existing_input_glob(payload.input_path)
-    output_path = Path(payload.output_path).expanduser().resolve()
+    output_path = Path(sanitize_local_path_input(payload.output_path, "output_path")).expanduser().resolve()
     matched_files = _list_matching_input_files(resolved_input)
     if not matched_files:
         raise ValueError(f"No readable files matched '{resolved_input}'.")
@@ -321,17 +326,11 @@ def _build_csv_to_parquet_targets(payload: CsvToParquetRequest) -> tuple[list[Pa
 
 
 def _update_csv_job(job_id: str, **updates: Any) -> None:
-    with CSV_PARQUET_JOBS_LOCK:
-        if job_id not in CSV_PARQUET_JOBS:
-            return
-        CSV_PARQUET_JOBS[job_id].update(updates)
+    job_runtime.update_job(job_id, **updates)
 
 
 def _update_build_job(job_id: str, **updates: Any) -> None:
-    with BUILD_DUCKDB_JOBS_LOCK:
-        if job_id not in BUILD_DUCKDB_JOBS:
-            return
-        BUILD_DUCKDB_JOBS[job_id].update(updates)
+    job_runtime.update_job(job_id, **updates)
 
 
 def _drop_existing_duckdb_object(conn: duckdb.DuckDBPyConnection, object_name: str) -> None:
@@ -355,7 +354,7 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     if not VALID_OBJECT_NAME.fullmatch(normalized_object_name):
         raise ValueError("object_name must start with letter/_ and use only letters, numbers, underscore.")
 
-    db_path = Path(payload.db_path).expanduser().resolve()
+    db_path = Path(sanitize_local_path_input(payload.db_path, "db_path")).expanduser().resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     object_sql = f'"{normalized_object_name.replace(chr(34), chr(34) * 2)}"'
     resolved_input = _resolve_existing_input_glob(payload.input_path)
@@ -372,18 +371,10 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
 
 def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
     try:
-        if BUILD_DUCKDB_CANCEL_EVENTS[job_id].is_set():
-            _update_build_job(
-                job_id,
-                status="cancelled",
-                message="Build cancelled before execution.",
-                finished_at=datetime.now().isoformat(timespec="seconds"),
-            )
-            return
-
-        _update_build_job(job_id, status="running", progress_percent=25, message="Preparing build...")
+        job_runtime.raise_if_cancelled(job_id)
+        _update_build_job(job_id, progress_percent=25, message="Preparing build...")
         output_path, message = _execute_build_duckdb(payload)
-        if BUILD_DUCKDB_CANCEL_EVENTS[job_id].is_set():
+        if job_runtime.is_cancelled(job_id):
             _update_build_job(
                 job_id,
                 status="cancelled",
@@ -401,6 +392,13 @@ def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
             progress_percent=100,
             finished_at=datetime.now().isoformat(timespec="seconds"),
         )
+    except BackgroundJobCancelled:
+        _update_build_job(
+            job_id,
+            status="cancelled",
+            message="Build cancelled before execution.",
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
     except Exception as exc:
         ErrorLogService.append(
             {
@@ -414,13 +412,17 @@ def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
                 "stage": "background_worker",
             }
         )
-        _update_build_job(
-            job_id,
-            status="failed",
-            message=str(exc),
-            progress_percent=100,
-            finished_at=datetime.now().isoformat(timespec="seconds"),
-        )
+        if job_runtime.is_cancelled(job_id):
+            _update_build_job(
+                job_id,
+                status="cancelled",
+                message="Stop requested. Build cancelled.",
+                progress_percent=100,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            return
+        _update_build_job(job_id, message=str(exc), progress_percent=100)
+        raise
 
 
 def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
@@ -437,11 +439,11 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
 
         with duckdb.connect() as conn:
             for index, source_file in enumerate(files, start=1):
-                if CSV_PARQUET_CANCEL_EVENTS[job_id].is_set():
+                if job_runtime.is_cancelled(job_id):
                     _update_csv_job(
                         job_id,
                         status="cancelled",
-                        message="CSV→Parquet conversion stopped by user.",
+                        message="CSV to Parquet conversion stopped by user.",
                         finished_at=datetime.now().isoformat(timespec="seconds"),
                     )
                     return
@@ -491,6 +493,13 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
             finished_at=datetime.now().isoformat(timespec="seconds"),
             skipped_files=skipped_files,
         )
+    except BackgroundJobCancelled:
+        _update_csv_job(
+            job_id,
+            status="cancelled",
+            message="CSV to Parquet conversion stopped by user.",
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
     except Exception as exc:
         ErrorLogService.append(
             {
@@ -504,30 +513,39 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                 "stage": "background_worker",
             }
         )
-        _update_csv_job(
-            job_id,
-            status="failed",
-            message=str(exc),
-            current_file=None,
-            finished_at=datetime.now().isoformat(timespec="seconds"),
-        )
+        if job_runtime.is_cancelled(job_id):
+            _update_csv_job(
+                job_id,
+                status="cancelled",
+                message="CSV to Parquet conversion stopped by user.",
+                current_file=None,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            return
+        _update_csv_job(job_id, message=str(exc), current_file=None)
+        raise
 
 
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)
-async def build_duckdb(payload: BuildDuckDbRequest) -> SidebarToolResponse:
+async def build_duckdb(request: Request, payload: BuildDuckDbRequest) -> SidebarToolResponse:
     try:
+        enforce_rate_limit(request, "sidebar_build_duckdb")
         output_path, message = _execute_build_duckdb(payload)
         return SidebarToolResponse(message=message, output_path=output_path)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/sidebar-tools/build-duckdb/start", response_model=BuildDuckDbJobStartResponse)
-async def build_duckdb_start(payload: BuildDuckDbRequest) -> BuildDuckDbJobStartResponse:
+async def build_duckdb_start(request: Request, payload: BuildDuckDbRequest) -> BuildDuckDbJobStartResponse:
+    enforce_rate_limit(request, "sidebar_build_duckdb")
     job_id = uuid.uuid4().hex
-    with BUILD_DUCKDB_JOBS_LOCK:
-        BUILD_DUCKDB_CANCEL_EVENTS[job_id] = threading.Event()
-        BUILD_DUCKDB_JOBS[job_id] = {
+    job_runtime.start_job(
+        job_type=BUILD_DUCKDB_JOB_TYPE,
+        job_id=job_id,
+        initial_snapshot={
             "job_id": job_id,
             "status": "queued",
             "message": "Build job queued.",
@@ -535,40 +553,36 @@ async def build_duckdb_start(payload: BuildDuckDbRequest) -> BuildDuckDbJobStart
             "progress_percent": 0,
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": None,
-        }
-
-    threading.Thread(target=_run_build_duckdb_job, args=(job_id, payload), daemon=True).start()
+        },
+        payload=payload.model_dump(mode="json"),
+        policy=BUILD_DUCKDB_POLICY,
+        worker=lambda running_job_id: _run_build_duckdb_job(running_job_id, payload),
+    )
     return BuildDuckDbJobStartResponse(job_id=job_id, status="queued", message="Build DuckDB job started.")
 
 
 @router.get("/sidebar-tools/build-duckdb/status/{job_id}", response_model=BuildDuckDbJobResponse)
 async def build_duckdb_status(job_id: str) -> BuildDuckDbJobResponse:
-    with BUILD_DUCKDB_JOBS_LOCK:
-        job = BUILD_DUCKDB_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
-        return BuildDuckDbJobResponse(**job)
+    job = job_runtime.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
+    return BuildDuckDbJobResponse(**job)
 
 
 @router.post("/sidebar-tools/build-duckdb/stop/{job_id}", response_model=BuildDuckDbJobResponse)
 async def build_duckdb_stop(job_id: str) -> BuildDuckDbJobResponse:
-    with BUILD_DUCKDB_JOBS_LOCK:
-        job = BUILD_DUCKDB_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
-        if job["status"] in {"completed", "failed", "cancelled"}:
-            return BuildDuckDbJobResponse(**job)
-        BUILD_DUCKDB_CANCEL_EVENTS[job_id].set()
-        job["status"] = "cancelling"
-        job["message"] = "Stop requested. Waiting for operation to finish..."
-        return BuildDuckDbJobResponse(**job)
+    job = job_runtime.stop_job(job_id, "Stop requested. Waiting for operation to finish...")
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
+    return BuildDuckDbJobResponse(**job)
 
 
 @router.post("/sidebar-tools/csv-to-parquet", response_model=SidebarToolResponse)
-async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
+async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> SidebarToolResponse:
     try:
+        enforce_rate_limit(request, "sidebar_csv_to_parquet")
         resolved_input = _resolve_existing_input_glob(payload.input_path)
-        output_path = Path(payload.output_path).expanduser().resolve()
+        output_path = Path(sanitize_local_path_input(payload.output_path, "output_path")).expanduser().resolve()
         matched_files = _list_matching_input_files(resolved_input)
         if not matched_files:
             raise ValueError(f"No readable files matched '{resolved_input}'.")
@@ -633,24 +647,28 @@ async def csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
             + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else ""),
             output_path=str(output_root),
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/sidebar-tools/csv-to-parquet/start", response_model=CsvToParquetJobStartResponse)
-async def csv_to_parquet_start(payload: CsvToParquetRequest) -> CsvToParquetJobStartResponse:
+async def csv_to_parquet_start(request: Request, payload: CsvToParquetRequest) -> CsvToParquetJobStartResponse:
+    enforce_rate_limit(request, "sidebar_csv_to_parquet")
     try:
         files, output_root, _, single_target = _build_csv_to_parquet_targets(payload)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     job_id = uuid.uuid4().hex
-    with CSV_PARQUET_JOBS_LOCK:
-        CSV_PARQUET_CANCEL_EVENTS[job_id] = threading.Event()
-        CSV_PARQUET_JOBS[job_id] = {
+    job_runtime.start_job(
+        job_type=CSV_TO_PARQUET_JOB_TYPE,
+        job_id=job_id,
+        initial_snapshot={
             "job_id": job_id,
             "status": "queued",
-            "message": "CSV→Parquet conversion queued.",
+            "message": "CSV to Parquet conversion queued.",
             "processed_files": 0,
             "total_files": len(files),
             "skipped_files": 0,
@@ -658,30 +676,25 @@ async def csv_to_parquet_start(payload: CsvToParquetRequest) -> CsvToParquetJobS
             "output_path": str(single_target if single_target is not None else output_root),
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": None,
-        }
-
-    threading.Thread(target=_run_csv_to_parquet_job, args=(job_id, payload), daemon=True).start()
-    return CsvToParquetJobStartResponse(job_id=job_id, status="queued", message="CSV→Parquet job started.")
+        },
+        payload=payload.model_dump(mode="json"),
+        policy=CSV_TO_PARQUET_POLICY,
+        worker=lambda running_job_id: _run_csv_to_parquet_job(running_job_id, payload),
+    )
+    return CsvToParquetJobStartResponse(job_id=job_id, status="queued", message="CSV to Parquet job started.")
 
 
 @router.get("/sidebar-tools/csv-to-parquet/status/{job_id}", response_model=CsvToParquetJobResponse)
 async def csv_to_parquet_status(job_id: str) -> CsvToParquetJobResponse:
-    with CSV_PARQUET_JOBS_LOCK:
-        job = CSV_PARQUET_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CSV→Parquet job not found.")
-        return CsvToParquetJobResponse(**job)
+    job = job_runtime.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CSV to Parquet job not found.")
+    return CsvToParquetJobResponse(**job)
 
 
 @router.post("/sidebar-tools/csv-to-parquet/stop/{job_id}", response_model=CsvToParquetJobResponse)
 async def csv_to_parquet_stop(job_id: str) -> CsvToParquetJobResponse:
-    with CSV_PARQUET_JOBS_LOCK:
-        job = CSV_PARQUET_JOBS.get(job_id)
-        if not job:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CSV→Parquet job not found.")
-        if job["status"] in {"completed", "failed", "cancelled"}:
-            return CsvToParquetJobResponse(**job)
-        CSV_PARQUET_CANCEL_EVENTS[job_id].set()
-        job["status"] = "cancelling"
-        job["message"] = "Stop requested. Waiting for current file to finish..."
-        return CsvToParquetJobResponse(**job)
+    job = job_runtime.stop_job(job_id, "Stop requested. Waiting for current file to finish...")
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CSV to Parquet job not found.")
+    return CsvToParquetJobResponse(**job)

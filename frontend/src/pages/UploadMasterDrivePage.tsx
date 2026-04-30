@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { getDriveAuthStatus, getDriveJobStatus, loginGoogleDrive, startDriveUpload, stopDriveJob } from "../api/driveApi";
+import { getDriveJobStatus, startDriveUpload, stopDriveJob } from "../api/driveApi";
 import { pickSystemFile, pickSystemFolder } from "../api/systemApi";
-import type { DriveAuthConfig, DriveAuthMode, DriveAuthStatusResponse, DriveJobStatusResponse } from "../types/drive.types";
+import { GoogleAuthCard } from "../components/drive/GoogleAuthCard";
+import { useGoogleDriveAuth } from "../hooks/useGoogleDriveAuth";
+import type { DriveAuthConfig, DriveAuthMode, DriveJobStatusResponse } from "../types/drive.types";
 
 const STORAGE_KEY = "drive_upload_master_form_v2";
 const JOB_STORAGE_KEY = "drive_upload_master_job_v1";
@@ -140,45 +142,23 @@ const StatusCard: React.FC<{ status: DriveJobStatusResponse | null; nowMs: numbe
   );
 };
 
-const GoogleAuthCard: React.FC<{
-  authStatus: DriveAuthStatusResponse | null;
-  isSigningIn: boolean;
-  onSignIn: () => void;
-}> = ({ authStatus, isSigningIn, onSignIn }) => {
-  const ready = Boolean(authStatus?.token_valid);
-  const configured = Boolean(authStatus?.configured);
-  return (
-    <section className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Google account</h2>
-          <p className="mt-1 text-sm text-slate-600">{authStatus?.message || "Click Sign in with Google before upload, or start upload and the browser login will open when needed."}</p>
-          <p className="mt-1 text-xs text-slate-500">OAuth JSON is not shown to users. Keep google_oauth_client.json once in the app config folder.</p>
-        </div>
-        <button
-          type="button"
-          disabled={!configured || isSigningIn}
-          onClick={onSignIn}
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-        >
-          {isSigningIn ? "Opening Google..." : ready ? "Signed in" : "Sign in with Google"}
-        </button>
-      </div>
-    </section>
-  );
-};
-
 export const UploadMasterDrivePage: React.FC = () => {
   const initial = useMemo(() => readInitialState(), []);
   const initialJobState = useMemo(() => readInitialJobState(), []);
   const [state, setState] = useState<FormState>(initial);
   const [jobId, setJobId] = useState<string | null>(initialJobState.jobId);
   const [status, setStatus] = useState<DriveJobStatusResponse | null>(initialJobState.status);
-  const [authStatus, setAuthStatus] = useState<DriveAuthStatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(initialJobState.isLoading);
-  const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(Date.now());
+  const {
+    authStatus,
+    isSigningIn,
+    isSigningOut,
+    refreshAuthStatus,
+    signIn,
+    signOut,
+  } = useGoogleDriveAuth();
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -192,10 +172,6 @@ export const UploadMasterDrivePage: React.FC = () => {
     const payload: PersistedJobState = { jobId, status };
     window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(payload));
   }, [jobId, status]);
-
-  useEffect(() => {
-    getDriveAuthStatus().then(setAuthStatus).catch(() => undefined);
-  }, []);
 
   useEffect(() => {
     if (!isLoading) return;
@@ -215,7 +191,7 @@ export const UploadMasterDrivePage: React.FC = () => {
         if (isTerminalStatus(next)) {
           setIsLoading(false);
           setJobId(null);
-          getDriveAuthStatus().then(setAuthStatus).catch(() => undefined);
+          refreshAuthStatus().catch(() => undefined);
           return;
         }
         window.setTimeout(poll, 1500);
@@ -242,14 +218,19 @@ export const UploadMasterDrivePage: React.FC = () => {
 
   const handleGoogleLogin = async () => {
     setError(null);
-    setIsSigningIn(true);
     try {
-      const next = await loginGoogleDrive();
-      setAuthStatus(next);
+      await signIn();
     } catch (err) {
       setError(getErrorMessage(err));
-    } finally {
-      setIsSigningIn(false);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    setError(null);
+    try {
+      await signOut();
+    } catch (err) {
+      setError(getErrorMessage(err));
     }
   };
 
@@ -301,7 +282,17 @@ export const UploadMasterDrivePage: React.FC = () => {
 
       {error && <div className="rounded-lg bg-red-50 p-4 text-sm text-red-700">{error}</div>}
 
-      {state.authMode !== "service_account" && <GoogleAuthCard authStatus={authStatus} isSigningIn={isSigningIn} onSignIn={handleGoogleLogin} />}
+      {state.authMode !== "service_account" && (
+        <GoogleAuthCard
+          authStatus={authStatus}
+          description="Click Sign in with Google before upload, or start upload and the browser login will open when needed."
+          helperText="OAuth JSON is not shown to users. Keep google_oauth_client.json once in the app config folder."
+          isSigningIn={isSigningIn}
+          isSigningOut={isSigningOut}
+          onSignIn={handleGoogleLogin}
+          onSignOut={handleGoogleLogout}
+        />
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <section className="grid gap-4 md:grid-cols-2">

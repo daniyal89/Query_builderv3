@@ -4,7 +4,7 @@ query.py — Engine-aware query execution endpoint.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from backend.api.deps import get_db_service, get_oracle_service
 from backend.models.query import QueryPayload, QueryPreview, QueryResult
@@ -13,6 +13,7 @@ from backend.services.error_log_service import ErrorLogService
 from backend.services.oracle_service import OracleService
 from backend.services.query_builder_service import QueryBuilderService
 from backend.services.marcadose_union_service import MarcadoseUnionService
+from backend.utils.rate_limits import enforce_rate_limit
 
 router = APIRouter()
 MAX_SQL_TEXT_LENGTH = 50000
@@ -78,6 +79,7 @@ def _select_engine_service(
     summary="Preview SQL for the selected engine and query workflow",
 )
 async def preview_query(
+    request: Request,
     payload: QueryPayload,
     oracle: OracleService = Depends(get_oracle_service),
 ) -> QueryPreview:
@@ -85,6 +87,8 @@ async def preview_query(
     attempted_sql: str | None = None
 
     try:
+        enforce_rate_limit(request, "query_preview")
+
         if payload.execution_mode == "sql":
             sql = QueryBuilderService.normalize_manual_sql(payload.sql or "")
             if len(sql) > MAX_SQL_TEXT_LENGTH:
@@ -106,6 +110,9 @@ async def preview_query(
         attempted_sql = sql
         preview_sql = QueryBuilderService.add_ai_helper_comment(sql, payload.engine, "builder")
         return QueryPreview(sql=preview_sql, source_mode="builder", can_sync_builder=True)
+    except HTTPException as exc:
+        _log_query_error("/api/query/preview", payload, exc, attempted_sql)
+        raise
     except Exception as exc:
         _log_query_error("/api/query/preview", payload, exc, attempted_sql)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -117,12 +124,14 @@ async def preview_query(
     summary="Execute a structured query against the selected engine",
 )
 async def execute_query(
+    request: Request,
     payload: QueryPayload,
     duckdb: DuckDBService = Depends(get_db_service),
     oracle: OracleService = Depends(get_oracle_service),
 ) -> QueryResult:
     attempted_sql: str | None = None
     try:
+        enforce_rate_limit(request, "query_execute")
         service: DuckDBService | OracleService = _select_engine_service(payload, duckdb, oracle)
 
         if payload.execution_mode == "sql":

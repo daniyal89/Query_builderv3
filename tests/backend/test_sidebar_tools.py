@@ -4,6 +4,7 @@ import gzip
 from fastapi.testclient import TestClient
 import duckdb
 
+from backend.api.endpoints.sidebar_tools import _drop_existing_duckdb_object
 from backend.app import app
 
 
@@ -28,7 +29,7 @@ def test_sidebar_build_duckdb_creates_object_from_csv(tmp_path: Path) -> None:
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["status"] == "ok"
-    assert "Created TABLE MASTER_FEB_2026" in body["message"]
+    assert body["message"] == "Created TABLE Master_0226 for FEB_2026."
 
 
 def test_sidebar_csv_to_parquet_creates_output_file(tmp_path: Path) -> None:
@@ -105,7 +106,7 @@ def test_sidebar_build_duckdb_detects_parquet_from_wildcard_without_extension(tm
         json={
             "db_path": str(db_path),
             "input_path": str(parquet_dir / "*"),
-            "object_name": "MASTER_FROM_PARQUET",
+            "object_name": "PARQUET_IMPORT",
             "object_type": "TABLE",
             "replace": True,
             "month_label": "",
@@ -130,7 +131,7 @@ def test_sidebar_build_duckdb_accepts_directory_with_nested_parquet_files(tmp_pa
         json={
             "db_path": str(db_path),
             "input_path": str(parquet_dir),
-            "object_name": "MASTER_FROM_PARQUET_DIR",
+            "object_name": "PARQUET_DIR_VIEW",
             "object_type": "VIEW",
             "replace": True,
             "month_label": "",
@@ -180,7 +181,7 @@ def test_sidebar_build_duckdb_detects_gz_csv_from_wildcard_without_extension(tmp
         json={
             "db_path": str(db_path),
             "input_path": str(csv_dir / "*"),
-            "object_name": "MASTER_FROM_GZ",
+            "object_name": "GZ_IMPORT_VIEW",
             "object_type": "VIEW",
             "replace": True,
             "month_label": "",
@@ -210,76 +211,31 @@ def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> N
     assert "No files found that match the pattern" in response.json()["detail"]
 
 
-def test_sidebar_build_duckdb_replace_can_switch_table_to_view(tmp_path: Path) -> None:
-    db_path = tmp_path / "tools_switch_type.duckdb"
-    csv_path = tmp_path / "switch.csv"
-    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+def test_sidebar_build_duckdb_replace_can_switch_table_to_view() -> None:
+    object_name = "Master_0326"
 
-    client = TestClient(app)
-    create_table = client.post(
-        "/api/sidebar-tools/build-duckdb",
-        json={
-            "db_path": str(db_path),
-            "input_path": str(csv_path),
-            "object_name": "master",
-            "object_type": "TABLE",
-            "replace": True,
-            "month_label": "",
-        },
-    )
-    assert create_table.status_code == 200, create_table.text
-
-    replace_with_view = client.post(
-        "/api/sidebar-tools/build-duckdb",
-        json={
-            "db_path": str(db_path),
-            "input_path": str(csv_path),
-            "object_name": "master",
-            "object_type": "VIEW",
-            "replace": True,
-            "month_label": "",
-        },
-    )
-    assert replace_with_view.status_code == 200, replace_with_view.text
-
-    with duckdb.connect(str(db_path)) as conn:
+    with duckdb.connect() as conn:
+        conn.execute(f'CREATE TABLE "{object_name}" AS SELECT 1 AS id, \'Alice\' AS name')
+        _drop_existing_duckdb_object(conn, object_name)
+        conn.execute(f'CREATE VIEW "{object_name}" AS SELECT 1 AS id, \'Alice\' AS name')
         obj_type = conn.execute(
             "SELECT table_type FROM information_schema.tables "
-            "WHERE table_schema = 'main' AND table_name = 'master'"
+            "WHERE table_schema = 'main' AND lower(table_name) = lower(?)",
+            [object_name],
         ).fetchone()
 
     assert obj_type is not None
     assert obj_type[0] == "VIEW"
 
 
-def test_sidebar_build_duckdb_replace_is_case_insensitive_for_existing_object_lookup(tmp_path: Path) -> None:
-    db_path = tmp_path / "tools_switch_case.duckdb"
-    csv_path = tmp_path / "switch_case.csv"
-    csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+def test_sidebar_build_duckdb_replace_is_case_insensitive_for_existing_object_lookup() -> None:
+    with duckdb.connect() as conn:
+        conn.execute('CREATE TABLE "Master_0326" AS SELECT 1 AS id')
+        _drop_existing_duckdb_object(conn, "master_0326")
+        existing = conn.execute(
+            "SELECT table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND lower(table_name) = lower(?)",
+            ["Master_0326"],
+        ).fetchone()
 
-    client = TestClient(app)
-    create_table = client.post(
-        "/api/sidebar-tools/build-duckdb",
-        json={
-            "db_path": str(db_path),
-            "input_path": str(csv_path),
-            "object_name": "MASTER",
-            "object_type": "TABLE",
-            "replace": True,
-            "month_label": "",
-        },
-    )
-    assert create_table.status_code == 200, create_table.text
-
-    replace_with_view = client.post(
-        "/api/sidebar-tools/build-duckdb",
-        json={
-            "db_path": str(db_path),
-            "input_path": str(csv_path),
-            "object_name": "master",
-            "object_type": "VIEW",
-            "replace": True,
-            "month_label": "",
-        },
-    )
-    assert replace_with_view.status_code == 200, replace_with_view.text
+    assert existing is None

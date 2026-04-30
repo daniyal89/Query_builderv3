@@ -48,6 +48,8 @@ export interface QueryColumnOption {
   key: string;
   label: string;
   tableName: string;
+  sourceTableName: string;
+  referenceName: string;
   columnName: string;
   dtype: string;
   nullable: boolean;
@@ -112,6 +114,7 @@ export interface JoinCondition {
 export interface JoinClause {
   id: string;
   table: string;
+  alias: string;
   joinType: JoinType;
   conditions: JoinCondition[];
 }
@@ -151,6 +154,7 @@ export interface QueryPayload {
   sort: SortClause[];
   joins: Array<{
     table: string;
+    alias?: string;
     join_type: JoinType;
     conditions: Array<{
       left_column: string;

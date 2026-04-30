@@ -1,6 +1,7 @@
 import React from "react";
 import type { QueryEngine } from "../../types/connection.types";
 import type { QuerySourceMode } from "../../types/query.types";
+import { HighlightedSqlEditor, type SqlSuggestionItem } from "./HighlightedSqlEditor";
 
 type QueryMode = "LIST" | "REPORT";
 
@@ -16,6 +17,7 @@ interface SqlEditorPanelProps {
   runError: string | null;
   isRunning: boolean;
   canRunBuilder: boolean;
+  manualSqlSuggestions: SqlSuggestionItem[];
   onSelectSourceMode: (mode: QuerySourceMode) => void;
   onResetFromBuilder: () => void;
   onSqlChange: (sql: string) => void;
@@ -44,6 +46,7 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
   runError,
   isRunning,
   canRunBuilder,
+  manualSqlSuggestions,
   onSelectSourceMode,
   onResetFromBuilder,
   onSqlChange,
@@ -120,16 +123,23 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
           </span>
         </div>
 
-        <textarea
+        {sourceMode === "manual" && manualSqlSuggestions.length > 0 && (
+          <div className="mb-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+            Table and column suggestions appear while typing in manual SQL mode. Use arrow keys and `Enter` or `Tab`
+            to apply one.
+          </div>
+        )}
+
+        <HighlightedSqlEditor
           value={sqlText}
-          onChange={(event) => onSqlChange(event.target.value)}
-          className="min-h-[220px] w-full rounded border border-gray-300 bg-gray-50 p-3 font-mono text-sm text-gray-800 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          onChange={onSqlChange}
+          suggestions={sourceMode === "manual" ? manualSqlSuggestions : []}
           placeholder={
             sourceMode === "manual"
               ? "Write SQL directly here."
               : "Select a table and configure the builder to generate SQL."
           }
-          spellCheck={false}
+          minHeightClassName="min-h-[240px]"
         />
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">

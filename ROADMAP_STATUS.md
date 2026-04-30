@@ -1,6 +1,6 @@
 # Query Builder Project Roadmap & Execution Status
 
-_Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload guards added, CASE support marked implemented, and subquery remains deferred._
+_Last updated: 2026-04-30 (UTC) - frontend tests/build pass locally with dark mode baseline, new SQL highlighting, virtualized result rendering, route prefetching, and generated bundle reports; the frontend CI gate now runs both tests and build; the backend suite now passes locally end-to-end (`108 passed`) with the persistent job runtime in place for FTP, Drive, and Sidebar Tools; repeated-table join aliasing is implemented; Sprint 6 security hardening is functionally complete, including Google Drive logout/revoke UX; subquery remains deferred._
 
 ## Status Legend
 - `[Done]`
@@ -76,6 +76,8 @@ _Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload
 ### Current status
 - `[Done]` Manual SQL path exists and supports single-statement SQL with normalization guardrails.
 - `[Done]` Visual CASE expression support is already implemented end-to-end (UI, payload/types, backend SQL builder).
+- `[Done]` Visual builder now supports repeated joins against the same table through unique join references/aliases, and alias changes propagate through builder state.
+- `[Done]` Report-mode join SQL and pivoted report shaping are verified for joined-column report rows/columns in backend tests.
 - `[In Progress]` Subquery work is intentionally deferred for the current execution phase.
 - `[Not Started]` Controlled visual subquery patterns (`IN (subquery)`, `EXISTS`) remain unimplemented.
 
@@ -91,11 +93,14 @@ _Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload
 - Add structured JSON logs + metrics + CI quality gates.
 
 ### Current status
-- `[In Progress]` Backend tests expanded for sidebar tools and build/parquet flows.
-- `[Blocked]` Async/background job test process teardown noise is still observed in the local agent environment.
+- `[Done]` Backend temp-path, rate-limit, and sidebar/background-job test stabilization now allows the full backend suite to pass locally (`python -m pytest tests/backend` => `108 passed`).
+- `[Done]` Shared pytest temp-root override and rate-limit reset fixtures removed the prior local agent-environment blockers for backend file-system-bound and heavy-endpoint tests.
+- `[Done]` Focused persistent-job runtime tests now cover retry/dead-letter behavior, interrupted-job recovery, and snapshot persistence.
 - `[Done]` Frontend Vitest + React Testing Library + MSW harness is now installed under `frontend/tests/`.
 - `[Done]` Real frontend coverage now exists for Home connect flow, Query Builder execution flow, and Folder Merge/import flow.
-- `[Not Started]` Full CI gate stack is still pending.
+- `[Done]` Frontend CI quality gate now runs both `npm test` and `npm run build` on push/PR via `.github/workflows/frontend-build-gate.yml`.
+- `[Done]` Backend CI now runs the full `tests/backend` suite via `.github/workflows/backend-targeted-tests.yml`.
+- `[In Progress]` Full CI gate stack is still broader than frontend/backend tests and remains incomplete.
 
 ---
 
@@ -109,7 +114,10 @@ _Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload
 - Environment profile hardening (`.env.example`, local/dev/prod docs).
 
 ### Current status
-- `[Not Started]` Persistent queue/store architecture has not been started.
+- `[Done]` Persistent SQLite-backed job storage now replaces in-memory job maps for FTP Download, Google Drive upload/download, and Sidebar Tools background jobs.
+- `[Done]` Retry attempt counters, dead-letter records, cancellation requests, and interrupted-job recovery are persisted through `backend/services/job_runtime.py`.
+- `[Done]` App startup now initializes the runtime store, and the backend test harness isolates a fresh job-store file per test for deterministic coverage.
+- `[Done]` Environment profile hardening is documented through `.env.example` and `ENVIRONMENT_PROFILES.md`.
 
 ---
 
@@ -118,7 +126,8 @@ _Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload
 ### Branch/merge state (current workspace)
 - Active branch currently: `main`.
 - Worktree currently contains local roadmap implementation changes that are not yet committed.
-- Latest verified local state includes passing frontend tests/build and targeted backend hardening tests.
+- Latest verified local state includes passing frontend tests/build, targeted backend hardening tests, and targeted backend query-builder/query-workflow tests.
+- Latest verified local state now also includes a passing full backend suite (`python -m pytest tests/backend` => `108 passed`).
 - Remote push/merge status cannot be completed from this environment without configured credentials/remotes.
 
 ### Required release actions by maintainer
@@ -141,7 +150,12 @@ _Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload
 - Reduce HMR cascade noise (observed excessive full-page reloads during dev).
 
 ### Current status
-- `[Not Started]` Performance and DX roadmap items have not been started.
+- `[Done]` SQL editor now has lightweight syntax highlighting with inline manual editing and tab indentation support.
+- `[Done]` Large query results now use windowed row rendering in the results grid to reduce DOM cost on big result sets.
+- `[Done]` Route-level lazy loading now includes hover/focus/idle prefetching so likely next pages warm before navigation.
+- `[Done]` Frontend build now emits a generated bundle report at `frontend_dist/build-report.json`, and Vite chunking is split across `react-vendor`, `router-vendor`, `app-shell`, `query-builder`, `data-workflows`, `drive-ops`, and `operations`.
+- `[Done]` Vite dev server now ignores generated/cache directories (`frontend_dist`, `__pycache__`, `.pytest_cache`) to reduce avoidable watch churn.
+- `[Done]` Dark mode baseline is now available through a persisted shell-level toggle with global surface/text/form overrides.
 
 ---
 
@@ -158,10 +172,10 @@ _Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload
 
 ### Current status
 - `[Done]` Credential files were removed from project root and gitignored.
-- `[In Progress]` Path-safety validation now covers local folder-merge paths, importer temp-file identifiers, and stricter importer target-table validation; broader endpoint coverage is still incomplete.
+- `[Done]` Path-safety validation now covers DuckDB connect, local object creation, importer/merge flows, FTP/Drive local path inputs, sidebar-tools file/glob inputs, and save-dialog suggestion sanitization.
 - `[Done]` Request body size limits are now enforced for `/api/parse-csv`, `/api/upload-sheets`, and `/api/enrich-data`.
-- `[Not Started]` Rate limiting for heavy endpoints is not yet implemented.
-- `[Not Started]` Google OAuth token lifecycle management beyond the local token cache is not yet implemented.
+- `[Done]` Rate limiting now protects `/api/query`, `/api/query/preview`, `/api/ftp-download/start`, `/api/drive/auth/login`, `/api/drive/upload/start`, `/api/drive/download/start`, and the heavy Sidebar Tools build/conversion endpoints.
+- `[Done]` Google OAuth lifecycle now covers refresh-on-use, explicit logout/revoke behavior, cached-token cleanup, and signed-in/signed-out status refresh in the Drive pages.
 
 ---
 
@@ -186,9 +200,6 @@ _Last updated: 2026-04-30 (UTC) - frontend test stack implemented, legacy upload
 ---
 
 ## Recommended next execution order
-1. Finish remaining Sprint 6 items: broader endpoint path audit plus rate limiting for heavy endpoints.
-2. Complete remaining Query Builder gaps except subquery: report-mode joins, repeated-table aliasing, and Marcadose report/pivot flow.
-3. Improve SQL editor and results-grid DX/performance (syntax highlighting, virtualization, bundle/HMR cleanup).
-4. Expand CI quality gates to execute the new frontend tests in addition to existing build validation.
-5. Revisit controlled visual subquery support only after the above slices stabilize.
-6. Start Sprint 4 persistent queue/store architecture after the app is better covered and hardened.
+1. Expand CI/observability beyond the current frontend/backend test and build gates if broader release confidence or operational visibility becomes the next priority.
+2. Finish the remaining Sprint 2 Data Tools UX polish so the operational workflows feel as complete as the backend capabilities.
+3. Revisit controlled visual subquery support only after the current frontend/backend stabilization holds up in regular usage.

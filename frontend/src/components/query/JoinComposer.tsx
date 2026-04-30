@@ -1,7 +1,12 @@
 import React, { useMemo } from "react";
 import type { TableMetadata } from "../../types/schema.types";
 import type { JoinClause, JoinCondition, JoinType } from "../../types/query.types";
-import { buildColumnOptionsForQuery, buildColumnOptionsForTable } from "../../utils/queryBuilderColumns";
+import {
+  buildColumnOptionsForQuery,
+  buildColumnOptionsForTable,
+  getJoinReferenceName,
+  normalizeJoinAlias,
+} from "../../utils/queryBuilderColumns";
 import { SearchableSelect } from "./SearchableSelect";
 
 const JOIN_TYPES: JoinType[] = ["INNER", "LEFT", "RIGHT"];
@@ -11,7 +16,7 @@ interface JoinComposerProps {
   joins: JoinClause[];
   tables: TableMetadata[];
   onAddJoin: () => void;
-  onUpdateJoin: (id: string, updates: Partial<Pick<JoinClause, "table" | "joinType">>) => void;
+  onUpdateJoin: (id: string, updates: Partial<Pick<JoinClause, "table" | "alias" | "joinType">>) => void;
   onRemoveJoin: (id: string) => void;
   onAddCondition: (joinId: string) => void;
   onUpdateCondition: (joinId: string, conditionId: string, updates: Partial<JoinCondition>) => void;
@@ -58,16 +63,9 @@ export const JoinComposer: React.FC<JoinComposerProps> = ({
       <div className="space-y-3">
         {joins.map((join, index) => {
           const leftOptions = buildColumnOptionsForQuery(baseTable, joins.slice(0, index), tables);
-          const rightOptions = buildColumnOptionsForTable(tableMap.get(join.table));
-          const usedTables = new Set(
-            [baseTable, ...joins.filter((candidate) => candidate.id !== join.id).map((candidate) => candidate.table)].filter(
-              (tableName) => tableName.trim() !== ""
-            )
-          );
-          const availableJoinTargets = tables.filter(
-            (table) => table.table_name === join.table || !usedTables.has(table.table_name)
-          );
-          const joinTableOptions = availableJoinTargets.map((table) => ({
+          const joinReference = getJoinReferenceName(join);
+          const rightOptions = buildColumnOptionsForTable(tableMap.get(join.table), joinReference);
+          const joinTableOptions = tables.map((table) => ({
             value: table.table_name,
             label: table.table_name,
             description: table.columns.length > 0 ? `${table.columns.length} columns` : "columns load on select",
@@ -130,6 +128,26 @@ export const JoinComposer: React.FC<JoinComposerProps> = ({
                   searchPlaceholder="Search join tables..."
                   emptyMessage="No join tables match your search."
                 />
+              </div>
+
+              <div className="mb-3">
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Join Alias / Reference
+                </label>
+                <input
+                  type="text"
+                  value={join.alias}
+                  onChange={(event) =>
+                    onUpdateJoin(join.id, { alias: normalizeJoinAlias(event.target.value) })
+                  }
+                  disabled={!join.table}
+                  placeholder="Example: detail_2"
+                  className="w-full rounded border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-800 disabled:cursor-not-allowed disabled:bg-gray-50"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Use a unique alias when joining the same table more than once. Current reference:{" "}
+                  <span className="font-mono">{joinReference || "(select a table)"}</span>
+                </p>
               </div>
 
               <div className="space-y-2">

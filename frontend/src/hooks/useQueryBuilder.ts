@@ -19,7 +19,12 @@ import type {
   CaseWhenBranch,
   FunctionColumn,
 } from "../types/query.types";
-import { getReferencedTable } from "../utils/queryBuilderColumns";
+import {
+  buildSuggestedJoinAlias,
+  getJoinReferenceName,
+  getReferencedTable,
+  normalizeJoinAlias,
+} from "../utils/queryBuilderColumns";
 
 const genId = () => Math.random().toString(36).substring(2, 11);
 const NO_VALUE_OPERATORS = ["IS NULL", "IS NOT NULL"];
@@ -52,9 +57,134 @@ const createJoinCondition = (): JoinCondition => ({
 const createJoin = (): JoinClause => ({
   id: genId(),
   table: "",
+  alias: "",
   joinType: "INNER",
   conditions: [createJoinCondition()],
 });
+
+function normalizeJoinClauses(joins: JoinClause[], baseTable: string): JoinClause[] {
+  const normalized: JoinClause[] = [];
+  const usedReferences = new Set<string>();
+
+  if (baseTable.trim()) {
+    usedReferences.add(baseTable.trim());
+  }
+
+  joins.forEach((join) => {
+    const nextTable = join.table.trim();
+    const explicitAlias = normalizeJoinAlias(join.alias);
+    let nextAlias = "";
+
+    if (nextTable) {
+      if (explicitAlias) {
+        nextAlias = explicitAlias;
+      } else if (usedReferences.has(nextTable)) {
+        nextAlias = buildSuggestedJoinAlias(nextTable, normalized, join.id, baseTable);
+      }
+    }
+
+    const normalizedJoin: JoinClause = {
+      ...join,
+      table: nextTable,
+      alias: nextAlias,
+      conditions: join.conditions.length > 0 ? join.conditions : [createJoinCondition()],
+    };
+
+    const nextReference = getJoinReferenceName(normalizedJoin);
+    if (nextReference) {
+      usedReferences.add(nextReference);
+    }
+
+    normalized.push(normalizedJoin);
+  });
+
+  return normalized;
+}
+
+function replaceTableReference(columnRef: string, previousReference: string, nextReference: string): string {
+  const prefix = `${previousReference}.`;
+  if (!columnRef.startsWith(prefix)) {
+    return columnRef;
+  }
+  return `${nextReference}.${columnRef.slice(prefix.length)}`;
+}
+
+function renameTableReferences(
+  state: QueryBuilderState,
+  previousReference: string,
+  nextReference: string
+): QueryBuilderState {
+  if (!previousReference || !nextReference || previousReference === nextReference) {
+    return state;
+  }
+
+  const rename = (columnRef: string) =>
+    replaceTableReference(columnRef, previousReference, nextReference);
+
+  return {
+    ...state,
+    selectedColumns: state.selectedColumns.map(rename),
+    filters: state.filters.map((filter) => ({
+      ...filter,
+      column: rename(filter.column),
+    })),
+    sort: state.sort.map((sortRule) => ({
+      ...sortRule,
+      column: rename(sortRule.column),
+    })),
+    joins: state.joins.map((join) => ({
+      ...join,
+      conditions: join.conditions.map((condition) => ({
+        ...condition,
+        leftColumn: rename(condition.leftColumn),
+        rightColumn: rename(condition.rightColumn),
+      })),
+    })),
+    groupBy: state.groupBy.map(rename),
+    aggregates: state.aggregates.map((aggregate) => ({
+      ...aggregate,
+      column: rename(aggregate.column),
+    })),
+    caseExpressions: state.caseExpressions.map((expression) => ({
+      ...expression,
+      branches: expression.branches.map((branch) => ({
+        ...branch,
+        column: rename(branch.column),
+        thenValue: branch.thenType === "column" ? rename(branch.thenValue) : branch.thenValue,
+      })),
+      elseValue: expression.elseType === "column" ? rename(expression.elseValue) : expression.elseValue,
+    })),
+    functionColumns: state.functionColumns.map((functionColumn) => ({
+      ...functionColumn,
+      column: rename(functionColumn.column),
+      secondColumn: functionColumn.secondColumn ? rename(functionColumn.secondColumn) : functionColumn.secondColumn,
+    })),
+    pivotConfig: {
+      ...state.pivotConfig,
+      rows: state.pivotConfig.rows.map(rename),
+      columns: state.pivotConfig.columns.map(rename),
+      values: rename(state.pivotConfig.values),
+    },
+  };
+}
+
+function canRenameJoinReference(
+  state: QueryBuilderState,
+  joinId: string,
+  nextReference: string
+): boolean {
+  if (!nextReference.trim()) {
+    return false;
+  }
+
+  if (state.table.trim() === nextReference) {
+    return false;
+  }
+
+  return state.joins.every(
+    (join) => join.id === joinId || getJoinReferenceName(join) !== nextReference
+  );
+}
 
 interface QueryBuilderState extends QueryState {
   result: QueryResult | null;
@@ -69,7 +199,7 @@ export interface UseQueryBuilderReturn {
   removeFilter: (id: string) => void;
   setSort: (sort: SortClause[]) => void;
   addJoin: () => void;
-  updateJoin: (id: string, updates: Partial<Pick<JoinClause, "table" | "joinType">>) => void;
+  updateJoin: (id: string, updates: Partial<Pick<JoinClause, "table" | "alias" | "joinType">>) => void;
   removeJoin: (id: string) => void;
   addJoinCondition: (joinId: string) => void;
   updateJoinCondition: (joinId: string, conditionId: string, updates: Partial<JoinCondition>) => void;
@@ -150,6 +280,7 @@ function getJoinPayloads(state: QueryBuilderState): QueryPayload["joins"] {
     .filter((join) => join.table.trim() !== "")
     .map((join) => ({
       table: join.table,
+      alias: join.alias.trim() || undefined,
       join_type: join.joinType,
       conditions: join.conditions.map((condition) => ({
         left_column: condition.leftColumn,
@@ -186,7 +317,7 @@ function pruneRemovedTableReferences(
     filters: state.filters.filter((filter) => !hasRemovedTable(filter.column)),
     sort: state.sort.filter((sort) => !hasRemovedTable(sort.column)),
     joins: state.joins
-      .filter((join) => !removedTables.has(join.table))
+      .filter((join) => !removedTables.has(getJoinReferenceName(join)))
       .map((join) => ({
         ...join,
         conditions:
@@ -299,6 +430,10 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
       setState((previous) => ({
         ...previous,
         ...persisted,
+        joins: normalizeJoinClauses(
+          (persisted.joins as JoinClause[] | undefined) || previous.joins,
+          String(persisted.table || previous.table || ""),
+        ),
         marcadoseUnion: {
           ...createDefaultMarcadoseUnion(),
           ...(persisted.marcadoseUnion || {}),
@@ -480,31 +615,54 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
   }, []);
 
   const updateJoin = useCallback(
-    (id: string, updates: Partial<Pick<JoinClause, "table" | "joinType">>) => {
+    (id: string, updates: Partial<Pick<JoinClause, "table" | "alias" | "joinType">>) => {
       setState((prev) => {
         const currentJoin = prev.joins.find((join) => join.id === id);
         if (!currentJoin) return prev;
 
         const tableChanged =
           updates.table !== undefined && updates.table !== currentJoin.table;
+        const aliasChanged =
+          updates.alias !== undefined && updates.alias !== currentJoin.alias;
+        const currentReference = getJoinReferenceName(currentJoin);
 
         const nextState: QueryBuilderState = {
           ...prev,
-          joins: prev.joins.map((join) => {
-            if (join.id !== id) return join;
-            if (!tableChanged) return { ...join, ...updates };
+          joins: normalizeJoinClauses(
+            prev.joins.map((join) => {
+              if (join.id !== id) return join;
+              if (!tableChanged) {
+                return { ...join, ...updates };
+              }
 
-            return {
-              ...join,
-              ...updates,
-              conditions: [createJoinCondition()],
-            };
-          }),
+              return {
+                ...join,
+                ...updates,
+                alias: updates.alias ?? "",
+                conditions: [createJoinCondition()],
+              };
+            }),
+            prev.table,
+          ),
         };
+        const nextJoin = nextState.joins.find((join) => join.id === id);
+        const nextReference = nextJoin ? getJoinReferenceName(nextJoin) : "";
 
-        if (!tableChanged || !currentJoin.table) return nextState;
+        if (tableChanged && currentReference) {
+          return pruneRemovedTableReferences(nextState, new Set([currentReference]));
+        }
 
-        return pruneRemovedTableReferences(nextState, new Set([currentJoin.table]));
+        if (
+          aliasChanged &&
+          currentReference &&
+          nextReference &&
+          currentReference !== nextReference &&
+          canRenameJoinReference(nextState, id, nextReference)
+        ) {
+          return renameTableReferences(nextState, currentReference, nextReference);
+        }
+
+        return nextState;
       });
     },
     []
@@ -513,15 +671,16 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
   const removeJoin = useCallback((id: string) => {
     setState((prev) => {
       const removedJoin = prev.joins.find((join) => join.id === id);
+      const removedReference = removedJoin ? getJoinReferenceName(removedJoin) : "";
 
       const nextState: QueryBuilderState = {
         ...prev,
         joins: prev.joins.filter((join) => join.id !== id),
       };
 
-      if (!removedJoin?.table) return nextState;
+      if (!removedReference) return nextState;
 
-      return pruneRemovedTableReferences(nextState, new Set([removedJoin.table]));
+      return pruneRemovedTableReferences(nextState, new Set([removedReference]));
     });
   }, []);
 
@@ -807,6 +966,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     setState((prev) => ({
       ...prev,
       ...nextState,
+      joins: normalizeJoinClauses((nextState.joins as JoinClause[] | undefined) || prev.joins, String(nextState.table || prev.table || "")),
       error: null,
       previewError: null,
       isLoading: false,

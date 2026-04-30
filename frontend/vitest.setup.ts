@@ -11,6 +11,9 @@ afterEach(() => {
   cleanup();
   server.resetHandlers();
   window.localStorage.clear();
+  document.documentElement.classList.remove("dark");
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.style.colorScheme = "";
   vi.restoreAllMocks();
 });
 

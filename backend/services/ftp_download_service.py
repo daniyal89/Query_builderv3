@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from backend.models.ftp_download import FTPDownloadProfile
+from backend.services.job_runtime import (
+    BackgroundJobCancelled,
+    BackgroundJobPolicy,
+    job_runtime,
+)
 
 
 @dataclass(frozen=True)
@@ -35,9 +40,8 @@ class _FTPJobCancelled(Exception):
 
 
 class FTPDownloadService:
-    _jobs: dict[str, dict[str, Any]] = {}
-    _jobs_lock = threading.Lock()
-    _cancel_events: dict[str, threading.Event] = {}
+    JOB_TYPE = "ftp_download"
+    JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
 
     @classmethod
     def start_download(
@@ -79,14 +83,26 @@ class FTPDownloadService:
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": None,
         }
-        with cls._jobs_lock:
-            cls._cancel_events[job_id] = threading.Event()
-            cls._jobs[job_id] = job_state
-
-        worker = threading.Thread(
-            target=cls._run_download_job,
-            args=(
-                job_id,
+        job_runtime.start_job(
+            job_type=cls.JOB_TYPE,
+            job_id=job_id,
+            initial_snapshot=job_state,
+            payload={
+                "host": normalized_host,
+                "port": port,
+                "output_root": output_root,
+                "file_suffix": file_suffix,
+                "max_workers": max_workers,
+                "max_retries": max_retries,
+                "retry_delay_seconds": retry_delay_seconds,
+                "timeout_seconds": timeout_seconds,
+                "passive_mode": passive_mode,
+                "skip_existing": skip_existing,
+                "profiles": [profile.model_dump(mode="json") for profile in profiles],
+            },
+            policy=cls.JOB_POLICY,
+            worker=lambda running_job_id: cls._run_download_job(
+                running_job_id,
                 normalized_host,
                 port,
                 output_root,
@@ -99,9 +115,7 @@ class FTPDownloadService:
                 skip_existing,
                 profiles,
             ),
-            daemon=True,
         )
-        worker.start()
         return {"job_id": job_id, "status": "queued"}
 
     @classmethod
@@ -181,57 +195,49 @@ class FTPDownloadService:
 
     @classmethod
     def get_job_status(cls, job_id: str) -> dict[str, Any] | None:
-        with cls._jobs_lock:
-            job = cls._jobs.get(job_id)
-            return dict(job) if job else None
+        return job_runtime.get_job(job_id)
 
     @classmethod
     def stop_download(cls, job_id: str) -> dict[str, Any] | None:
-        with cls._jobs_lock:
-            job = cls._jobs.get(job_id)
-            if not job:
-                return None
-            if job.get("status") in {"completed", "failed", "cancelled"}:
-                return dict(job)
-            event = cls._cancel_events.get(job_id)
-            if event:
-                event.set()
-            job["status"] = "cancelling"
-            job["error_message"] = "Stop requested. Waiting for the current FTP operation to finish..."
-            return dict(job)
+        return job_runtime.stop_job(
+            job_id,
+            "Stop requested. Waiting for the current FTP operation to finish...",
+        )
 
     @classmethod
     def _is_cancelled(cls, job_id: str) -> bool:
-        event = cls._cancel_events.get(job_id)
-        return bool(event and event.is_set())
+        return job_runtime.is_cancelled(job_id)
 
     @classmethod
     def _raise_if_cancelled(cls, job_id: str) -> None:
-        if cls._is_cancelled(job_id):
+        try:
+            job_runtime.raise_if_cancelled(job_id)
+        except BackgroundJobCancelled:
             raise _FTPJobCancelled()
 
     @classmethod
     def _update_job(cls, job_id: str, **updates: Any) -> None:
-        with cls._jobs_lock:
-            if job_id not in cls._jobs:
-                return
-            cls._jobs[job_id].update(updates)
+        job_runtime.update_job(job_id, **updates)
 
     @classmethod
     def _replace_profile_result(cls, job_id: str, result: dict[str, Any]) -> None:
-        with cls._jobs_lock:
-            if job_id not in cls._jobs:
-                return
-            results = list(cls._jobs[job_id].get("profile_results", []))
+        def mutate(snapshot: dict[str, Any]) -> None:
+            results = list(snapshot.get("profile_results", []))
             existing_index = next(
-                (index for index, item in enumerate(results) if item.get("profile_name") == result.get("profile_name")),
+                (
+                    index
+                    for index, item in enumerate(results)
+                    if item.get("profile_name") == result.get("profile_name")
+                ),
                 None,
             )
             if existing_index is None:
                 results.append(result)
             else:
                 results[existing_index] = result
-            cls._jobs[job_id]["profile_results"] = results
+            snapshot["profile_results"] = results
+
+        job_runtime.mutate_job(job_id, mutate)
 
     @classmethod
     def _run_download_job(
