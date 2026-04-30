@@ -58,6 +58,39 @@ class SortClause(BaseModel):
     direction: Literal["ASC", "DESC"] = Field(default="ASC", description="Sort direction.")
 
 
+class CaseWhenBranch(BaseModel):
+    """A single WHEN ... THEN ... condition within a CASE expression."""
+
+    column: str = Field(..., description="Column name to check.")
+    operator: FilterOperator = Field(..., description="SQL comparison operator.")
+    value: Any = Field(default="", description="Comparison value.")
+    then_type: Literal["literal", "column"] = Field(default="literal", description="Type of the THEN value.")
+    then_value: str = Field(..., description="Value or column to return if condition is met.")
+
+
+class CaseExpression(BaseModel):
+    """A computed column defined by a CASE WHEN ... ELSE ... END expression."""
+
+    alias: str = Field(..., description="Name for the new computed column.")
+    aggregate_func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX"] | None = Field(
+        default=None, description="Optional aggregate function to wrap the CASE statement."
+    )
+    branches: list[CaseWhenBranch] = Field(default_factory=list, description="WHEN conditions.")
+    else_type: Literal["literal", "column"] = Field(default="literal", description="Type of the ELSE value.")
+    else_value: str = Field(default="", description="Default value if no conditions are met.")
+
+
+class FunctionColumn(BaseModel):
+    """A standalone column with a SQL function applied."""
+
+    func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX", "COUNT_DISTINCT", "COALESCE"] = Field(
+        ..., description="The SQL function to apply."
+    )
+    column: str = Field(..., description="The main column to apply the function to.")
+    second_column: str | None = Field(default=None, description="Optional second column (used by COALESCE).")
+    alias: str = Field(..., description="Alias for the computed function column.")
+
+
 class JoinCondition(BaseModel):
     """A single equality predicate within a JOIN clause."""
 
@@ -178,6 +211,8 @@ class QueryPayload(BaseModel):
     pivot: PivotConfig | None = Field(default=None, description="Pivot configuration used if mode is REPORT.")
     group_by: list[str] = Field(default_factory=list, description="Columns to GROUP BY.")
     aggregates: list[AggregateRule] = Field(default_factory=list, description="List of aggregations to apply.")
+    case_expressions: list[CaseExpression] = Field(default_factory=list, description="Computed columns.")
+    function_columns: list[FunctionColumn] = Field(default_factory=list, description="Stand-alone function columns.")
     sql: str | None = Field(default=None, description="Raw SQL text for direct SQL execution.")
     marcadose_union: MarcadoseUnionConfig | None = Field(
         default=None,

@@ -15,6 +15,9 @@ import type {
   QuerySourceMode,
   QueryState,
   SortClause,
+  CaseExpression,
+  CaseWhenBranch,
+  FunctionColumn,
 } from "../types/query.types";
 import { getReferencedTable } from "../utils/queryBuilderColumns";
 
@@ -74,6 +77,15 @@ export interface UseQueryBuilderReturn {
   toggleGroupBy: (col: string) => void;
   setAggregate: (column: string, func: "SUM" | "COUNT" | "AVG" | "MIN" | "MAX") => void;
   removeAggregate: (column: string) => void;
+  addCaseExpression: () => void;
+  updateCaseExpression: (id: string, updates: Partial<CaseExpression>) => void;
+  removeCaseExpression: (id: string) => void;
+  addCaseBranch: (caseId: string) => void;
+  updateCaseBranch: (caseId: string, branchId: string, updates: Partial<CaseWhenBranch>) => void;
+  removeCaseBranch: (caseId: string, branchId: string) => void;
+  addFunctionColumn: () => void;
+  updateFunctionColumn: (id: string, updates: Partial<FunctionColumn>) => void;
+  removeFunctionColumn: (id: string) => void;
   setMode: (mode: "LIST" | "REPORT") => void;
   setPivotConfig: (config: Partial<PivotConfig>) => void;
   setMarcadoseUnion: (config: Partial<MarcadoseUnionConfig>) => void;
@@ -94,6 +106,8 @@ const initialState: QueryBuilderState = {
   joins: [],
   groupBy: [],
   aggregates: [],
+  caseExpressions: [],
+  functionColumns: [],
   limitRows: 1000,
   offset: 0,
   mode: "LIST",
@@ -198,6 +212,25 @@ function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine): Que
     joins: getJoinPayloads(state),
     group_by: state.groupBy,
     aggregates: state.aggregates,
+    case_expressions: state.caseExpressions.map((expr) => ({
+      alias: expr.alias,
+      aggregate_func: expr.aggregateFunc,
+      else_type: expr.elseType,
+      else_value: expr.elseValue,
+      branches: expr.branches.map((branch) => ({
+        column: branch.column,
+        operator: branch.operator,
+        value: branch.value,
+        then_type: branch.thenType,
+        then_value: branch.thenValue,
+      })),
+    })),
+    function_columns: state.functionColumns.map((col) => ({
+      func: col.func,
+      column: col.column,
+      second_column: col.secondColumn,
+      alias: col.alias,
+    })),
     limit_rows: state.limitRows,
     offset: state.offset,
     mode: state.mode,
@@ -215,6 +248,8 @@ type PersistableQueryBuilderState = Pick<
   | "joins"
   | "groupBy"
   | "aggregates"
+  | "caseExpressions"
+  | "functionColumns"
   | "limitRows"
   | "offset"
   | "mode"
@@ -239,6 +274,8 @@ function toPersistableState(state: QueryBuilderState): PersistableQueryBuilderSt
     joins: state.joins,
     groupBy: state.groupBy,
     aggregates: state.aggregates,
+    caseExpressions: state.caseExpressions,
+    functionColumns: state.functionColumns,
     limitRows: state.limitRows,
     offset: state.offset,
     mode: state.mode,
@@ -379,6 +416,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     state.joins,
     state.groupBy,
     state.aggregates,
+    state.caseExpressions,
     state.limitRows,
     state.offset,
     state.mode,
@@ -582,6 +620,128 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     }));
   }, []);
 
+  const addCaseExpression = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      caseExpressions: [
+        ...prev.caseExpressions,
+        {
+          id: genId(),
+          alias: `Computed_Column_${prev.caseExpressions.length + 1}`,
+          branches: [
+            {
+              id: genId(),
+              column: "",
+              operator: "=",
+              value: "",
+              thenType: "literal",
+              thenValue: "",
+            },
+          ],
+          elseType: "literal",
+          elseValue: "",
+        },
+      ],
+    }));
+  }, []);
+
+  const updateCaseExpression = useCallback((id: string, updates: Partial<CaseExpression>) => {
+    setState((prev) => ({
+      ...prev,
+      caseExpressions: prev.caseExpressions.map((expr) =>
+        expr.id === id ? { ...expr, ...updates } : expr
+      ),
+    }));
+  }, []);
+
+  const removeCaseExpression = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      caseExpressions: prev.caseExpressions.filter((expr) => expr.id !== id),
+    }));
+  }, []);
+
+  const addCaseBranch = useCallback((caseId: string) => {
+    setState((prev) => ({
+      ...prev,
+      caseExpressions: prev.caseExpressions.map((expr) =>
+        expr.id === caseId
+          ? {
+              ...expr,
+              branches: [
+                ...expr.branches,
+                { id: genId(), column: "", operator: "=", value: "", thenType: "literal", thenValue: "" },
+              ],
+            }
+          : expr
+      ),
+    }));
+  }, []);
+
+  const updateCaseBranch = useCallback(
+    (caseId: string, branchId: string, updates: Partial<CaseWhenBranch>) => {
+      setState((prev) => ({
+        ...prev,
+        caseExpressions: prev.caseExpressions.map((expr) =>
+          expr.id === caseId
+            ? {
+                ...expr,
+                branches: expr.branches.map((branch) =>
+                  branch.id === branchId ? { ...branch, ...updates } : branch
+                ),
+              }
+            : expr
+        ),
+      }));
+    },
+    []
+  );
+
+  const removeCaseBranch = useCallback((caseId: string, branchId: string) => {
+    setState((prev) => ({
+      ...prev,
+      caseExpressions: prev.caseExpressions.map((expr) => {
+        if (expr.id !== caseId) return expr;
+        if (expr.branches.length === 1) return expr; // Prevent deleting the last branch
+        return {
+          ...expr,
+          branches: expr.branches.filter((branch) => branch.id !== branchId),
+        };
+      }),
+    }));
+  }, []);
+
+  const addFunctionColumn = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      functionColumns: [
+        ...prev.functionColumns,
+        {
+          id: genId(),
+          func: "SUM",
+          column: "",
+          alias: `Func_Column_${prev.functionColumns.length + 1}`,
+        },
+      ],
+    }));
+  }, []);
+
+  const updateFunctionColumn = useCallback((id: string, updates: Partial<FunctionColumn>) => {
+    setState((prev) => ({
+      ...prev,
+      functionColumns: prev.functionColumns.map((col) =>
+        col.id === id ? { ...col, ...updates } : col
+      ),
+    }));
+  }, []);
+
+  const removeFunctionColumn = useCallback((id: string) => {
+    setState((prev) => ({
+      ...prev,
+      functionColumns: prev.functionColumns.filter((col) => col.id !== id),
+    }));
+  }, []);
+
   const setMode = useCallback((mode: "LIST" | "REPORT") => {
     setState((prev) => ({ ...prev, mode }));
   }, []);
@@ -745,6 +905,15 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     toggleGroupBy,
     setAggregate,
     removeAggregate,
+    addCaseExpression,
+    updateCaseExpression,
+    removeCaseExpression,
+    addCaseBranch,
+    updateCaseBranch,
+    removeCaseBranch,
+    addFunctionColumn,
+    updateFunctionColumn,
+    removeFunctionColumn,
     setMode,
     setPivotConfig,
     setMarcadoseUnion,

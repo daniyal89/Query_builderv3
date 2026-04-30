@@ -314,13 +314,31 @@ class QueryBuilderService:
         return " ".join(clauses)
 
     @staticmethod
-    def _build_select_clause(payload: QueryPayload, alias_by_table: dict[str, str]) -> str:
+    def _build_select_clause(
+        payload: QueryPayload,
+        alias_by_table: dict[str, str],
+        engine: EngineName,
+        start_param_index: int = 1,
+    ) -> tuple[str, list[Any]]:
+        select_expressions: list[str] = []
+        
+        # Build computed columns from CASE expressions
+        case_sqls, case_params = QueryBuilderService._build_case_expressions(
+            payload, engine, alias_by_table, start_param_index
+        )
+        select_expressions.extend(case_sqls)
+
+        # Build function columns
+        func_sqls = QueryBuilderService._build_function_columns(payload, alias_by_table)
+        select_expressions.extend(func_sqls)
+
         if not payload.select or payload.select == ["*"]:
             if payload.joins:
-                return ", ".join(f"{alias}.*" for alias in alias_by_table.values())
-            return "*"
+                select_expressions.insert(0, ", ".join(f"{alias}.*" for alias in alias_by_table.values()))
+            else:
+                select_expressions.insert(0, "*")
+            return ", ".join(select_expressions), case_params
 
-        select_expressions: list[str] = []
         for column_ref in payload.select:
             table_name, column_name, expression = QueryBuilderService._resolve_column_expression(
                 column_ref,
@@ -329,10 +347,106 @@ class QueryBuilderService:
             )
             if payload.joins:
                 alias_name = f"{table_name}.{column_name}"
-                select_expressions.append(f"{expression} AS {QueryBuilderService._quote_identifier(alias_name)}")
+                select_expressions.insert(0, f"{expression} AS {QueryBuilderService._quote_identifier(alias_name)}")
             else:
-                select_expressions.append(expression)
-        return ", ".join(select_expressions)
+                select_expressions.insert(0, expression)
+        
+        return ", ".join(select_expressions), case_params
+
+    @staticmethod
+    def _build_condition_sql(
+        filter_condition: Any,
+        engine: EngineName,
+        alias_by_table: dict[str, str],
+        default_table: str,
+        start_param_index: int,
+    ) -> tuple[str, list[Any]]:
+        """Build SQL and parameters for a single condition (FilterCondition or CaseWhenBranch)."""
+        params: list[Any] = []
+        
+        _, column_name, column_expr = QueryBuilderService._resolve_column_expression(
+            filter_condition.column,
+            alias_by_table,
+            default_table,
+        )
+        operator = filter_condition.operator
+        use_date_literals = QueryBuilderService._is_date_like_column(column_name)
+        numeric_value = QueryBuilderService._to_float_if_numeric(filter_condition.value)
+        should_use_numeric_cast = (
+            engine == "duckdb"
+            and not use_date_literals
+            and operator in QueryBuilderService.NUMERIC_COMPARISON_OPERATORS
+            and numeric_value is not None
+        )
+        filter_column_expr = (
+            f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_numeric_cast else column_expr
+        )
+        date_filter_expr = (
+            QueryBuilderService._duckdb_date_expression(column_expr)
+            if use_date_literals and engine == "duckdb"
+            else column_expr
+        )
+
+        if operator in QueryBuilderService.NO_VALUE_OPERATORS:
+            return f"{column_expr} {operator}", []
+
+        if operator in QueryBuilderService.LIST_OPERATORS:
+            values = QueryBuilderService._normalize_list_value(filter_condition.value)
+            if not values:
+                raise ValueError(f"{operator} filters need at least one value.")
+            if use_date_literals:
+                literals = ", ".join(QueryBuilderService._date_literal(value) for value in values)
+                return f"{date_filter_expr} {operator} ({literals})", []
+            else:
+                placeholders = ", ".join(
+                    QueryBuilderService._build_placeholders(engine, len(values), start_param_index)
+                )
+                params.extend(values)
+                return f"{column_expr} {operator} ({placeholders})", params
+
+        if operator in QueryBuilderService.RANGE_OPERATORS:
+            start, end = QueryBuilderService._normalize_range_value(filter_condition.value)
+            if use_date_literals:
+                return (
+                    f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(start)} AND {QueryBuilderService._date_literal(end)}",
+                    []
+                )
+            else:
+                start_numeric = QueryBuilderService._to_float_if_numeric(start)
+                end_numeric = QueryBuilderService._to_float_if_numeric(end)
+                should_use_range_numeric_cast = (
+                    engine == "duckdb"
+                    and start_numeric is not None
+                    and end_numeric is not None
+                )
+                range_column_expr = (
+                    f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_range_numeric_cast else column_expr
+                )
+                left_placeholder = QueryBuilderService._placeholder(engine, start_param_index)
+                right_placeholder = QueryBuilderService._placeholder(engine, start_param_index + 1)
+                params.extend(
+                    [
+                        start_numeric if should_use_range_numeric_cast else start,
+                        end_numeric if should_use_range_numeric_cast else end,
+                    ]
+                )
+                return f"{range_column_expr} {operator} {left_placeholder} AND {right_placeholder}", params
+
+        if operator in QueryBuilderService.FRIENDLY_TEXT_OPERATORS:
+            sql_operator, pattern = QueryBuilderService._build_text_pattern(operator, filter_condition.value)
+            placeholder = QueryBuilderService._placeholder(engine, start_param_index)
+            params.append(pattern)
+            return f"{column_expr} {sql_operator} {placeholder} ESCAPE '\\'", params
+
+        if use_date_literals:
+            return (
+                f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}",
+                []
+            )
+        else:
+            placeholder = QueryBuilderService._placeholder(engine, start_param_index)
+            params.append(numeric_value if should_use_numeric_cast else filter_condition.value)
+            return f"{filter_column_expr} {operator} {placeholder}", params
 
     @staticmethod
     def _build_where_clause(
@@ -340,100 +454,135 @@ class QueryBuilderService:
         engine: EngineName,
         alias_by_table: dict[str, str],
         default_table: str,
+        start_param_index: int = 1,
     ) -> tuple[str, list[Any]]:
         where_clauses: list[str] = []
         params: list[Any] = []
 
         for filter_condition in filters:
-            _, column_name, column_expr = QueryBuilderService._resolve_column_expression(
-                filter_condition.column,
+            sql_cond, cond_params = QueryBuilderService._build_condition_sql(
+                filter_condition,
+                engine,
                 alias_by_table,
                 default_table,
+                start_param_index + len(params)
             )
-            operator = filter_condition.operator
-            use_date_literals = QueryBuilderService._is_date_like_column(column_name)
-            numeric_value = QueryBuilderService._to_float_if_numeric(filter_condition.value)
-            should_use_numeric_cast = (
-                engine == "duckdb"
-                and not use_date_literals
-                and operator in QueryBuilderService.NUMERIC_COMPARISON_OPERATORS
-                and numeric_value is not None
-            )
-            filter_column_expr = (
-                f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_numeric_cast else column_expr
-            )
-            date_filter_expr = (
-                QueryBuilderService._duckdb_date_expression(column_expr)
-                if use_date_literals and engine == "duckdb"
-                else column_expr
-            )
-
-            if operator in QueryBuilderService.NO_VALUE_OPERATORS:
-                where_clauses.append(f"{column_expr} {operator}")
-                continue
-
-            if operator in QueryBuilderService.LIST_OPERATORS:
-                values = QueryBuilderService._normalize_list_value(filter_condition.value)
-                if not values:
-                    raise ValueError(f"{operator} filters need at least one value.")
-                if use_date_literals:
-                    literals = ", ".join(QueryBuilderService._date_literal(value) for value in values)
-                    where_clauses.append(f"{date_filter_expr} {operator} ({literals})")
-                else:
-                    placeholders = ", ".join(
-                        QueryBuilderService._build_placeholders(engine, len(values), len(params) + 1)
-                    )
-                    where_clauses.append(f"{column_expr} {operator} ({placeholders})")
-                    params.extend(values)
-                continue
-
-            if operator in QueryBuilderService.RANGE_OPERATORS:
-                start, end = QueryBuilderService._normalize_range_value(filter_condition.value)
-                if use_date_literals:
-                    where_clauses.append(
-                        f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(start)} AND {QueryBuilderService._date_literal(end)}"
-                    )
-                else:
-                    start_numeric = QueryBuilderService._to_float_if_numeric(start)
-                    end_numeric = QueryBuilderService._to_float_if_numeric(end)
-                    should_use_range_numeric_cast = (
-                        engine == "duckdb"
-                        and start_numeric is not None
-                        and end_numeric is not None
-                    )
-                    range_column_expr = (
-                        f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_range_numeric_cast else column_expr
-                    )
-                    left_placeholder = QueryBuilderService._placeholder(engine, len(params) + 1)
-                    right_placeholder = QueryBuilderService._placeholder(engine, len(params) + 2)
-                    where_clauses.append(
-                        f"{range_column_expr} {operator} {left_placeholder} AND {right_placeholder}"
-                    )
-                    params.extend(
-                        [
-                            start_numeric if should_use_range_numeric_cast else start,
-                            end_numeric if should_use_range_numeric_cast else end,
-                        ]
-                    )
-                continue
-
-            if operator in QueryBuilderService.FRIENDLY_TEXT_OPERATORS:
-                sql_operator, pattern = QueryBuilderService._build_text_pattern(operator, filter_condition.value)
-                placeholder = QueryBuilderService._placeholder(engine, len(params) + 1)
-                where_clauses.append(f"{column_expr} {sql_operator} {placeholder} ESCAPE '\\'")
-                params.append(pattern)
-                continue
-
-            if use_date_literals:
-                where_clauses.append(
-                    f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}"
-                )
-            else:
-                placeholder = QueryBuilderService._placeholder(engine, len(params) + 1)
-                where_clauses.append(f"{filter_column_expr} {operator} {placeholder}")
-                params.append(numeric_value if should_use_numeric_cast else filter_condition.value)
+            where_clauses.append(sql_cond)
+            params.extend(cond_params)
 
         return " AND ".join(where_clauses) if where_clauses else "", params
+
+    @staticmethod
+    def _build_case_expressions(
+        payload: QueryPayload,
+        engine: EngineName,
+        alias_by_table: dict[str, str],
+        start_param_index: int,
+    ) -> tuple[list[str], list[Any]]:
+        """Generate SQL fragments and parameters for all CASE expressions."""
+        case_sqls: list[str] = []
+        params: list[Any] = []
+
+        for case_expr in payload.case_expressions:
+            if not case_expr.alias.strip():
+                continue
+            branch_sqls = []
+            for branch in case_expr.branches:
+                if not branch.column.strip():
+                    continue
+                sql_cond, cond_params = QueryBuilderService._build_condition_sql(
+                    branch,
+                    engine,
+                    alias_by_table,
+                    payload.table,
+                    start_param_index + len(params)
+                )
+                
+                params.extend(cond_params)
+
+                # Helper: engine-aware numeric cast
+                def _agg_cast(expr: str) -> str:
+                    if engine == "duckdb":
+                        return f"TRY_CAST({expr} AS DOUBLE)"
+                    return f"CAST({expr} AS NUMBER)"
+
+                # Handle THEN value depending on type
+                if branch.then_type == "column":
+                    _, _, then_expr = QueryBuilderService._resolve_column_expression(
+                        branch.then_value, alias_by_table, payload.table
+                    )
+                    if case_expr.aggregate_func:
+                        then_expr = _agg_cast(then_expr)
+                else:
+                    placeholder = QueryBuilderService._placeholder(engine, start_param_index + len(params))
+                    params.append(branch.then_value)
+                    then_expr = _agg_cast(placeholder) if case_expr.aggregate_func else placeholder
+                
+                branch_sqls.append(f"WHEN {sql_cond} THEN {then_expr}")
+
+            if not branch_sqls:
+                continue
+
+            # Handle ELSE value depending on type
+            if case_expr.else_type == "column":
+                _, _, else_expr = QueryBuilderService._resolve_column_expression(
+                    case_expr.else_value, alias_by_table, payload.table
+                )
+                if case_expr.aggregate_func:
+                    else_expr = _agg_cast(else_expr)
+            else:
+                placeholder = QueryBuilderService._placeholder(engine, start_param_index + len(params))
+                params.append(case_expr.else_value)
+                else_expr = _agg_cast(placeholder) if case_expr.aggregate_func else placeholder
+
+            branches_str = " ".join(branch_sqls)
+            case_sql = f"CASE {branches_str} ELSE {else_expr} END"
+            
+            if case_expr.aggregate_func:
+                case_sql = f"{case_expr.aggregate_func}({case_sql})"
+
+            case_sql = f"{case_sql} AS {QueryBuilderService._quote_identifier(case_expr.alias)}"
+            case_sqls.append(case_sql)
+
+        return case_sqls, params
+
+    @staticmethod
+    def _build_function_columns(
+        payload: QueryPayload,
+        alias_by_table: dict[str, str]
+    ) -> list[str]:
+        """Generate SQL fragments for standalone function columns."""
+        func_sqls: list[str] = []
+
+        for fcol in payload.function_columns:
+            if not fcol.column.strip() or not fcol.alias.strip():
+                continue
+            # Resolve main column expression
+            if fcol.column == "*":
+                main_expr = "*"
+            else:
+                _, _, main_expr = QueryBuilderService._resolve_column_expression(
+                    fcol.column, alias_by_table, payload.table
+                )
+
+            # Build function expression
+            if fcol.func == "COUNT_DISTINCT":
+                expr = f"COUNT(DISTINCT {main_expr})"
+            elif fcol.func == "COALESCE":
+                if fcol.second_column:
+                    _, _, second_expr = QueryBuilderService._resolve_column_expression(
+                        fcol.second_column, alias_by_table, payload.table
+                    )
+                    expr = f"COALESCE({main_expr}, {second_expr})"
+                else:
+                    expr = f"COALESCE({main_expr}, NULL)"
+            else:
+                expr = f"{fcol.func}({main_expr})"
+
+            alias = QueryBuilderService._quote_identifier(fcol.alias)
+            func_sqls.append(f"{expr} AS {alias}")
+
+        return func_sqls
 
     @staticmethod
     def _build_order_clause(payload: QueryPayload, alias_by_table: dict[str, str]) -> str:
@@ -576,20 +725,46 @@ class QueryBuilderService:
         engine = payload.engine
         alias_by_table = QueryBuilderService._build_alias_map(payload)
         from_clause = QueryBuilderService._build_from_clause(payload, alias_by_table)
-        where_str, params = QueryBuilderService._build_where_clause(
+        
+        # SELECT params come first in parameter order, so build SELECT first.
+        select_clause, select_params = QueryBuilderService._build_select_clause(
+            payload, alias_by_table, engine, start_param_index=1
+        )
+        
+        where_str, where_params = QueryBuilderService._build_where_clause(
             payload.filters,
             engine,
             alias_by_table,
             payload.table,
+            start_param_index=len(select_params) + 1
         )
+        
+        params = select_params + where_params
         where_clause = f" WHERE {where_str}" if where_str else ""
 
-        select_clause = QueryBuilderService._build_select_clause(payload, alias_by_table)
         order_str = QueryBuilderService._build_order_clause(payload, alias_by_table)
+
+        # Auto-inject GROUP BY when computed columns use aggregates
+        has_agg_case = any(ce.aggregate_func for ce in payload.case_expressions if ce.alias.strip())
+        has_agg_func = bool(payload.function_columns)
+        needs_group_by = has_agg_case or has_agg_func
+
+        group_by_clause = ""
+        if needs_group_by and payload.select and payload.select != ["*"]:
+            group_exprs = []
+            for col_ref in payload.select:
+                _, _, col_expr = QueryBuilderService._resolve_column_expression(
+                    col_ref, alias_by_table, payload.table
+                )
+                group_exprs.append(col_expr)
+            if group_exprs:
+                group_by_clause = f" GROUP BY {', '.join(group_exprs)}"
 
         sql = f"SELECT {select_clause} FROM {from_clause}"
         if where_clause:
             sql += where_clause
+        if group_by_clause:
+            sql += group_by_clause
         if order_str:
             sql += f" ORDER BY {order_str}"
 

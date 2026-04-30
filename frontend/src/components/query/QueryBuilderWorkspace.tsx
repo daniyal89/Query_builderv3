@@ -10,6 +10,8 @@ import type { QueryEngine } from "../../types/connection.types";
 import type { TableMetadata } from "../../types/schema.types";
 import { buildColumnOptionsForQuery } from "../../utils/queryBuilderColumns";
 import { ColumnPicker } from "./ColumnPicker";
+import { CaseExpressionBuilder } from "./CaseExpressionBuilder";
+import { FunctionColumnBuilder } from "./FunctionColumnBuilder";
 import { FilterPanel } from "./FilterPanel";
 import { JoinComposer } from "./JoinComposer";
 import { LocalFileObjectCreator } from "./LocalFileObjectCreator";
@@ -161,6 +163,15 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     addFilter,
     updateFilter,
     removeFilter,
+    addCaseExpression,
+    updateCaseExpression,
+    removeCaseExpression,
+    addCaseBranch,
+    updateCaseBranch,
+    removeCaseBranch,
+    addFunctionColumn,
+    updateFunctionColumn,
+    removeFunctionColumn,
     setSort,
     addJoin,
     updateJoin,
@@ -655,6 +666,23 @@ WHERE 1 = 1`;
                   columns={availableColumns}
                   selectedColumns={state.selectedColumns}
                   onToggleColumn={toggleColumn}
+                />
+                <FunctionColumnBuilder
+                  functionColumns={state.functionColumns}
+                  columns={availableColumns}
+                  onAddFunctionColumn={addFunctionColumn}
+                  onUpdateFunctionColumn={updateFunctionColumn}
+                  onRemoveFunctionColumn={removeFunctionColumn}
+                />
+                <CaseExpressionBuilder
+                  caseExpressions={state.caseExpressions}
+                  columns={availableColumns}
+                  onAddCase={addCaseExpression}
+                  onUpdateCase={updateCaseExpression}
+                  onRemoveCase={removeCaseExpression}
+                  onAddBranch={addCaseBranch}
+                  onUpdateBranch={updateCaseBranch}
+                  onRemoveBranch={removeCaseBranch}
                 />
                 <FilterPanel
                   filters={state.filters}

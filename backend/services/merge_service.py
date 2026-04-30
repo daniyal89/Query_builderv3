@@ -52,11 +52,11 @@ class MergeService:
         if not normalized_master_table:
             raise ValueError("A DuckDB source table is required for enrichment.")
 
-        # Build dynamic JOIN clause
+        # Build dynamic JOIN clause — cast both sides to VARCHAR to handle type mismatches
         join_conditions = []
         for mapping in join_keys:
             join_conditions.append(
-                f'df."{mapping["fileColumn"]}" = source."{mapping["tableColumn"]}"'
+                f'CAST(df."{mapping["fileColumn"]}" AS VARCHAR) = CAST(source."{mapping["tableColumn"]}" AS VARCHAR)'
             )
         join_clause = " AND ".join(join_conditions)
 
