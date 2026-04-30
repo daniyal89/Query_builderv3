@@ -76,14 +76,14 @@ def create_app() -> FastAPI:
         if request.url.path.startswith("/api/"):
             app_logger.info(
                 f"{request.method} {request.url.path} {response.status_code}",
-                extra_info={
+                extra={"extra_info": {
                     "event": "api_request",
                     "method": request.method,
                     "endpoint": request.url.path,
                     "status_code": response.status_code,
                     "duration_ms": duration_ms,
                     "request_id": request_id,
-                }
+                }}
             )
             
         return response

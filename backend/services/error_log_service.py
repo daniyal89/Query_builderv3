@@ -24,7 +24,7 @@ class ErrorLogService:
     @classmethod
     def append(cls, event: dict[str, Any]) -> None:
         """Legacy generic append method."""
-        app_logger.error(event.get("error", "Error logged via append"), extra_info=event)
+        app_logger.error(event.get("error", "Error logged via append"), extra={"extra_info": event})
 
     @classmethod
     def append_request_error(
@@ -48,7 +48,7 @@ class ErrorLogService:
         if extra:
             payload.update(extra)
         
-        app_logger.error(f"Request Error: {request.method} {request.url.path} - {error}", extra_info=payload)
+        app_logger.error(f"Request Error: {request.method} {request.url.path} - {error}", extra={"extra_info": payload})
 
     @classmethod
     def append_system_event(cls, *, event: str, detail: str, extra: dict[str, Any] | None = None) -> None:
@@ -60,4 +60,4 @@ class ErrorLogService:
         if extra:
             payload.update(extra)
             
-        app_logger.info(f"System Event: {event}", extra_info=payload)
+        app_logger.info(f"System Event: {event}", extra={"extra_info": payload})
