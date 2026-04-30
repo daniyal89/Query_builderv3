@@ -31,11 +31,11 @@ function getDefaultMonthTag(): string {
 
 function createDefaultMarcadoseUnion(): MarcadoseUnionConfig {
   return {
-    enabled: false,
+    enabled: true,
     month_tag: getDefaultMonthTag(),
     discoms: [...MARCADOSE_DISCOMS],
     base_discom: "DVVNL",
-    add_grand_total: false,
+    add_grand_total: true,
     schema_name: "MERCADOS",
   };
 }
@@ -317,6 +317,17 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
         sqlText: prev.sourceMode === "builder" || !prev.isSqlDetached ? "" : prev.sqlText,
         isPreviewLoading: false,
         previewError: "Complete the join column mapping before previewing SQL.",
+      }));
+      return undefined;
+    }
+
+    if (state.mode === "REPORT" && !state.pivotConfig.values.trim()) {
+      setState((prev) => ({
+        ...prev,
+        generatedSql: "",
+        sqlText: prev.sourceMode === "builder" || !prev.isSqlDetached ? "" : prev.sqlText,
+        isPreviewLoading: false,
+        previewError: "Select a Values field before generating a report.",
       }));
       return undefined;
     }

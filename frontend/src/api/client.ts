@@ -16,6 +16,19 @@ const apiClient = axios.create({
   },
 });
 
-// TODO: Attach response interceptor for global error handling
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const detail =
+      error?.response?.data?.detail ||
+      error?.response?.data?.error ||
+      error?.message ||
+      "Request failed.";
+
+    error.normalizedMessage = typeof detail === "string" ? detail : JSON.stringify(detail);
+    error.requestId = error?.response?.headers?.["x-request-id"] ?? null;
+    return Promise.reject(error);
+  },
+);
 
 export default apiClient;
