@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import type { QueryEngine } from "../../types/connection.types";
 import type { QuerySourceMode } from "../../types/query.types";
 import { HighlightedSqlEditor, type SqlSuggestionItem } from "./HighlightedSqlEditor";
@@ -52,12 +52,13 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
   onSqlChange,
   onRun,
 }) => {
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const canResetFromBuilder = generatedSql.trim().length > 0;
   const canRunManual = sqlText.trim().length > 0;
   const builderRunLabel = queryMode === "REPORT" ? "Generate Report" : "Run Builder SQL";
 
   return (
-    <div className="mb-6 rounded-lg border border-gray-200 bg-white shadow-sm">
+    <div className={`${isFullscreen ? "fixed inset-4 z-50 mb-0 overflow-auto" : "mb-6"} rounded-lg border border-gray-200 bg-white shadow-sm`}>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
         <div>
           <h3 className="text-sm font-semibold text-gray-800">SQL Preview &amp; Editor</h3>
@@ -114,13 +115,22 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
           <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
             {isPreviewLoading ? "Refreshing SQL preview..." : "Editable SQL"}
           </span>
-          <span className="text-xs text-gray-400">
-            {sourceMode === "builder"
-              ? queryMode === "REPORT"
-                ? "Run generates report output"
-                : "Run uses builder output"
-              : "Run uses editor text"}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400">
+              {sourceMode === "builder"
+                ? queryMode === "REPORT"
+                  ? "Run generates report output"
+                  : "Run uses builder output"
+                : "Run uses editor text"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsFullscreen((current) => !current)}
+              className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            >
+              {isFullscreen ? "Exit Full Screen" : "Full Screen"}
+            </button>
+          </div>
         </div>
 
         {sourceMode === "manual" && manualSqlSuggestions.length > 0 && (
@@ -139,7 +149,7 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
               ? "Write SQL directly here."
               : "Select a table and configure the builder to generate SQL."
           }
-          minHeightClassName="min-h-[240px]"
+          minHeightClassName={isFullscreen ? "min-h-[70vh]" : "min-h-[240px]"}
         />
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
