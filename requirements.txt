@@ -9,7 +9,7 @@ pandas>=2.0.0
 pyarrow>=14.0.0
 
 # Build
-pyinstaller>=6.8.0
+pyinstaller>=6.20.0
 
 # Dev / Testing
 pytest>=8.2.0
