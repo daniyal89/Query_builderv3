@@ -1,0 +1,8 @@
+{
+  "engine": "duckdb",
+  "created_at_utc": "2026-04-25T05:31:34.755214+00:00",
+  "db_path": "C:\\Users\\aimld\\uppcl_latest.duckdb",
+  "source_table": "HIR",
+  "row_limit": 1000,
+  "rows_saved": 1000
+}

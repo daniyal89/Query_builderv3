@@ -1,0 +1,9 @@
+{
+  "engine": "oracle",
+  "created_at_utc": "2026-04-25T07:35:19.381929+00:00",
+  "schema_name": "ASIFD",
+  "connection_label": "10.96.10.70:1521/oradb19c",
+  "source_object": "MERCADOS.CM_MASTER_DATA_77R_DVVNL",
+  "row_limit": 1000,
+  "rows_saved": 81
+}
