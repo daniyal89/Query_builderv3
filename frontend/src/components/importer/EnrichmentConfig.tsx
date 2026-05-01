@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useConnection } from "../../hooks/useConnection";
 import { pickSystemFile } from "../../api/systemApi";
 import type { JoinKeyMapping, OutputFormat, UploadSheetsResponse } from "../../types/merge.types";
@@ -34,13 +34,15 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
     connect,
   } = useConnection();
   const [masterTable, setMasterTable] = useState<string>("master");
-  const [outputFormat, setOutputFormat] = useState<OutputFormat>("xlsx");
+  const outputFormat: OutputFormat = "xlsx";
   const [joinKeys, setJoinKeys] = useState<JoinKeyMapping[]>([{ fileColumn: "", tableColumn: "" }]);
   const [columnsToFetch, setColumnsToFetch] = useState<string[]>([]);
   const [didAutoLoadOnMount, setDidAutoLoadOnMount] = useState(false);
 
-  const availableMasterColumns =
-    tables?.find((table) => table.table_name === masterTable)?.columns.map((column) => column.name) || [];
+  const availableMasterColumns = useMemo(
+    () => tables?.find((table) => table.table_name === masterTable)?.columns.map((column) => column.name) || [],
+    [masterTable, tables]
+  );
 
   useEffect(() => {
     if (tables.length === 0) return;

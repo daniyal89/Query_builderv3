@@ -37,4 +37,21 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       - name: Run backend test suite
-        run: python -m pytest tests/backend
+        run: python -m pytest tests/backend --junitxml=backend-test-results.xml --cov=backend --cov-report=xml:backend-coverage.xml
+
+      - name: Upload backend test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-results
+          path: |
+            backend-test-results.xml
+            backend-coverage.xml
+
+      - name: Publish backend test annotations
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: backend-test-results.xml
+          check_name: Backend Test Report
+          detailed_summary: true

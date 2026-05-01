@@ -272,7 +272,11 @@ function getValidFilters(filters: FilterCondition[]): Omit<FilterCondition, "id"
       if (NO_VALUE_OPERATORS.includes(filter.operator)) return true;
       return typeof filter.value === "string" ? filter.value.trim() !== "" : filter.value !== "";
     })
-    .map(({ id, ...rest }) => rest);
+    .map((filter) => {
+      const { id, ...payload } = filter;
+      void id;
+      return payload;
+    });
 }
 
 function getJoinPayloads(state: QueryBuilderState): QueryPayload["joins"] {

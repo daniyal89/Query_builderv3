@@ -12,7 +12,7 @@ export interface SqlSuggestionItem {
   value: string;
   label?: string;
   detail?: string;
-  kind?: "table" | "column";
+  kind?: "table" | "column" | "function";
 }
 
 const SQL_KEYWORDS = [

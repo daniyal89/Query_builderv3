@@ -8,7 +8,7 @@ import { getColumns } from "../../api/schemaApi";
 import { useQueryBuilder } from "../../hooks/useQueryBuilder";
 import type { QueryEngine } from "../../types/connection.types";
 import type { TableMetadata } from "../../types/schema.types";
-import { buildColumnOptionsForQuery } from "../../utils/queryBuilderColumns";
+import { buildColumnOptionsForQuery, getJoinReferenceName } from "../../utils/queryBuilderColumns";
 import { ColumnPicker } from "./ColumnPicker";
 import { CaseExpressionBuilder } from "./CaseExpressionBuilder";
 import { FunctionColumnBuilder } from "./FunctionColumnBuilder";
@@ -51,6 +51,18 @@ interface QueryHistoryItem {
 const MARCADOSE_DISCOMS = ["DVVNL", "PVVNL", "PUVNL", "MVVNL", "KESCO"];
 const SAVED_QUERIES_STORAGE_KEY = "qb:saved-queries:v1";
 const QUERY_HISTORY_STORAGE_KEY = "qb:query-history:v1";
+
+const MANUAL_SQL_FUNCTION_SUGGESTIONS: SqlSuggestionItem[] = [
+  { value: "SUM()", detail: "Aggregate function", kind: "function" },
+  { value: "COUNT(*)", detail: "Aggregate function", kind: "function" },
+  { value: "COUNT()", detail: "Aggregate function", kind: "function" },
+  { value: "AVG()", detail: "Aggregate function", kind: "function" },
+  { value: "MIN()", detail: "Aggregate function", kind: "function" },
+  { value: "MAX()", detail: "Aggregate function", kind: "function" },
+  { value: "TRY_CAST()", detail: "Type conversion", kind: "function" },
+  { value: "CAST()", detail: "Type conversion", kind: "function" },
+  { value: "CASE WHEN  THEN  ELSE  END", detail: "Conditional expression", kind: "function" },
+];
 
 const MONTH_INDEX_BY_SHORT_NAME: Record<string, number> = {
   jan: 0,
@@ -278,6 +290,19 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
 
   const manualSqlSuggestions = useMemo(() => {
     const suggestions = new Map<string, SqlSuggestionItem>();
+    const aliasByReference = new Map<string, string>();
+
+    if (state.table.trim()) {
+      aliasByReference.set(state.table.trim(), "t0");
+    }
+
+    state.joins
+      .filter((join) => join.table.trim() !== "")
+      .forEach((join, joinIndex) => {
+        const referenceName = getJoinReferenceName(join).trim();
+        if (!referenceName) return;
+        aliasByReference.set(referenceName, `t${joinIndex + 1}`);
+      });
 
     metadataTables.forEach((table) => {
       suggestions.set(table.table_name, {
@@ -306,10 +331,43 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
           kind: "column",
         });
       }
+
+      const alias = aliasByReference.get(column.referenceName);
+      if (alias) {
+        const aliasColumn = `${alias}.${column.columnName}`;
+        if (!suggestions.has(aliasColumn)) {
+          suggestions.set(aliasColumn, {
+            value: aliasColumn,
+            label: aliasColumn,
+            detail: `${column.referenceName} - ${column.dtype}`,
+            kind: "column",
+          });
+        }
+      }
+    });
+
+    metadataTables.forEach((table) => {
+      table.columns.forEach((column) => {
+        const tableColumn = `${table.table_name}.${column.name}`;
+        if (!suggestions.has(tableColumn)) {
+          suggestions.set(tableColumn, {
+            value: tableColumn,
+            label: tableColumn,
+            detail: column.dtype || "column",
+            kind: "column",
+          });
+        }
+      });
+    });
+
+    MANUAL_SQL_FUNCTION_SUGGESTIONS.forEach((item) => {
+      if (!suggestions.has(item.value)) {
+        suggestions.set(item.value, item);
+      }
     });
 
     return Array.from(suggestions.values());
-  }, [availableColumns, metadataTables]);
+  }, [availableColumns, metadataTables, state.joins, state.table]);
 
   const shouldShowSelectTableHint =
     !state.table && state.sourceMode === "builder" && !state.sqlText.trim();
