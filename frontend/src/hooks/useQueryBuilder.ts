@@ -273,8 +273,8 @@ function getValidFilters(filters: FilterCondition[]): Omit<FilterCondition, "id"
       return typeof filter.value === "string" ? filter.value.trim() !== "" : filter.value !== "";
     })
     .map((filter) => {
-      const payload = { ...filter };
-      delete payload.id;
+      const { id, ...payload } = filter;
+      void id;
       return payload;
     });
 }
