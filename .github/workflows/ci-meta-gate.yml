@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 concurrency:
   group: ci-meta-gate-${{ github.workflow }}-${{ github.ref }}
