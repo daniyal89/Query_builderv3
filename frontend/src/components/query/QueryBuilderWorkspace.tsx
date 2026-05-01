@@ -291,9 +291,14 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   const manualSqlSuggestions = useMemo(() => {
     const suggestions = new Map<string, SqlSuggestionItem>();
     const aliasByReference = new Map<string, string>();
+    const normalizedSqlText = state.sqlText;
+    const fromMatch = normalizedSqlText.match(/\bfrom\s+([A-Za-z0-9_."$]+)/i);
+    const inferredPrimaryTable = fromMatch?.[1]?.replace(/^"+|"+$/g, "").trim() || "";
 
     if (state.table.trim()) {
       aliasByReference.set(state.table.trim(), "t0");
+    } else if (inferredPrimaryTable) {
+      aliasByReference.set(inferredPrimaryTable, "t0");
     }
 
     state.joins
@@ -360,6 +365,25 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
       });
     });
 
+    if (inferredPrimaryTable) {
+      const inferredTable = metadataTables.find(
+        (table) => table.table_name.toLowerCase() === inferredPrimaryTable.toLowerCase()
+      );
+      if (inferredTable) {
+        inferredTable.columns.forEach((column) => {
+          const aliasColumn = `t0.${column.name}`;
+          if (!suggestions.has(aliasColumn)) {
+            suggestions.set(aliasColumn, {
+              value: aliasColumn,
+              label: aliasColumn,
+              detail: `${inferredTable.table_name} - ${column.dtype || "column"}`,
+              kind: "column",
+            });
+          }
+        });
+      }
+    }
+
     MANUAL_SQL_FUNCTION_SUGGESTIONS.forEach((item) => {
       if (!suggestions.has(item.value)) {
         suggestions.set(item.value, item);
@@ -367,7 +391,8 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     });
 
     return Array.from(suggestions.values());
-  }, [availableColumns, metadataTables, state.joins, state.table]);
+
+  }, [availableColumns, metadataTables, state.joins, state.sqlText, state.table]);
 
   const shouldShowSelectTableHint =
     !state.table && state.sourceMode === "builder" && !state.sqlText.trim();
