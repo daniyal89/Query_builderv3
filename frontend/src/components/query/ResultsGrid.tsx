@@ -23,7 +23,7 @@ async function downloadCSV(result: QueryResult) {
 
   try {
     if ("showSaveFilePicker" in window) {
-      // @ts-ignore
+      // @ts-expect-error showSaveFilePicker is not typed in libdom for all targets
       const handle = await window.showSaveFilePicker({
         suggestedName: "query_results.csv",
         types: [{ description: "CSV File", accept: { "text/csv": [".csv"] } }],

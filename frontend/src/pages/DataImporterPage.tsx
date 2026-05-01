@@ -6,6 +6,7 @@ import React, { useMemo, useState } from "react";
 import { mergeFolder } from "../api/mergeApi";
 import { pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 import type { FolderMergeResponse } from "../types/merge.types";
+import { StatusAlert } from "../components/common/StatusAlert";
 
 function getErrorMessage(error: unknown): string {
   if (
@@ -164,9 +165,9 @@ export const DataImporterPage: React.FC = () => {
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 shadow-sm">
-          <span className="font-semibold">Error:</span> {error}
-        </div>
+        <StatusAlert tone="error" title="Error">
+          {error}
+        </StatusAlert>
       )}
 
       {result && (

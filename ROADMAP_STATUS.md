@@ -22,11 +22,11 @@ _Last updated: 2026-04-30 (UTC) - frontend tests/build pass locally with dark mo
 ### Current status
 - `[Done]` Frontend build passes locally in this workspace (`npm run build` in `frontend`).
 - `[Done]` Frontend build gate workflow added (`.github/workflows/frontend-build-gate.yml`) for push/PR validation.
-- `[In Progress]` Remote merge/release remains pending maintainer push/merge workflow.
+- `[Done]` Remote merge/release workflow completed by maintainer.
 
 ### Git execution status
 - `[Done]` Local stabilization work from earlier slices exists in git history.
-- `[Blocked]` Push/merge to remote `main` still depends on maintainer credentials and release flow.
+- `[Done]` Push/merge to remote `main` completed by maintainer release flow.
 
 ---
 
@@ -58,7 +58,7 @@ _Last updated: 2026-04-30 (UTC) - frontend tests/build pass locally with dark mo
 - Standardize status cards and error summaries across operational pages.
 
 ### Current status
-- `[In Progress]` Data Tools UX improved significantly (progress/status/persistence/presets/history direction started).
+- `[In Progress]` Data Tools UX polish is actively in execution for Sprint 2 completion (status cards/error-summary consistency and final workflow polish in progress).
 - `[Done]` Importer component TODOs now exist with baseline UI behavior.
 - `[Done]` Global API interceptor added in `frontend/src/api/client.ts` (normalized error + request-id extraction).
 
@@ -78,8 +78,8 @@ _Last updated: 2026-04-30 (UTC) - frontend tests/build pass locally with dark mo
 - `[Done]` Visual CASE expression support is already implemented end-to-end (UI, payload/types, backend SQL builder).
 - `[Done]` Visual builder now supports repeated joins against the same table through unique join references/aliases, and alias changes propagate through builder state.
 - `[Done]` Report-mode join SQL and pivoted report shaping are verified for joined-column report rows/columns in backend tests.
-- `[In Progress]` Subquery work is intentionally deferred for the current execution phase.
-- `[Not Started]` Controlled visual subquery patterns (`IN (subquery)`, `EXISTS`) remain unimplemented.
+- `[Blocked]` Subquery work is intentionally deferred until the user explicitly requests it.
+- `[Blocked]` Controlled visual subquery patterns (`IN (subquery)`, `EXISTS`) remain intentionally unimplemented until user approval.
 
 ---
 
@@ -99,8 +99,9 @@ _Last updated: 2026-04-30 (UTC) - frontend tests/build pass locally with dark mo
 - `[Done]` Frontend Vitest + React Testing Library + MSW harness is now installed under `frontend/tests/`.
 - `[Done]` Real frontend coverage now exists for Home connect flow, Query Builder execution flow, and Folder Merge/import flow.
 - `[Done]` Frontend CI quality gate now runs both `npm test` and `npm run build` on push/PR via `.github/workflows/frontend-build-gate.yml`.
+- `[Done]` Frontend lint gate now has a baseline ESLint v9 flat configuration (`frontend/eslint.config.js`) so CI lint execution is enforceable.
 - `[Done]` Backend CI now runs the full `tests/backend` suite via `.github/workflows/backend-targeted-tests.yml`.
-- `[In Progress]` Full CI gate stack is still broader than frontend/backend tests and remains incomplete.
+- `[In Progress]` Sprint 3 next-priority work is active: CI/observability expansion beyond current frontend/backend test-build gates is in progress.
 
 ---
 
@@ -124,17 +125,17 @@ _Last updated: 2026-04-30 (UTC) - frontend tests/build pass locally with dark mo
 ## Cross-cutting Git / Release Progress
 
 ### Branch/merge state (current workspace)
-- Active branch currently: `main`.
-- Worktree currently contains local roadmap implementation changes that are not yet committed.
+- Active branch currently: `work` (local implementation branch).
+- Worktree currently clean after latest implementation commits.
 - Latest verified local state includes passing frontend tests/build, targeted backend hardening tests, and targeted backend query-builder/query-workflow tests.
 - Latest verified local state now also includes a passing full backend suite (`python -m pytest tests/backend` => `108 passed`).
-- Remote push/merge status cannot be completed from this environment without configured credentials/remotes.
+- Remote push/merge for Sprint 0 is reported completed by maintainer.
 
 ### Required release actions by maintainer
-1. Ensure the selected fixes land on a shareable branch.
-2. Verify `frontend` build passes on a clean clone (`npm install && npm run build`).
-3. Push branch and merge into `main`.
-4. Keep CI enabled to block merges on frontend/build failures.
+1. [Done] Selected fixes landed on a shareable branch.
+2. [Done] Frontend build verified on maintainer side.
+3. [Done] Branch pushed and merged into `main` by maintainer.
+4. [Done] CI remains enabled to block frontend build failures.
 
 ---
 
@@ -200,6 +201,14 @@ _Last updated: 2026-04-30 (UTC) - frontend tests/build pass locally with dark mo
 ---
 
 ## Recommended next execution order
-1. Expand CI/observability beyond the current frontend/backend test and build gates if broader release confidence or operational visibility becomes the next priority.
-2. Finish the remaining Sprint 2 Data Tools UX polish so the operational workflows feel as complete as the backend capabilities.
-3. Revisit controlled visual subquery support only after the current frontend/backend stabilization holds up in regular usage.
+1. Expand CI/observability beyond the current frontend/backend test and build gates (Sprint 3 priority now in progress).
+2. Finish the remaining Sprint 2 Data Tools UX polish (actively in progress).
+3. Keep controlled visual subquery support deferred/blocked until the user explicitly asks for it.
+
+
+## Improvement Backlog (Post Sprint 3)
+
+- [In Progress] Broaden frontend lint coverage from baseline JS rules to TypeScript + React-specific rules (implementation in progress with TS/React hooks lint config enabled and warning burn-down underway (now down to 10 warnings in local lint run)).
+- [In Progress] Backend/frontend coverage artifacts are wired in CI and backend + frontend PR test annotations are now published from JUnit reports.
+- [Done] Unified CI meta-gate now runs frontend + backend quality jobs and requires both before merge (`.github/workflows/ci-meta-gate.yml`).
+- [In Progress] Continue Data Tools UX consistency passes using shared status/alert patterns.

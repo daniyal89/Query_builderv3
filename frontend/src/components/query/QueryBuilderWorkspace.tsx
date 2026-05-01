@@ -308,6 +308,20 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
       }
     });
 
+    metadataTables.forEach((table) => {
+      table.columns.forEach((column) => {
+        const tableColumn = `${table.table_name}.${column.name}`;
+        if (!suggestions.has(tableColumn)) {
+          suggestions.set(tableColumn, {
+            value: tableColumn,
+            label: tableColumn,
+            detail: column.dtype || "column",
+            kind: "column",
+          });
+        }
+      });
+    });
+
     return Array.from(suggestions.values());
   }, [availableColumns, metadataTables]);
 
