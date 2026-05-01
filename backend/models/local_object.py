@@ -1,6 +1,6 @@
 """Models for local DuckDB object creation from files."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic import field_validator
@@ -57,4 +57,4 @@ class FilePreviewResponse(BaseModel):
     """Preview response for local file object creation."""
 
     columns: list[str] = Field(default_factory=list)
-    rows: list[list[str | int | float | None]] = Field(default_factory=list)
+    rows: list[list[Any]] = Field(default_factory=list)

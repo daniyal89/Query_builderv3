@@ -4,17 +4,52 @@ query.py — Engine-aware query execution endpoint.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from backend.api.deps import get_db_service, get_oracle_service
 from backend.models.query import QueryPayload, QueryPreview, QueryResult
 from backend.services.duckdb_service import DuckDBService
+from backend.services.error_log_service import ErrorLogService
 from backend.services.oracle_service import OracleService
 from backend.services.query_builder_service import QueryBuilderService
 from backend.services.marcadose_union_service import MarcadoseUnionService
+from backend.utils.rate_limits import enforce_rate_limit
 
 router = APIRouter()
 MAX_SQL_TEXT_LENGTH = 50000
+
+
+def _safe_utf8_hex(text: str | None) -> str | None:
+    if not isinstance(text, str):
+        return None
+    try:
+        return text.encode("utf-8").hex()
+    except UnicodeEncodeError:
+        return text.encode("utf-8", errors="backslashreplace").hex()
+
+
+def _log_query_error(
+    endpoint: str,
+    payload: QueryPayload,
+    error: Exception | str,
+    attempted_sql: str | None,
+) -> None:
+    attempted_sql_hex = _safe_utf8_hex(attempted_sql)
+    oracle_actual_sql = getattr(error, "oracle_actual_sql", None) if isinstance(error, Exception) else None
+    oracle_actual_sql_hex = _safe_utf8_hex(oracle_actual_sql)
+    ErrorLogService.append(
+        {
+            "endpoint": endpoint,
+            "engine": payload.engine,
+            "execution_mode": payload.execution_mode,
+            "error": str(error),
+            "attempted_sql": attempted_sql,
+            "attempted_sql_repr": repr(attempted_sql),
+            "attempted_sql_hex": attempted_sql_hex,
+            "oracle_actual_sql_repr": repr(oracle_actual_sql),
+            "oracle_actual_sql_hex": oracle_actual_sql_hex,
+        }
+    )
 
 
 def _select_engine_service(
@@ -44,12 +79,16 @@ def _select_engine_service(
     summary="Preview SQL for the selected engine and query workflow",
 )
 async def preview_query(
+    request: Request,
     payload: QueryPayload,
     oracle: OracleService = Depends(get_oracle_service),
 ) -> QueryPreview:
     del oracle
+    attempted_sql: str | None = None
 
     try:
+        enforce_rate_limit(request, "query_preview")
+
         if payload.execution_mode == "sql":
             sql = QueryBuilderService.normalize_manual_sql(payload.sql or "")
             if len(sql) > MAX_SQL_TEXT_LENGTH:
@@ -60,6 +99,7 @@ async def preview_query(
             if payload.engine == "oracle":
                 sql = MarcadoseUnionService.apply(sql, payload.marcadose_union)
                 OracleService.ensure_read_only_sql(sql)
+            attempted_sql = sql
             preview_sql = QueryBuilderService.add_ai_helper_comment(sql, payload.engine, "manual")
             return QueryPreview(sql=preview_sql, source_mode="sql", can_sync_builder=False)
 
@@ -67,9 +107,14 @@ async def preview_query(
         if payload.engine == "oracle":
             sql = MarcadoseUnionService.apply(sql, payload.marcadose_union)
             OracleService.ensure_read_only_sql(sql)
+        attempted_sql = sql
         preview_sql = QueryBuilderService.add_ai_helper_comment(sql, payload.engine, "builder")
         return QueryPreview(sql=preview_sql, source_mode="builder", can_sync_builder=True)
+    except HTTPException as exc:
+        _log_query_error("/api/query/preview", payload, exc, attempted_sql)
+        raise
     except Exception as exc:
+        _log_query_error("/api/query/preview", payload, exc, attempted_sql)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
@@ -79,11 +124,14 @@ async def preview_query(
     summary="Execute a structured query against the selected engine",
 )
 async def execute_query(
+    request: Request,
     payload: QueryPayload,
     duckdb: DuckDBService = Depends(get_db_service),
     oracle: OracleService = Depends(get_oracle_service),
 ) -> QueryResult:
+    attempted_sql: str | None = None
     try:
+        enforce_rate_limit(request, "query_execute")
         service: DuckDBService | OracleService = _select_engine_service(payload, duckdb, oracle)
 
         if payload.execution_mode == "sql":
@@ -96,6 +144,7 @@ async def execute_query(
             if payload.engine == "oracle":
                 executed_sql = MarcadoseUnionService.apply(executed_sql, payload.marcadose_union)
 
+            attempted_sql = executed_sql
             columns, rows, total = service.execute(executed_sql)
 
             if (
@@ -122,22 +171,21 @@ async def execute_query(
 
             if payload.engine == "oracle":
                 executed_sql = MarcadoseUnionService.apply(
-                    QueryBuilderService.render_sql(report_sql, params, payload.engine),
+                    QueryBuilderService.normalize_manual_sql(
+                        QueryBuilderService.render_sql(report_sql, params, payload.engine),
+                    ),
                     payload.marcadose_union,
                 )
-                executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
+                attempted_sql = executed_sql
                 _, aggregate_rows, _ = service.execute(executed_sql)
             else:
                 _, aggregate_rows, _ = service.execute(report_sql, params)
                 executed_sql = QueryBuilderService.render_sql(report_sql, params, payload.engine)
+                attempted_sql = executed_sql
 
             columns, rows = QueryBuilderService.pivot_report_rows(payload, aggregate_rows)
 
-            if (
-                payload.engine == "oracle"
-                and payload.marcadose_union
-                and payload.marcadose_union.add_grand_total
-            ):
+            if payload.marcadose_union and payload.marcadose_union.add_grand_total:
                 rows = MarcadoseUnionService.append_grand_total(columns, rows)
 
             return QueryResult(
@@ -155,21 +203,26 @@ async def execute_query(
 
         if payload.engine == "oracle":
             executed_sql = MarcadoseUnionService.apply(
-                QueryBuilderService.render_sql(data_sql, params, payload.engine),
+                QueryBuilderService.normalize_manual_sql(
+                    QueryBuilderService.render_sql(data_sql, params, payload.engine),
+                ),
                 payload.marcadose_union,
             )
-            executed_sql = QueryBuilderService.normalize_manual_sql(executed_sql)
+            attempted_sql = executed_sql
             executed_count_sql = MarcadoseUnionService.build_total_count_sql(
-                QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
+                QueryBuilderService.normalize_manual_sql(
+                    QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
+                ),
                 payload.marcadose_union,
             )
-            executed_count_sql = QueryBuilderService.normalize_manual_sql(executed_count_sql)
             columns, rows, _ = service.execute(executed_sql)
+            attempted_sql = executed_count_sql
             _, count_rows, _ = service.execute(executed_count_sql)
         else:
             columns, rows, _ = service.execute(data_sql, params)
             _, count_rows, _ = service.execute(count_sql, count_params)
             executed_sql = QueryBuilderService.render_sql(data_sql, params, payload.engine)
+            attempted_sql = executed_sql
 
         total = count_rows[0][0] if count_rows else 0
 
@@ -181,7 +234,12 @@ async def execute_query(
             executed_sql=executed_sql,
             source_mode="builder",
         )
-    except HTTPException:
+    except HTTPException as exc:
+        _log_query_error("/api/query", payload, exc, attempted_sql)
         raise
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        _log_query_error("/api/query", payload, exc, attempted_sql)
+        detail: dict[str, str] | str = str(exc)
+        if attempted_sql:
+            detail = {"message": str(exc), "executed_sql": attempted_sql}
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc

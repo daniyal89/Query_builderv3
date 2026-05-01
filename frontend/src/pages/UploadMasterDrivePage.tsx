@@ -1,9 +1,29 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { getDriveAuthStatus, getDriveJobStatus, loginGoogleDrive, startDriveUpload, stopDriveJob } from "../api/driveApi";
+import { getDriveJobStatus, startDriveUpload, stopDriveJob } from "../api/driveApi";
 import { pickSystemFile, pickSystemFolder } from "../api/systemApi";
-import type { DriveAuthConfig, DriveAuthMode, DriveAuthStatusResponse, DriveJobStatusResponse } from "../types/drive.types";
+import { GoogleAuthCard } from "../components/drive/GoogleAuthCard";
+import { useGoogleDriveAuth } from "../hooks/useGoogleDriveAuth";
+import type { DriveAuthConfig, DriveAuthMode, DriveJobStatusResponse } from "../types/drive.types";
 
 const STORAGE_KEY = "drive_upload_master_form_v2";
+const JOB_STORAGE_KEY = "drive_upload_master_job_v1";
+const formatDuration = (seconds: number) => {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+};
+
+const runSeconds = (startedAt?: string | null, finishedAt?: string | null, nowMs?: number) => {
+  if (!startedAt) return null;
+  const start = new Date(startedAt).getTime();
+  const end = finishedAt ? new Date(finishedAt).getTime() : (nowMs ?? Date.now());
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.floor((end - start) / 1000));
+};
 
 function getErrorMessage(error: unknown): string {
   if (
@@ -16,6 +36,11 @@ function getErrorMessage(error: unknown): string {
   }
   if (error instanceof Error && error.message.trim()) return error.message;
   return "Google Drive upload failed.";
+}
+
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("response" in error)) return false;
+  return (error as { response?: { status?: number } }).response?.status === 404;
 }
 
 type FormState = {
@@ -50,6 +75,28 @@ function readInitialState(): FormState {
   }
 }
 
+type PersistedJobState = {
+  jobId: string;
+  status: DriveJobStatusResponse | null;
+};
+
+function isTerminalStatus(status: DriveJobStatusResponse | null): boolean {
+  return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function readInitialJobState(): { jobId: string | null; status: DriveJobStatusResponse | null; isLoading: boolean } {
+  try {
+    const raw = window.localStorage.getItem(JOB_STORAGE_KEY);
+    if (!raw) return { jobId: null, status: null, isLoading: false };
+    const parsed = JSON.parse(raw) as Partial<PersistedJobState>;
+    const jobId = typeof parsed.jobId === "string" && parsed.jobId.trim() ? parsed.jobId : null;
+    const status = parsed.status ?? null;
+    return { jobId, status, isLoading: Boolean(jobId) && !isTerminalStatus(status as DriveJobStatusResponse | null) };
+  } catch {
+    return { jobId: null, status: null, isLoading: false };
+  }
+}
+
 function buildAuth(state: FormState): DriveAuthConfig {
   return {
     mode: state.authMode === "service_account" ? "service_account" : "oauth",
@@ -59,9 +106,10 @@ function buildAuth(state: FormState): DriveAuthConfig {
   };
 }
 
-const StatusCard: React.FC<{ status: DriveJobStatusResponse | null }> = ({ status }) => {
+const StatusCard: React.FC<{ status: DriveJobStatusResponse | null; nowMs: number }> = ({ status, nowMs }) => {
   if (!status) return null;
   const percent = status.total_items > 0 ? Math.min(100, Math.round((status.processed_items / status.total_items) * 100)) : 0;
+  const seconds = runSeconds(status.started_at, status.finished_at, nowMs);
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -81,6 +129,7 @@ const StatusCard: React.FC<{ status: DriveJobStatusResponse | null }> = ({ statu
         <div><b>Skipped</b><br />{status.skipped_items}</div>
         <div><b>Failed</b><br />{status.failed_items}</div>
       </div>
+      {seconds !== null && <p className="mt-3 text-xs text-slate-500">Runtime: {formatDuration(seconds)}</p>}
       {status.errors.length > 0 && (
         <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
           <b>Errors</b>
@@ -93,68 +142,68 @@ const StatusCard: React.FC<{ status: DriveJobStatusResponse | null }> = ({ statu
   );
 };
 
-const GoogleAuthCard: React.FC<{
-  authStatus: DriveAuthStatusResponse | null;
-  isSigningIn: boolean;
-  onSignIn: () => void;
-}> = ({ authStatus, isSigningIn, onSignIn }) => {
-  const ready = Boolean(authStatus?.token_valid);
-  const configured = Boolean(authStatus?.configured);
-  return (
-    <section className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">Google account</h2>
-          <p className="mt-1 text-sm text-slate-600">{authStatus?.message || "Click Sign in with Google before upload, or start upload and the browser login will open when needed."}</p>
-          <p className="mt-1 text-xs text-slate-500">OAuth JSON is not shown to users. Keep google_oauth_client.json once in the app config folder.</p>
-        </div>
-        <button
-          type="button"
-          disabled={!configured || isSigningIn}
-          onClick={onSignIn}
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-        >
-          {isSigningIn ? "Opening Google..." : ready ? "Signed in" : "Sign in with Google"}
-        </button>
-      </div>
-    </section>
-  );
-};
-
 export const UploadMasterDrivePage: React.FC = () => {
   const initial = useMemo(() => readInitialState(), []);
+  const initialJobState = useMemo(() => readInitialJobState(), []);
   const [state, setState] = useState<FormState>(initial);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<DriveJobStatusResponse | null>(null);
-  const [authStatus, setAuthStatus] = useState<DriveAuthStatusResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(initialJobState.jobId);
+  const [status, setStatus] = useState<DriveJobStatusResponse | null>(initialJobState.status);
+  const [isLoading, setIsLoading] = useState(initialJobState.isLoading);
   const [error, setError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
+  const {
+    authStatus,
+    isSigningIn,
+    isSigningOut,
+    refreshAuthStatus,
+    signIn,
+    signOut,
+  } = useGoogleDriveAuth();
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
 
   useEffect(() => {
-    getDriveAuthStatus().then(setAuthStatus).catch(() => undefined);
-  }, []);
+    if (!jobId) {
+      window.localStorage.removeItem(JOB_STORAGE_KEY);
+      return;
+    }
+    const payload: PersistedJobState = { jobId, status };
+    window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(payload));
+  }, [jobId, status]);
+
+  useEffect(() => {
+    if (!isLoading) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isLoading]);
 
   useEffect(() => {
     if (!jobId) return;
+    setIsLoading(!isTerminalStatus(status));
     let cancelled = false;
     const poll = async () => {
       try {
         const next = await getDriveJobStatus(jobId);
         if (cancelled) return;
         setStatus(next);
-        if (next.status === "completed" || next.status === "failed" || next.status === "cancelled") {
+        if (isTerminalStatus(next)) {
           setIsLoading(false);
-          getDriveAuthStatus().then(setAuthStatus).catch(() => undefined);
+          setJobId(null);
+          refreshAuthStatus().catch(() => undefined);
           return;
         }
         window.setTimeout(poll, 1500);
       } catch (err) {
         if (cancelled) return;
+        if (isNotFoundError(err)) {
+          setJobId(null);
+          setStatus(null);
+          setIsLoading(false);
+          setError("Previous job was not found on server. Please start a new upload.");
+          return;
+        }
         setError(getErrorMessage(err));
         setIsLoading(false);
       }
@@ -169,14 +218,19 @@ export const UploadMasterDrivePage: React.FC = () => {
 
   const handleGoogleLogin = async () => {
     setError(null);
-    setIsSigningIn(true);
     try {
-      const next = await loginGoogleDrive();
-      setAuthStatus(next);
+      await signIn();
     } catch (err) {
       setError(getErrorMessage(err));
-    } finally {
-      setIsSigningIn(false);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    setError(null);
+    try {
+      await signOut();
+    } catch (err) {
+      setError(getErrorMessage(err));
     }
   };
 
@@ -228,7 +282,17 @@ export const UploadMasterDrivePage: React.FC = () => {
 
       {error && <div className="rounded-lg bg-red-50 p-4 text-sm text-red-700">{error}</div>}
 
-      {state.authMode !== "service_account" && <GoogleAuthCard authStatus={authStatus} isSigningIn={isSigningIn} onSignIn={handleGoogleLogin} />}
+      {state.authMode !== "service_account" && (
+        <GoogleAuthCard
+          authStatus={authStatus}
+          description="Click Sign in with Google before upload, or start upload and the browser login will open when needed."
+          helperText="OAuth JSON is not shown to users. Keep google_oauth_client.json once in the app config folder."
+          isSigningIn={isSigningIn}
+          isSigningOut={isSigningOut}
+          onSignIn={handleGoogleLogin}
+          onSignOut={handleGoogleLogout}
+        />
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <section className="grid gap-4 md:grid-cols-2">
@@ -299,7 +363,7 @@ export const UploadMasterDrivePage: React.FC = () => {
         </div>
       </form>
 
-      <StatusCard status={status} />
+      <StatusCard status={status} nowMs={nowMs} />
     </div>
   );
 };

@@ -25,31 +25,41 @@ class MergeService:
         conn: duckdb.DuckDBPyConnection,
         master_table: str,
         fetch_columns: list[str],
-        mapped_acct_id_col: str,
-        mapped_secondary_col: str,
-        secondary_key_type: str,
+        join_keys: list[dict[str, str]],
     ) -> tuple[pd.DataFrame, dict[str, int]]:
         """
         Execute a SQL LEFT JOIN between the incoming dataframe and the DuckDB master table.
-        """
-        if mapped_acct_id_col not in merged_df.columns:
-            raise ValueError(
-                f"Mapped ACCT_ID column '{mapped_acct_id_col}' not found in uploaded file."
-            )
 
-        if mapped_secondary_col not in merged_df.columns:
-            raise ValueError(
-                f"Mapped Secondary Key column '{mapped_secondary_col}' not found in uploaded file."
-            )
+        join_keys is a list of {"fileColumn": "...", "tableColumn": "..."} mappings
+        that define the ON clause dynamically.
+        """
+        if not join_keys:
+            raise ValueError("At least one join key mapping is required.")
+
+        # Validate that every fileColumn exists in the uploaded dataframe
+        for mapping in join_keys:
+            file_col = mapping.get("fileColumn", "")
+            table_col = mapping.get("tableColumn", "")
+            if not file_col or not table_col:
+                raise ValueError("Each join key must specify both fileColumn and tableColumn.")
+            if file_col not in merged_df.columns:
+                raise ValueError(
+                    f"File column '{file_col}' not found in uploaded data. "
+                    f"Available columns: {list(merged_df.columns)}"
+                )
 
         normalized_master_table = master_table.strip()
         if not normalized_master_table:
             raise ValueError("A DuckDB source table is required for enrichment.")
 
-        join_clause = (
-            f'df."{mapped_acct_id_col}" = source.ACCT_ID AND '
-            f'df."{mapped_secondary_col}" = source.{secondary_key_type}'
-        )
+        # Build dynamic JOIN clause — cast both sides to VARCHAR to handle type mismatches
+        join_conditions = []
+        for mapping in join_keys:
+            join_conditions.append(
+                f'CAST(df."{mapping["fileColumn"]}" AS VARCHAR) = CAST(source."{mapping["tableColumn"]}" AS VARCHAR)'
+            )
+        join_clause = " AND ".join(join_conditions)
+
         fetch_cols_str = ", ".join([f'source."{column}"' for column in fetch_columns])
 
         try:

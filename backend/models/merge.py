@@ -11,7 +11,9 @@ Also includes the local folder merge flow used by the sidebar import page.
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from backend.utils.path_safety import sanitize_local_path_input
 
 
 # ─────────────────────────── Phase 1: Upload Sheets ───────────────────────────
@@ -44,57 +46,6 @@ class UploadSheetsResponse(BaseModel):
     )
 
 
-# ─────────────────────── Phase 2: Merge Sheets (Conflict Resolution) ──────────
-
-
-class ColumnResolution(BaseModel):
-    """Resolution directive for a single uploaded column."""
-
-    source_file: str = Field(..., description="File the column originates from.")
-    source_column: str = Field(..., description="Original column name in the source file.")
-    action: Literal["map", "ignore"] = Field(
-        ...,
-        description="'map' = rename to standard_name; 'ignore' = drop this column.",
-    )
-    standard_name: Optional[str] = Field(
-        default=None,
-        description="The canonical column name to map to. Required when action='map'.",
-    )
-
-
-class ConflictResolutionMap(BaseModel):
-    """Full conflict resolution payload submitted by the user.
-
-    Maps every uploaded column to either a standard name or marks it as ignored.
-    The composite key columns (Acc_id + DISCOM or Acc_id + DIV_CODE) must be
-    present in the resolved output for the enrichment phase to work.
-    """
-
-    file_ids: list[str] = Field(..., description="File identifiers from the upload step.")
-    resolutions: list[ColumnResolution] = Field(
-        ..., description="One resolution entry per detected column across all files."
-    )
-    composite_key: Literal["Acc_id+DISCOM", "Acc_id+DIV_CODE"] = Field(
-        ...,
-        description="Which composite key to use for matching against the Master Table.",
-    )
-
-
-class MergeSheetsResponse(BaseModel):
-    """Response from POST /api/merge-sheets after applying conflict resolution."""
-
-    merged_columns: list[str] = Field(
-        ..., description="Final list of standardized column names in the merged dataset."
-    )
-    total_rows: int = Field(..., description="Total row count of the merged dataset.", ge=0)
-    preview_rows: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="First N rows of the merged data for user verification.",
-    )
-    merge_id: str = Field(
-        ..., description="Identifier for the merged dataset, used in the enrichment step."
-    )
-
 
 # ─────────────────────── Sidebar folder merge flow ───────────────────────────
 
@@ -108,6 +59,11 @@ class FolderMergeRequest(BaseModel):
         default=True,
         description="Whether to scan all nested subfolders recursively.",
     )
+
+    @field_validator("source_folder", "output_path")
+    @classmethod
+    def validate_local_paths(cls, value: str, info) -> str:
+        return sanitize_local_path_input(value, info.field_name)
 
 
 class FolderMergeResponse(BaseModel):

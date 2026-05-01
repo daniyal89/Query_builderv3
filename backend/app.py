@@ -7,13 +7,20 @@ configures the SPA fallback so React Router handles client-side routes.
 """
 
 from pathlib import Path
+import subprocess
+import time
+from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.api.router import api_router
+from backend.services.error_log_service import ErrorLogService
+from backend.services.job_runtime import job_runtime
+from backend.utils.exceptions import register_exception_handlers
+from backend.utils.logger import app_logger
 
 
 def create_app() -> FastAPI:
@@ -30,6 +37,96 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
     )
+    register_exception_handlers(application)
+
+    @application.on_event("startup")
+    async def log_startup_version() -> None:
+        job_runtime.initialize()
+        repo_root = Path(__file__).resolve().parents[1]
+        commit = "unknown"
+        summary = "unknown"
+        try:
+            commit = (
+                subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, text=True)
+                .strip()
+            )
+            summary = (
+                subprocess.check_output(["git", "log", "-1", "--pretty=%s"], cwd=repo_root, text=True)
+                .strip()
+            )
+        except Exception:
+            pass
+        ErrorLogService.append_system_event(
+            event="application_startup",
+            detail="Application startup detected.",
+            extra={"git_commit": commit, "git_summary": summary},
+        )
+
+    @application.middleware("http")
+    async def attach_request_id_and_log(request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or str(uuid4())
+        request.state.request_id = request_id
+        
+        start_time = time.perf_counter()
+        
+        response = await call_next(request)
+        
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        response.headers["X-Request-ID"] = request_id
+        
+        # Log successful requests and handled client errors (exclude static files to reduce noise)
+        if request.url.path.startswith("/api/"):
+            app_logger.info(
+                f"{request.method} {request.url.path} {response.status_code}",
+                extra={"extra_info": {
+                    "event": "api_request",
+                    "method": request.method,
+                    "endpoint": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                    "request_id": request_id,
+                }}
+            )
+            
+        return response
+
+    @application.exception_handler(HTTPException)
+    async def log_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+        if request.url.path not in {"/api/query", "/api/query/preview"}:
+            ErrorLogService.append_request_error(
+                request,
+                status_code=exc.status_code,
+                error=str(exc.detail),
+                detail=exc.detail,
+                exception_type=type(exc).__name__,
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            headers=exc.headers,
+            content={
+                "error": "HTTPException",
+                "detail": exc.detail,
+                "request_id": getattr(request.state, "request_id", "unknown"),
+            },
+        )
+
+    @application.exception_handler(Exception)
+    async def log_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        ErrorLogService.append_request_error(
+            request,
+            status_code=500,
+            error=str(exc),
+            detail="Internal Server Error",
+            exception_type=type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "InternalServerError",
+                "detail": "Internal Server Error",
+                "request_id": getattr(request.state, "request_id", "unknown"),
+            },
+        )
 
     # --- API routes (must be registered BEFORE the static-file mount) ---
     application.include_router(api_router)

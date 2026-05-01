@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useState } from "react";
 import type { QueryEngine } from "../../types/connection.types";
 import type { QuerySourceMode } from "../../types/query.types";
+import { HighlightedSqlEditor, type SqlSuggestionItem } from "./HighlightedSqlEditor";
 
 type QueryMode = "LIST" | "REPORT";
 
@@ -16,6 +17,7 @@ interface SqlEditorPanelProps {
   runError: string | null;
   isRunning: boolean;
   canRunBuilder: boolean;
+  manualSqlSuggestions: SqlSuggestionItem[];
   onSelectSourceMode: (mode: QuerySourceMode) => void;
   onResetFromBuilder: () => void;
   onSqlChange: (sql: string) => void;
@@ -44,17 +46,19 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
   runError,
   isRunning,
   canRunBuilder,
+  manualSqlSuggestions,
   onSelectSourceMode,
   onResetFromBuilder,
   onSqlChange,
   onRun,
 }) => {
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const canResetFromBuilder = generatedSql.trim().length > 0;
   const canRunManual = sqlText.trim().length > 0;
   const builderRunLabel = queryMode === "REPORT" ? "Generate Report" : "Run Builder SQL";
 
   return (
-    <div className="mb-6 rounded-lg border border-gray-200 bg-white shadow-sm">
+    <div className={`${isFullscreen ? "fixed inset-4 z-50 mb-0 overflow-auto" : "mb-6"} rounded-lg border border-gray-200 bg-white shadow-sm`}>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
         <div>
           <h3 className="text-sm font-semibold text-gray-800">SQL Preview &amp; Editor</h3>
@@ -111,25 +115,41 @@ export const SqlEditorPanel: React.FC<SqlEditorPanelProps> = ({
           <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
             {isPreviewLoading ? "Refreshing SQL preview..." : "Editable SQL"}
           </span>
-          <span className="text-xs text-gray-400">
-            {sourceMode === "builder"
-              ? queryMode === "REPORT"
-                ? "Run generates report output"
-                : "Run uses builder output"
-              : "Run uses editor text"}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400">
+              {sourceMode === "builder"
+                ? queryMode === "REPORT"
+                  ? "Run generates report output"
+                  : "Run uses builder output"
+                : "Run uses editor text"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setIsFullscreen((current) => !current)}
+              className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            >
+              {isFullscreen ? "Exit Full Screen" : "Full Screen"}
+            </button>
+          </div>
         </div>
 
-        <textarea
+        {sourceMode === "manual" && manualSqlSuggestions.length > 0 && (
+          <div className="mb-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+            Table and column suggestions appear while typing in manual SQL mode. Use arrow keys and `Enter` or `Tab`
+            to apply one.
+          </div>
+        )}
+
+        <HighlightedSqlEditor
           value={sqlText}
-          onChange={(event) => onSqlChange(event.target.value)}
-          className="min-h-[220px] w-full rounded border border-gray-300 bg-gray-50 p-3 font-mono text-sm text-gray-800 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          onChange={onSqlChange}
+          suggestions={sourceMode === "manual" ? manualSqlSuggestions : []}
           placeholder={
             sourceMode === "manual"
               ? "Write SQL directly here."
               : "Select a table and configure the builder to generate SQL."
           }
-          spellCheck={false}
+          minHeightClassName={isFullscreen ? "min-h-[70vh]" : "min-h-[240px]"}
         />
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">

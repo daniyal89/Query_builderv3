@@ -42,6 +42,12 @@ export async function loginGoogleDrive(): Promise<DriveAuthStatusResponse> {
   return response.data;
 }
 
+export async function logoutGoogleDrive(): Promise<DriveAuthStatusResponse> {
+  const response = await apiClient.post<DriveAuthStatusResponse>("/drive/auth/logout", {}, {
+    timeout: 30_000,
+  });
+  return response.data;
+}
 
 export async function stopDriveJob(jobId: string): Promise<DriveJobStatusResponse> {
   const response = await apiClient.post<DriveJobStatusResponse>(`/drive/stop/${jobId}`, {}, {

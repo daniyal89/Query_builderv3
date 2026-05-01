@@ -6,18 +6,33 @@ import React, { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { PathInput } from "../components/home/PathInput";
 import { TableList } from "../components/home/TableList";
+import { deleteLocalObject } from "../api/schemaApi";
 import { useAppContext } from "../context/AppContext";
 import { useConnection } from "../hooks/useConnection";
 
 export const HomePage: React.FC = () => {
-  const { dbPath, setDbPath, connect, isConnecting, isConnected, tables, error } = useConnection();
+  const { dbPath, setDbPath, connect, isConnecting, isConnected, tables, error, refreshTables } = useConnection();
   const { marcadoseConnection } = useAppContext();
+  const [tableActionMessage, setTableActionMessage] = React.useState<string>("");
 
   useEffect(() => {
     if (dbPath && !isConnected && !isConnecting && !error) {
       connect();
     }
   }, [dbPath, isConnected, isConnecting, error, connect]);
+
+  const handleDeleteTable = async (tableName: string) => {
+    const ok = window.confirm(`Delete '${tableName}' from local DuckDB? This action cannot be undone.`);
+    if (!ok) return;
+
+    try {
+      const response = await deleteLocalObject(tableName);
+      setTableActionMessage(response.message);
+      await refreshTables();
+    } catch (err: any) {
+      setTableActionMessage(err?.response?.data?.detail || err?.message || "Failed to delete object.");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 py-12">
@@ -47,8 +62,7 @@ export const HomePage: React.FC = () => {
           <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Remote</p>
           <h2 className="mt-2 text-xl font-semibold text-gray-900">Query Builder (Marcadose)</h2>
           <p className="mt-2 text-sm text-gray-500">
-            Save Oracle credentials in the browser now. Read-only Oracle execution lands in the next implementation
-            series.
+            Connect to Marcadose Oracle for read-only queries, monthly master table selection, and DISCOM UNION reports.
           </p>
           <div className="mt-4 flex items-center justify-between gap-4">
             <Link to="/query/marcadose" className="inline-flex text-sm font-semibold text-blue-600 hover:text-blue-800">
@@ -81,7 +95,13 @@ export const HomePage: React.FC = () => {
         error={error}
       />
 
-      {isConnected && <TableList tables={tables} />}
+      {tableActionMessage && (
+        <div className="mx-auto mt-4 max-w-6xl rounded border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700">
+          {tableActionMessage}
+        </div>
+      )}
+
+      {isConnected && <TableList tables={tables} onDeleteTable={handleDeleteTable} />}
     </div>
   );
 };

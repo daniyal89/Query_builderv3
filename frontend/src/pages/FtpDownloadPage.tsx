@@ -23,9 +23,32 @@ function getErrorMessage(error: unknown): string {
   return "FTP download failed.";
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("response" in error)) return false;
+  return (error as { response?: { status?: number } }).response?.status === 404;
+}
+
 const FORM_STORAGE_KEY = "ftp_download_form_state_v3";
 const PRESET_STORAGE_KEY = "ftp_download_preset_overrides_v3";
 const CUSTOM_PRESET_STORAGE_KEY = "ftp_download_custom_presets_v3";
+const JOB_STORAGE_KEY = "ftp_download_job_v1";
+const formatDuration = (seconds: number) => {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+};
+
+const runSeconds = (startedAt?: string | null, finishedAt?: string | null, nowMs?: number) => {
+  if (!startedAt) return null;
+  const start = new Date(startedAt).getTime();
+  const end = finishedAt ? new Date(finishedAt).getTime() : (nowMs ?? Date.now());
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.floor((end - start) / 1000));
+};
 
 const DEFAULT_PRESET_USERS: Record<string, string> = {
   MVVNL: "mvftpreport",
@@ -250,8 +273,26 @@ function loadCustomPresets(): CustomSavedPreset[] {
   return safeReadJson<CustomSavedPreset[]>(CUSTOM_PRESET_STORAGE_KEY, []);
 }
 
+type PersistedJobState = {
+  jobId: string;
+  status: FTPDownloadStatusResponse | null;
+};
+
+function isTerminalStatus(status: FTPDownloadStatusResponse | null): boolean {
+  return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function loadInitialJobState(): { jobId: string | null; status: FTPDownloadStatusResponse | null; isLoading: boolean } {
+  const saved = safeReadJson<Partial<PersistedJobState> | null>(JOB_STORAGE_KEY, null);
+  if (!saved) return { jobId: null, status: null, isLoading: false };
+  const jobId = typeof saved.jobId === "string" && saved.jobId.trim() ? saved.jobId : null;
+  const status = saved.status ?? null;
+  return { jobId, status, isLoading: Boolean(jobId) && !isTerminalStatus(status as FTPDownloadStatusResponse | null) };
+}
+
 export const FtpDownloadPage: React.FC = () => {
   const initialState = useMemo(() => loadInitialFormState(), []);
+  const initialJobState = useMemo(() => loadInitialJobState(), []);
 
   const [host, setHost] = useState(initialState.host);
   const [port, setPort] = useState(initialState.port);
@@ -271,10 +312,11 @@ export const FtpDownloadPage: React.FC = () => {
   const [customPresetName, setCustomPresetName] = useState("");
   const [customPresets, setCustomPresets] = useState<CustomSavedPreset[]>(loadCustomPresets());
   const [message, setMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(initialJobState.isLoading);
   const [error, setError] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<FTPDownloadStatusResponse | null>(null);
+  const [jobId, setJobId] = useState<string | null>(initialJobState.jobId);
+  const [status, setStatus] = useState<FTPDownloadStatusResponse | null>(initialJobState.status);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
 
   useEffect(() => {
     const formState: PageFormState = {
@@ -302,7 +344,23 @@ export const FtpDownloadPage: React.FC = () => {
   }, [customPresets]);
 
   useEffect(() => {
+    if (!jobId) {
+      window.localStorage.removeItem(JOB_STORAGE_KEY);
+      return;
+    }
+    const payload: PersistedJobState = { jobId, status };
+    window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(payload));
+  }, [jobId, status]);
+
+  useEffect(() => {
+    if (!isLoading) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isLoading]);
+
+  useEffect(() => {
     if (!jobId) return;
+    setIsLoading(!isTerminalStatus(status));
 
     let cancelled = false;
     const poll = async () => {
@@ -310,13 +368,21 @@ export const FtpDownloadPage: React.FC = () => {
         const next = await getFtpDownloadStatus(jobId);
         if (cancelled) return;
         setStatus(next);
-        if (next.status === "completed" || next.status === "failed" || next.status === "cancelled") {
+        if (isTerminalStatus(next)) {
           setIsLoading(false);
+          setJobId(null);
           return;
         }
         window.setTimeout(poll, 1200);
       } catch (err) {
         if (cancelled) return;
+        if (isNotFoundError(err)) {
+          setJobId(null);
+          setStatus(null);
+          setIsLoading(false);
+          setError("Previous FTP job was not found on server. Please start a new download.");
+          return;
+        }
         setError(getErrorMessage(err));
         setIsLoading(false);
       }
@@ -481,8 +547,7 @@ export const FtpDownloadPage: React.FC = () => {
   return (
     <div className="mx-auto max-w-7xl space-y-6">
       <div className="rounded-2xl border border-sky-100 bg-white p-6 shadow-sm">
-        <p className="text-sm font-semibold uppercase tracking-wide text-sky-600">Sidebar tool</p>
-        <h1 className="mt-2 text-3xl font-bold text-gray-900">FTP Download</h1>
+        <h1 className="text-3xl font-bold text-gray-900">FTP Download</h1>
         <p className="mt-3 max-w-4xl text-sm text-gray-600">
           Master and Billed presets include the current script credentials. You can save updates locally for future runs and track download progress in real time.
         </p>
@@ -618,7 +683,7 @@ export const FtpDownloadPage: React.FC = () => {
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Profile name</label><input type="text" value={profile.name} onChange={(event) => updateProfile(index, "name", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Username</label><input type="text" value={profile.username} onChange={(event) => updateProfile(index, "username", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
-                  <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Password</label><input type="text" value={profile.password} onChange={(event) => updateProfile(index, "password", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
+                  <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Password</label><input type="password" value={profile.password} onChange={(event) => updateProfile(index, "password", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div className="xl:col-span-2"><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Remote folder</label><input type="text" value={profile.remote_dir} onChange={(event) => updateProfile(index, "remote_dir", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Local subfolder</label><input type="text" value={profile.local_subfolder ?? ""} onChange={(event) => updateProfile(index, "local_subfolder", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                 </div>
@@ -645,6 +710,9 @@ export const FtpDownloadPage: React.FC = () => {
           <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">FTP job status</p>
           <h2 className="mt-2 text-2xl font-bold text-emerald-900">{status.status === "completed" ? "Download complete" : status.status === "failed" ? "Download failed" : status.status === "cancelled" ? "Download stopped" : "Download in progress"}</h2>
           <p className="mt-2 text-sm text-gray-600">Current profile: {status.current_profile || "Waiting"}</p>
+          {runSeconds(status.started_at, status.finished_at, nowMs) !== null && (
+            <p className="mt-1 text-xs text-gray-600">Runtime: {formatDuration(runSeconds(status.started_at, status.finished_at, nowMs) ?? 0)}</p>
+          )}
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-xl bg-white p-4 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Profiles</p><p className="mt-2 text-2xl font-bold text-gray-900">{status.total_profiles}</p></div>
             <div className="rounded-xl bg-white p-4 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Files found</p><p className="mt-2 text-2xl font-bold text-gray-900">{status.total_files_found}</p></div>

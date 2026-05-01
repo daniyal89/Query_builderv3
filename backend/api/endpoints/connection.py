@@ -50,9 +50,15 @@ async def connect_to_duckdb(
             detail=str(exc),
         ) from exc
     except RuntimeError as exc:
+        detail = str(exc)
+        if "being used by another process" in detail.lower() or "file is already open in" in detail.lower():
+            detail = (
+                f"{detail}\n\n"
+                "Hint: close the other process using this .duckdb file, or connect to a copy/new database path."
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=detail,
         ) from exc
 
     return ConnectionResponse(

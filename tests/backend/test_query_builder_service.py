@@ -113,6 +113,114 @@ def test_query_payload_rejects_duplicate_join_tables() -> None:
         )
 
 
+def test_query_payload_allows_repeated_join_table_when_aliases_are_unique() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        joins=[
+            JoinClause(
+                table="detail",
+                alias="detail_primary",
+                join_type="LEFT",
+                conditions=[
+                    JoinCondition(
+                        left_column="master.ACCT_ID",
+                        right_column="detail_primary.ACCT_ID",
+                    )
+                ],
+            ),
+            JoinClause(
+                table="detail",
+                alias="detail_secondary",
+                join_type="INNER",
+                conditions=[
+                    JoinCondition(
+                        left_column="detail_primary.DIV_CODE",
+                        right_column="detail_secondary.DIV_CODE",
+                    )
+                ],
+            ),
+        ],
+    )
+
+    sql = QueryBuilderService.build_preview_sql(payload)
+
+    assert 'LEFT JOIN "detail" t1 ON t0."ACCT_ID" = t1."ACCT_ID"' in sql
+    assert 'INNER JOIN "detail" t2 ON t1."DIV_CODE" = t2."DIV_CODE"' in sql
+
+
+def test_repeated_join_aliases_flow_through_select_filter_and_sort() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        select=["detail_secondary.STATUS"],
+        filters=[FilterCondition(column="detail_primary.FLAG", operator="=", value="Y")],
+        sort=[SortClause(column="detail_secondary.STATUS", direction="ASC")],
+        joins=[
+            JoinClause(
+                table="detail",
+                alias="detail_primary",
+                join_type="LEFT",
+                conditions=[
+                    JoinCondition(
+                        left_column="master.ACCT_ID",
+                        right_column="detail_primary.ACCT_ID",
+                    )
+                ],
+            ),
+            JoinClause(
+                table="detail",
+                alias="detail_secondary",
+                join_type="INNER",
+                conditions=[
+                    JoinCondition(
+                        left_column="detail_primary.RELATED_ID",
+                        right_column="detail_secondary.RELATED_ID",
+                    )
+                ],
+            ),
+        ],
+    )
+
+    sql = QueryBuilderService.build_preview_sql(payload)
+
+    assert 'SELECT t2."STATUS" AS "detail_secondary.STATUS"' in sql
+    assert 'WHERE t1."FLAG" = \'Y\'' in sql
+    assert 'ORDER BY t2."STATUS" ASC' in sql
+
+
+def test_query_payload_rejects_duplicate_join_aliases() -> None:
+    with pytest.raises(ValidationError):
+        QueryPayload(
+            engine="duckdb",
+            table="master",
+            joins=[
+                JoinClause(
+                    table="detail",
+                    alias="detail_link",
+                    join_type="LEFT",
+                    conditions=[
+                        JoinCondition(
+                            left_column="master.ACCT_ID",
+                            right_column="detail_link.ACCT_ID",
+                        )
+                    ],
+                ),
+                JoinClause(
+                    table="other_detail",
+                    alias="detail_link",
+                    join_type="INNER",
+                    conditions=[
+                        JoinCondition(
+                            left_column="master.ACCT_ID",
+                            right_column="detail_link.ACCT_ID",
+                        )
+                    ],
+                ),
+            ],
+        )
+
+
 def test_oracle_report_sql_uses_grouped_select_instead_of_disabled_pivot() -> None:
     payload = QueryPayload(
         engine="oracle",
@@ -230,6 +338,22 @@ def test_count_sql_uses_date_literals_without_params_for_date_columns() -> None:
     sql, params = QueryBuilderService.build_count_sql(payload)
 
     assert sql == "SELECT COUNT(*) FROM \"MASTER\" t0 WHERE t0.\"LAST_BILL_DATE\" >= DATE '2026-03-01'"
+    assert params == []
+
+
+def test_duckdb_date_like_column_uses_flexible_date_parsing_expression() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="LAST_BILL_DATE", operator="=", value="2026-03-01")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "COALESCE(" in sql
+    assert "TRY_STRPTIME(CAST(t0.\"LAST_BILL_DATE\" AS VARCHAR), '%d-%b-%Y')" in sql
+    assert "TRY_STRPTIME(CAST(t0.\"LAST_BILL_DATE\" AS VARCHAR), '%d-%m-%Y')" in sql
+    assert "= DATE '2026-03-01'" in sql
     assert params == []
 
 

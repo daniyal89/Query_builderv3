@@ -10,18 +10,21 @@ from fastapi.responses import StreamingResponse
 
 from backend.api.deps import get_connected_db
 from backend.models.merge import (
-    ConflictResolutionMap,
     DetectedColumn,
     EnrichmentResponse,
     FolderMergeRequest,
     FolderMergeResponse,
-    MergeSheetsResponse,
     UploadSheetsResponse,
 )
 from backend.services.duckdb_service import DuckDBService
 from backend.services.merge_service import MergeService
+from backend.utils.path_safety import sanitize_local_path_input
+from backend.utils.upload_limits import enforce_total_upload_limit, read_upload_bytes
 
 router = APIRouter()
+MAX_UPLOAD_SHEETS_FILE_BYTES = 100 * 1024 * 1024
+MAX_UPLOAD_SHEETS_TOTAL_BYTES = 500 * 1024 * 1024
+MAX_ENRICH_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
 @router.post(
@@ -33,22 +36,30 @@ async def upload_sheets(
     files: List[UploadFile] = File(
         ..., description="One or more Excel (.xlsx) or CSV files to merge."
     ),
-    db: DuckDBService = Depends(get_connected_db),
 ) -> UploadSheetsResponse:
-    del db
-
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
 
     file_ids: list[str] = []
     all_columns: list[DetectedColumn] = []
     col_name_counter: Counter = Counter()
+    total_upload_bytes = 0
 
     for uploaded_file in files:
         file_id = str(uuid.uuid4())[:8]
         file_ids.append(file_id)
         filename = uploaded_file.filename or "unknown"
-        contents = await uploaded_file.read()
+        contents = await read_upload_bytes(
+            uploaded_file,
+            max_bytes=MAX_UPLOAD_SHEETS_FILE_BYTES,
+            label=f"Uploaded file '{filename}'",
+        )
+        total_upload_bytes += len(contents)
+        enforce_total_upload_limit(
+            total_upload_bytes,
+            MAX_UPLOAD_SHEETS_TOTAL_BYTES,
+            "Combined upload size",
+        )
 
         try:
             if filename.lower().endswith(".csv"):
@@ -90,26 +101,7 @@ async def upload_sheets(
     )
 
 
-@router.post(
-    "/merge-sheets",
-    response_model=MergeSheetsResponse,
-    summary="Apply conflict resolution and merge uploaded sheets",
-    description=(
-        "Accepts the ConflictResolutionMap from the UI, applies column "
-        "renaming/ignoring, concatenates the resolved sheets into a single "
-        "dataset, and returns a preview with the merge_id for enrichment."
-    ),
-)
-async def merge_sheets(
-    payload: ConflictResolutionMap,
-    db: DuckDBService = Depends(get_connected_db),
-) -> MergeSheetsResponse:
-    del payload
-    del db
-    # TODO: Load uploaded files by file_ids, apply resolutions,
-    # concatenate into a single DataFrame, store as temp table,
-    # and return merge_id plus preview.
-    raise HTTPException(status_code=501, detail="Merge sheets flow is not implemented yet.")
+
 
 
 @router.post(
@@ -127,6 +119,8 @@ def merge_folder(payload: FolderMergeRequest) -> FolderMergeResponse:
         return FolderMergeResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc
 
@@ -147,20 +141,26 @@ async def enrich_data(
     fetch_columns: str = Form(
         ..., description="JSON encoded array of column names to fetch from the Master Table"
     ),
-    composite_key: str = Form(..., description="Secondary key strategy (e.g. DISCOM or DIV_CODE)"),
-    mapped_acct_id_col: str = Form(..., description="Uploaded column mapped to ACCT_ID"),
-    mapped_secondary_col: str = Form(..., description="Uploaded column mapped to secondary key"),
+    join_keys: str = Form(
+        ..., description="JSON encoded array of join key mapping objects"
+    ),
     db: DuckDBService = Depends(get_connected_db),
 ) -> StreamingResponse:
-    del db_path
     try:
+        sanitize_local_path_input(db_path, "db_path")
+
         try:
             columns_to_fetch = json.loads(fetch_columns)
         except json.JSONDecodeError as exc:
             raise ValueError("fetch_columns must be a valid JSON array") from exc
 
+        try:
+            keys_to_join = json.loads(join_keys)
+        except json.JSONDecodeError as exc:
+            raise ValueError("join_keys must be a valid JSON array") from exc
+
         filename = (file.filename or "").lower()
-        contents = await file.read()
+        contents = await read_upload_bytes(file, max_bytes=MAX_ENRICH_UPLOAD_BYTES, label="Enrichment upload")
 
         if filename.endswith(".csv"):
             dataframe = pd.read_csv(io.BytesIO(contents))
@@ -174,9 +174,7 @@ async def enrich_data(
             conn=db._conn,
             master_table=master_table,
             fetch_columns=columns_to_fetch,
-            mapped_acct_id_col=mapped_acct_id_col,
-            mapped_secondary_col=mapped_secondary_col,
-            secondary_key_type=composite_key,
+            join_keys=keys_to_join,
         )
 
         output = io.BytesIO()
@@ -201,5 +199,7 @@ async def enrich_data(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc

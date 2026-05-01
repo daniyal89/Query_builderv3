@@ -8,14 +8,17 @@
 import React from "react";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
+import { useThemeMode } from "../../hooks/useThemeMode";
 
 const PageShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { theme, toggleTheme } = useThemeMode();
+
   return (
-    <div className="flex h-screen bg-gray-100 font-sans overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-gray-100 font-sans text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-100">
       <Sidebar />
       <div className="flex flex-col flex-1 overflow-hidden">
-        <Header />
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 bg-gray-50">
+        <Header theme={theme} onToggleTheme={toggleTheme} />
+        <main className="flex-1 overflow-y-auto bg-gray-50 p-4 transition-colors dark:bg-slate-950 sm:p-6 lg:p-8">
           {children}
         </main>
       </div>

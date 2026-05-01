@@ -1,8 +1,8 @@
 // @ts-nocheck
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useConnection } from "../../hooks/useConnection";
 import { pickSystemFile } from "../../api/systemApi";
-import type { OutputFormat, UploadSheetsResponse } from "../../types/merge.types";
+import type { JoinKeyMapping, OutputFormat, UploadSheetsResponse } from "../../types/merge.types";
 
 interface EnrichmentConfigProps {
   uploadResult: UploadSheetsResponse;
@@ -13,9 +13,7 @@ interface EnrichmentConfigProps {
     outputFormat: OutputFormat,
     dbPath: string,
     mergedFile: File,
-    mappedAcctIdCol: string,
-    mappedSecondaryCol: string,
-    secondaryColType: string
+    joinKeys: JoinKeyMapping[]
   ) => void;
   isLoading: boolean;
 }
@@ -36,15 +34,15 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
     connect,
   } = useConnection();
   const [masterTable, setMasterTable] = useState<string>("master");
-  const [outputFormat, setOutputFormat] = useState<OutputFormat>("xlsx");
-  const [mappedAcctIdCol, setMappedAcctIdCol] = useState<string>("");
-  const [mappedSecondaryCol, setMappedSecondaryCol] = useState<string>("");
-  const [secondaryColType, setSecondaryColType] = useState<"DISCOM" | "DIV_CODE">("DISCOM");
+  const outputFormat: OutputFormat = "xlsx";
+  const [joinKeys, setJoinKeys] = useState<JoinKeyMapping[]>([{ fileColumn: "", tableColumn: "" }]);
   const [columnsToFetch, setColumnsToFetch] = useState<string[]>([]);
   const [didAutoLoadOnMount, setDidAutoLoadOnMount] = useState(false);
 
-  const availableMasterColumns =
-    tables?.find((table) => table.table_name === masterTable)?.columns.map((column) => column.name) || [];
+  const availableMasterColumns = useMemo(
+    () => tables?.find((table) => table.table_name === masterTable)?.columns.map((column) => column.name) || [],
+    [masterTable, tables]
+  );
 
   useEffect(() => {
     if (tables.length === 0) return;
@@ -80,12 +78,12 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
       alert("Master Table name is required.");
       return;
     }
-    if (!mappedAcctIdCol) {
-      alert("Please map the ACCT_ID column.");
+    if (joinKeys.some(k => !k.fileColumn || !k.tableColumn)) {
+      alert("Please complete all join key mappings, or remove empty ones.");
       return;
     }
-    if (!mappedSecondaryCol) {
-      alert(`Please map the ${secondaryColType} column.`);
+    if (joinKeys.length === 0) {
+      alert("Please add at least one join key mapping.");
       return;
     }
     if (columnsToFetch.length === 0) {
@@ -106,10 +104,18 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
       outputFormat,
       dbPath,
       uploadedFile,
-      mappedAcctIdCol,
-      mappedSecondaryCol,
-      secondaryColType
+      joinKeys
     );
+  };
+
+  const handleAddJoinKey = () => setJoinKeys(prev => [...prev, { fileColumn: "", tableColumn: "" }]);
+  const handleRemoveJoinKey = (index: number) => setJoinKeys(prev => prev.filter((_, i) => i !== index));
+  const handleUpdateJoinKey = (index: number, field: keyof JoinKeyMapping, value: string) => {
+    setJoinKeys(prev => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
   };
 
   const uniqueUploadColumns = Array.from(new Set(uploadResult.detected_columns.map((column) => column.name)));
@@ -188,60 +194,55 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
             </select>
           </div>
 
-          <h4 className="mb-3 font-semibold text-gray-800">Key Mapping (Uploaded File)</h4>
-          <div className="mb-4">
-            <label className="mb-1 block text-sm font-medium text-gray-700">Map to ACCT_ID *</label>
-            <select
-              value={mappedAcctIdCol}
-              onChange={(event) => setMappedAcctIdCol(event.target.value)}
-              className="w-full rounded border border-gray-300 p-2 text-sm"
+          <div className="mb-3 flex items-center justify-between">
+            <h4 className="font-semibold text-gray-800">Dynamic Key Mapping</h4>
+            <button
+              onClick={handleAddJoinKey}
+              className="text-xs font-medium text-indigo-600 hover:text-indigo-800"
             >
-              <option value="">-- Select Column --</option>
-              {uniqueUploadColumns.map((column) => (
-                <option key={column} value={column}>
-                  {column}
-                </option>
-              ))}
-            </select>
+              + Add Key
+            </button>
           </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Map Secondary Key *</label>
-            <div className="mb-2 flex gap-4">
-              <label className="flex cursor-pointer items-center gap-1 text-sm">
-                <input
-                  type="radio"
-                  name="secondaryType"
-                  value="DISCOM"
-                  checked={secondaryColType === "DISCOM"}
-                  onChange={() => setSecondaryColType("DISCOM")}
-                  className="text-indigo-600"
-                />
-                DISCOM
-              </label>
-              <label className="flex cursor-pointer items-center gap-1 text-sm">
-                <input
-                  type="radio"
-                  name="secondaryType"
-                  value="DIV_CODE"
-                  checked={secondaryColType === "DIV_CODE"}
-                  onChange={() => setSecondaryColType("DIV_CODE")}
-                  className="text-indigo-600"
-                />
-                DIV_CODE
-              </label>
-            </div>
-            <select
-              value={mappedSecondaryCol}
-              onChange={(event) => setMappedSecondaryCol(event.target.value)}
-              className="w-full rounded border border-gray-300 p-2 text-sm"
-            >
-              <option value="">-- Select Column --</option>
-              {uniqueUploadColumns.map((column) => (
-                <option key={column} value={column}>
-                  {column}
-                </option>
-              ))}
-            </select>
+          <div className="flex flex-col gap-3">
+            {joinKeys.map((keyMap, idx) => (
+              <div key={idx} className="flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 p-3 relative">
+                {joinKeys.length > 1 && (
+                  <button
+                    onClick={() => handleRemoveJoinKey(idx)}
+                    className="absolute -right-2 -top-2 rounded-full border border-gray-200 bg-white px-2 py-0.5 text-xs text-red-500 hover:bg-red-50"
+                  >
+                    x
+                  </button>
+                )}
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">File Column</label>
+                  <select
+                    value={keyMap.fileColumn}
+                    onChange={(e) => handleUpdateJoinKey(idx, "fileColumn", e.target.value)}
+                    className="w-full rounded border border-gray-300 p-1.5 text-sm"
+                  >
+                    <option value="">-- Select File Column --</option>
+                    {uniqueUploadColumns.map((column) => (
+                      <option key={column} value={column}>{column}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Master Table Column</label>
+                  <select
+                    value={keyMap.tableColumn}
+                    onChange={(e) => handleUpdateJoinKey(idx, "tableColumn", e.target.value)}
+                    className="w-full rounded border border-gray-300 p-1.5 text-sm"
+                    disabled={!isConnected || availableMasterColumns.length === 0}
+                  >
+                    <option value="">-- Select Table Column --</option>
+                    {availableMasterColumns.map((column) => (
+                      <option key={column} value={column}>{column}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -278,8 +279,8 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
         onClick={handleSubmit}
         disabled={
           isLoading ||
-          !mappedAcctIdCol ||
-          !mappedSecondaryCol ||
+          joinKeys.some(k => !k.fileColumn || !k.tableColumn) ||
+          joinKeys.length === 0 ||
           columnsToFetch.length === 0 ||
           !dbPath ||
           !uploadedFile ||

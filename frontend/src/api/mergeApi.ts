@@ -4,10 +4,9 @@
 
 import apiClient from "./client";
 import type {
-  ConflictResolutionMap,
   FolderMergeRequest,
   FolderMergeResponse,
-  MergeSheetsResponse,
+  JoinKeyMapping,
   UploadSheetsResponse,
 } from "../types/merge.types";
 
@@ -28,11 +27,6 @@ export async function uploadSheets(files: File[]): Promise<UploadSheetsResponse>
   return response.data;
 }
 
-export async function mergeSheets(payload: ConflictResolutionMap): Promise<MergeSheetsResponse> {
-  const response = await apiClient.post<MergeSheetsResponse>("/merge-sheets", payload);
-  return response.data;
-}
-
 export async function mergeFolder(payload: FolderMergeRequest): Promise<FolderMergeResponse> {
   const response = await apiClient.post<FolderMergeResponse>("/merge-folder", payload, {
     timeout: LONG_RUNNING_TIMEOUT_MS,
@@ -44,19 +38,15 @@ export async function enrichData(
   dbPath: string,
   masterTable: string,
   fetchColumns: string[],
-  compositeKey: string,
-  file: File,
-  mappedAcctIdCol: string,
-  mappedSecondaryCol: string
+  joinKeys: JoinKeyMapping[],
+  file: File
 ): Promise<{ blob: Blob; headers: Record<string, string> }> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("db_path", dbPath);
   formData.append("master_table", masterTable);
   formData.append("fetch_columns", JSON.stringify(fetchColumns));
-  formData.append("composite_key", compositeKey);
-  formData.append("mapped_acct_id_col", mappedAcctIdCol);
-  formData.append("mapped_secondary_col", mappedSecondaryCol);
+  formData.append("join_keys", JSON.stringify(joinKeys));
 
   const response = await apiClient.post("/enrich-data", formData, {
     headers: { "Content-Type": "multipart/form-data" },

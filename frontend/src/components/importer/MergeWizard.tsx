@@ -1,11 +1,10 @@
 import React from "react";
 import { useMergeWizard } from "../../hooks/useMergeWizard";
-import { ConflictResolver } from "./ConflictResolver";
 import { EnrichmentConfig } from "./EnrichmentConfig";
 import { MultiFileDropZone } from "./MultiFileDropZone";
 
 export const MergeWizard: React.FC = () => {
-  const { state, handleUpload, handleResolveConflicts, handleEnrich, resetWizard } = useMergeWizard();
+  const { state, handleUpload, handleEnrich, resetWizard } = useMergeWizard();
 
   const handleDownload = async (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
@@ -15,7 +14,7 @@ export const MergeWizard: React.FC = () => {
       if ("showSaveFilePicker" in window) {
         const response = await fetch(state.enrichResult.download_url);
         const blob = await response.blob();
-        // @ts-ignore
+        // @ts-expect-error showSaveFilePicker is not typed in libdom for all targets
         const handle = await window.showSaveFilePicker({
           suggestedName: "enriched_data.xlsx",
           types: [{ description: "Excel File", accept: { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"] } }]
@@ -39,12 +38,52 @@ export const MergeWizard: React.FC = () => {
     setTimeout(() => resetWizard(), 3000);
   };
 
+  const steps = [
+    { key: "upload", label: "Upload" },
+    { key: "enrich", label: "Enrich" },
+    { key: "download", label: "Download" },
+  ] as const;
+  const activeIdx = steps.findIndex((s) => s.key === state.step);
+
   return (
     <div className="merge-wizard mx-auto w-full max-w-5xl p-4">
       <h2 className="mb-2 text-2xl font-bold">Merge & Enrichment Pipeline</h2>
-      <p className="mb-6 font-medium text-gray-600">
+      <p className="mb-4 font-medium text-gray-600">
         Reconcile multiple datasets and enrich with the Master Table.
       </p>
+
+      {/* Step indicator */}
+      <div className="mb-6 flex items-center gap-1">
+        {steps.map((s, i) => (
+          <React.Fragment key={s.key}>
+            <div className="flex items-center gap-2">
+              <span
+                className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
+                  i < activeIdx
+                    ? "bg-emerald-600 text-white"
+                    : i === activeIdx
+                      ? "bg-blue-600 text-white"
+                      : "bg-slate-200 text-slate-500"
+                }`}
+              >
+                {i < activeIdx ? "✓" : i + 1}
+              </span>
+              <span
+                className={`text-sm font-medium ${
+                  i === activeIdx ? "text-blue-700" : i < activeIdx ? "text-emerald-700" : "text-slate-400"
+                }`}
+              >
+                {s.label}
+              </span>
+            </div>
+            {i < steps.length - 1 && (
+              <div
+                className={`mx-1 h-0.5 flex-1 ${i < activeIdx ? "bg-emerald-400" : "bg-slate-200"}`}
+              />
+            )}
+          </React.Fragment>
+        ))}
+      </div>
 
       {state.error && (
         <div className="relative mb-6 rounded border border-red-200 bg-red-50 p-4 text-sm text-red-800">
@@ -64,13 +103,7 @@ export const MergeWizard: React.FC = () => {
         <MultiFileDropZone onUpload={handleUpload} isLoading={state.isLoading} />
       )}
 
-      {state.step === "resolve" && state.uploadResult && (
-        <ConflictResolver
-          uploadResult={state.uploadResult}
-          onSubmit={handleResolveConflicts}
-          isLoading={state.isLoading}
-        />
-      )}
+
 
       {state.step === "enrich" && state.uploadResult && (
         <EnrichmentConfig

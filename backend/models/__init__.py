@@ -5,12 +5,9 @@ from backend.models.schema import TableMetadata, ColumnDetail, MasterTable
 from backend.models.query import QueryPayload, QueryResult, FilterCondition
 from backend.models.importer import CSVMappingPayload, ImportResult
 from backend.models.merge import (
-    ConflictResolutionMap,
-    ColumnResolution,
     DetectedColumn,
     EnrichmentRequest,
     EnrichmentResponse,
-    MergeSheetsResponse,
     UploadSheetsResponse,
 )
 from backend.models.ftp_download import (
@@ -32,12 +29,9 @@ __all__ = [
     "FilterCondition",
     "CSVMappingPayload",
     "ImportResult",
-    "ConflictResolutionMap",
-    "ColumnResolution",
     "DetectedColumn",
     "EnrichmentRequest",
     "EnrichmentResponse",
-    "MergeSheetsResponse",
     "UploadSheetsResponse",
     "FTPDownloadProfile",
     "FTPDownloadRequest",

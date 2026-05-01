@@ -48,6 +48,8 @@ export interface QueryColumnOption {
   key: string;
   label: string;
   tableName: string;
+  sourceTableName: string;
+  referenceName: string;
   columnName: string;
   dtype: string;
   nullable: boolean;
@@ -59,6 +61,42 @@ export interface FilterCondition {
   column: string;
   operator: FilterOperator;
   value: string;
+}
+
+export interface CaseWhenBranch {
+  id: string;
+  column: string;
+  operator: FilterOperator;
+  value: string;
+  thenType: "literal" | "column";
+  thenValue: string;
+}
+
+export interface CaseExpression {
+  id: string;
+  alias: string;
+  aggregateFunc?: SqlFunction;
+  branches: CaseWhenBranch[];
+  elseType: "literal" | "column";
+  elseValue: string;
+}
+
+export type SqlFunction =
+  | "SUM"
+  | "COUNT"
+  | "AVG"
+  | "MIN"
+  | "MAX"
+  | "COUNT_DISTINCT"
+  | "COALESCE";
+
+export interface FunctionColumn {
+  id: string;
+  func: SqlFunction;
+  column: string;
+  /** Second column for COALESCE(col1, col2). */
+  secondColumn?: string;
+  alias: string;
 }
 
 /** A single ORDER BY sort directive. */
@@ -76,6 +114,7 @@ export interface JoinCondition {
 export interface JoinClause {
   id: string;
   table: string;
+  alias: string;
   joinType: JoinType;
   conditions: JoinCondition[];
 }
@@ -88,6 +127,8 @@ export interface QueryState {
   joins: JoinClause[];
   groupBy: string[];
   aggregates: AggregateRule[];
+  caseExpressions: CaseExpression[];
+  functionColumns: FunctionColumn[];
   limitRows: number;
   offset: number;
   mode: "LIST" | "REPORT";
@@ -113,6 +154,7 @@ export interface QueryPayload {
   sort: SortClause[];
   joins: Array<{
     table: string;
+    alias?: string;
     join_type: JoinType;
     conditions: Array<{
       left_column: string;
@@ -127,6 +169,25 @@ export interface QueryPayload {
   marcadose_union?: MarcadoseUnionConfig;
   group_by: string[];
   aggregates: AggregateRule[];
+  case_expressions?: {
+    alias: string;
+    aggregate_func?: SqlFunction;
+    else_type: "literal" | "column";
+    else_value: string;
+    branches: {
+      column: string;
+      operator: FilterOperator;
+      value: string;
+      then_type: "literal" | "column";
+      then_value: string;
+    }[];
+  }[];
+  function_columns?: {
+    func: SqlFunction;
+    column: string;
+    second_column?: string;
+    alias: string;
+  }[];
 }
 
 export interface QueryPreview {

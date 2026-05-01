@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from backend.utils.path_safety import sanitize_local_path_input
 
 
 EngineName = Literal["duckdb", "oracle"]
@@ -20,6 +22,11 @@ class ConnectionRequest(BaseModel):
         description="Absolute filesystem path to the target .duckdb file.",
         examples=[r"C:\data\analytics.duckdb"],
     )
+
+    @field_validator("db_path")
+    @classmethod
+    def validate_db_path(cls, value: str) -> str:
+        return sanitize_local_path_input(value, "db_path")
 
 
 class ConnectionResponse(BaseModel):

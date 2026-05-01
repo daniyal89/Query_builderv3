@@ -38,6 +38,7 @@ FilterOperator = Literal[
 
 QueryExecutionMode = Literal["builder", "sql"]
 JoinType = Literal["INNER", "LEFT", "RIGHT"]
+JOIN_ALIAS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class FilterCondition(BaseModel):
@@ -58,6 +59,39 @@ class SortClause(BaseModel):
     direction: Literal["ASC", "DESC"] = Field(default="ASC", description="Sort direction.")
 
 
+class CaseWhenBranch(BaseModel):
+    """A single WHEN ... THEN ... condition within a CASE expression."""
+
+    column: str = Field(..., description="Column name to check.")
+    operator: FilterOperator = Field(..., description="SQL comparison operator.")
+    value: Any = Field(default="", description="Comparison value.")
+    then_type: Literal["literal", "column"] = Field(default="literal", description="Type of the THEN value.")
+    then_value: str = Field(..., description="Value or column to return if condition is met.")
+
+
+class CaseExpression(BaseModel):
+    """A computed column defined by a CASE WHEN ... ELSE ... END expression."""
+
+    alias: str = Field(..., description="Name for the new computed column.")
+    aggregate_func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX"] | None = Field(
+        default=None, description="Optional aggregate function to wrap the CASE statement."
+    )
+    branches: list[CaseWhenBranch] = Field(default_factory=list, description="WHEN conditions.")
+    else_type: Literal["literal", "column"] = Field(default="literal", description="Type of the ELSE value.")
+    else_value: str = Field(default="", description="Default value if no conditions are met.")
+
+
+class FunctionColumn(BaseModel):
+    """A standalone column with a SQL function applied."""
+
+    func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX", "COUNT_DISTINCT", "COALESCE"] = Field(
+        ..., description="The SQL function to apply."
+    )
+    column: str = Field(..., description="The main column to apply the function to.")
+    second_column: str | None = Field(default=None, description="Optional second column (used by COALESCE).")
+    alias: str = Field(..., description="Alias for the computed function column.")
+
+
 class JoinCondition(BaseModel):
     """A single equality predicate within a JOIN clause."""
 
@@ -75,13 +109,26 @@ class JoinClause(BaseModel):
     """A JOIN clause attached to the query builder payload."""
 
     table: str = Field(..., description="Target table or view to join.")
+    alias: str | None = Field(
+        default=None,
+        description="Optional reference name used to distinguish repeated joins against the same table.",
+    )
     join_type: JoinType = Field(default="INNER", description="Supported join type.")
     conditions: list[JoinCondition] = Field(default_factory=list, description="Equality predicates combined with AND.")
+
+    def reference_name(self) -> str:
+        return (self.alias or self.table).strip()
 
     @model_validator(mode="after")
     def validate_join(self) -> "JoinClause":
         if not self.table.strip():
             raise ValueError("Each join needs a target table.")
+        if self.alias is not None:
+            self.alias = self.alias.strip() or None
+            if self.alias and not JOIN_ALIAS_PATTERN.fullmatch(self.alias):
+                raise ValueError(
+                    "Join alias must start with a letter or underscore and contain only letters, numbers, and underscores."
+                )
         if not self.conditions:
             raise ValueError("Each join needs at least one matching column pair.")
         return self
@@ -106,11 +153,11 @@ class PivotConfig(BaseModel):
 class MarcadoseUnionConfig(BaseModel):
     """Monthly Marcadose master-table replacement and UNION ALL configuration."""
 
-    enabled: bool = Field(default=False, description="Whether to expand the query across selected DISCOM tables.")
+    enabled: bool = Field(default=True, description="Whether to expand the query across selected DISCOM tables.")
     month_tag: str = Field(default="", description="Monthly tag used in CM_master_data_<month>_<discom>.")
     discoms: list[str] = Field(default_factory=list, description="Selected DISCOM codes.")
     base_discom: str = Field(default="DVVNL", description="Single/base DISCOM used when union mode is off.")
-    add_grand_total: bool = Field(default=False, description="Append a grand total row for Generate Report outputs.")
+    add_grand_total: bool = Field(default=True, description="Append a grand total row for Generate Report outputs.")
     schema_name: str = Field(default="MERCADOS", description="Oracle schema that owns monthly master tables.")
 
     @model_validator(mode="after")
@@ -178,6 +225,8 @@ class QueryPayload(BaseModel):
     pivot: PivotConfig | None = Field(default=None, description="Pivot configuration used if mode is REPORT.")
     group_by: list[str] = Field(default_factory=list, description="Columns to GROUP BY.")
     aggregates: list[AggregateRule] = Field(default_factory=list, description="List of aggregations to apply.")
+    case_expressions: list[CaseExpression] = Field(default_factory=list, description="Computed columns.")
+    function_columns: list[FunctionColumn] = Field(default_factory=list, description="Stand-alone function columns.")
     sql: str | None = Field(default=None, description="Raw SQL text for direct SQL execution.")
     marcadose_union: MarcadoseUnionConfig | None = Field(
         default=None,
@@ -193,9 +242,10 @@ class QueryPayload(BaseModel):
         if self.execution_mode == "builder":
             seen_tables = {self.table.strip()}
             for join in self.joins:
-                if join.table in seen_tables:
-                    raise ValueError("Each joined table can only be used once in the visual builder.")
-                seen_tables.add(join.table)
+                join_reference = join.reference_name()
+                if join_reference in seen_tables:
+                    raise ValueError("Each joined table alias/reference must be unique in the visual builder.")
+                seen_tables.add(join_reference)
         return self
 
 

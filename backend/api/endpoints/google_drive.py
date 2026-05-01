@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from backend.models.google_drive import (
     DriveAuthStatusResponse,
@@ -8,6 +8,7 @@ from backend.models.google_drive import (
     DriveUploadRequest,
 )
 from backend.services.google_drive_service import GoogleDriveService
+from backend.utils.rate_limits import enforce_rate_limit
 
 router = APIRouter()
 
@@ -26,9 +27,26 @@ def get_drive_auth_status() -> DriveAuthStatusResponse:
     response_model=DriveAuthStatusResponse,
     summary="Open Google OAuth login and cache the user token",
 )
-def login_drive_user() -> DriveAuthStatusResponse:
+def login_drive_user(request: Request) -> DriveAuthStatusResponse:
     try:
+        enforce_rate_limit(request, "drive_auth_login")
         return DriveAuthStatusResponse(**GoogleDriveService.login_google())
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc
+
+
+@router.post(
+    "/drive/auth/logout",
+    response_model=DriveAuthStatusResponse,
+    summary="Revoke the cached Google OAuth token and sign out the user",
+)
+def logout_drive_user() -> DriveAuthStatusResponse:
+    try:
+        return DriveAuthStatusResponse(**GoogleDriveService.logout_google())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -40,8 +58,9 @@ def login_drive_user() -> DriveAuthStatusResponse:
     response_model=DriveJobStartResponse,
     summary="Start a background Google Drive folder upload job",
 )
-def start_drive_upload(payload: DriveUploadRequest) -> DriveJobStartResponse:
+def start_drive_upload(request: Request, payload: DriveUploadRequest) -> DriveJobStartResponse:
     try:
+        enforce_rate_limit(request, "drive_upload_start")
         result = GoogleDriveService.start_upload(
             auth=payload.auth,
             local_folder=payload.local_folder,
@@ -51,6 +70,8 @@ def start_drive_upload(payload: DriveUploadRequest) -> DriveJobStartResponse:
             max_workers=payload.max_workers,
         )
         return DriveJobStartResponse(**result)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -62,8 +83,9 @@ def start_drive_upload(payload: DriveUploadRequest) -> DriveJobStartResponse:
     response_model=DriveJobStartResponse,
     summary="Start a background Google Drive file/folder download job",
 )
-def start_drive_download(payload: DriveDownloadRequest) -> DriveJobStartResponse:
+def start_drive_download(request: Request, payload: DriveDownloadRequest) -> DriveJobStartResponse:
     try:
+        enforce_rate_limit(request, "drive_download_start")
         result = GoogleDriveService.start_download(
             auth=payload.auth,
             drive_link_or_id=payload.drive_link_or_id,
@@ -72,6 +94,8 @@ def start_drive_download(payload: DriveDownloadRequest) -> DriveJobStartResponse
             export_google_files=payload.export_google_files,
         )
         return DriveJobStartResponse(**result)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

@@ -5,8 +5,10 @@ oracle_service.py â€” Manages Marcadose Oracle connection lifecycle and rea
 from __future__ import annotations
 
 import importlib
+import logging
 import re
 import threading
+import unicodedata
 from typing import Any, Optional
 
 from backend.models.connection import OracleConnectionRequest
@@ -21,6 +23,8 @@ READ_ONLY_KEYWORDS = re.compile(
 )
 FOR_UPDATE_PATTERN = re.compile(r"\bFOR\s+UPDATE\b", re.IGNORECASE)
 LEADING_COMMENT_PATTERN = re.compile(r"^\s*(--.*?$|/\*.*?\*/\s*)*", re.DOTALL | re.MULTILINE)
+NON_PRINTABLE_SQL_CHARS_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B\u200C\u200D\u2060\uFEFF]")
+logger = logging.getLogger(__name__)
 class OracleService:
     """Singleton service managing a single Oracle connection in Thin mode."""
 
@@ -102,30 +106,125 @@ class OracleService:
 
     def get_columns(self, table_name: str) -> list[ColumnDetail]:
         self._ensure_connected()
-        normalized = table_name.strip().upper()
         with self._lock:
-            existing = {name.upper() for name in self._fetch_object_names_unlocked()}
-            if normalized not in existing:
-                raise ValueError(f"Table or view '{table_name}' does not exist in schema '{self._schema_name}'.")
-            return self._fetch_columns_unlocked(normalized)
+            return self._fetch_columns_unlocked(table_name)
 
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
-        self.ensure_read_only_sql(sql)
+        normalized_sql = self._sanitize_sql_for_oracle(sql)
+        logger.debug("ORACLE_INPUT_SQL repr: %r", sql)
+        logger.debug("ORACLE_INPUT_SQL utf8-hex: %s", sql.encode("utf-8", errors="backslashreplace").hex())
+        logger.debug("ORACLE_ACTUAL_SQL repr: %r", normalized_sql)
+        logger.debug("ORACLE_ACTUAL_SQL utf8-hex: %s", normalized_sql.encode("utf-8", errors="backslashreplace").hex())
+        self.ensure_read_only_sql(normalized_sql)
 
         with self._lock:
             assert self._conn is not None
             cursor = self._conn.cursor()
             try:
-                if params:
-                    cursor.execute(sql, params)
-                else:
-                    cursor.execute(sql)
+                try:
+                    if params:
+                        cursor.execute(normalized_sql, params)
+                    else:
+                        cursor.execute(normalized_sql)
+                except Exception as exc:
+                    if not self._is_invalid_character_error(exc):
+                        raise
+
+                    cleaned_sql = self._sanitize_sql_for_oracle(normalized_sql)
+                    ascii_cleaned_sql = self._sanitize_ascii_retry_sql(cleaned_sql)
+                    retry_sql = ascii_cleaned_sql if ascii_cleaned_sql != cleaned_sql else cleaned_sql
+
+                    if retry_sql == normalized_sql:
+                        diagnostic = self._diagnose_invalid_sql_chars(normalized_sql)
+                        if diagnostic:
+                            runtime_exc = RuntimeError(
+                                "ORA-00911 persists after SQL sanitation. Suspicious character codes: "
+                                f"{diagnostic}"
+                            )
+                            self._attach_sql_debug(runtime_exc, sql, normalized_sql)
+                            raise runtime_exc from exc
+                        self._attach_sql_debug(exc, sql, normalized_sql)
+                        raise
+                    self.ensure_read_only_sql(retry_sql)
+
+                    try:
+                        if params:
+                            cursor.execute(retry_sql, params)
+                        else:
+                            cursor.execute(retry_sql)
+                    except Exception as retry_exc:
+                        if self._is_invalid_character_error(retry_exc):
+                            diagnostic = self._diagnose_invalid_sql_chars(retry_sql)
+                            if diagnostic:
+                                runtime_exc = RuntimeError(
+                                    "ORA-00911 after retry sanitation. Suspicious character codes: "
+                                    f"{diagnostic}"
+                                )
+                                self._attach_sql_debug(runtime_exc, sql, retry_sql)
+                                raise runtime_exc from retry_exc
+                            self._attach_sql_debug(retry_exc, sql, retry_sql)
+                        raise
                 columns = [desc[0] for desc in (cursor.description or [])]
                 rows = cursor.fetchall()
                 return columns, [list(row) for row in rows], len(rows)
             finally:
                 cursor.close()
+
+    @staticmethod
+    def _is_invalid_character_error(exc: Exception) -> bool:
+        return "ORA-00911" in str(exc).upper()
+
+    @staticmethod
+    def _sanitize_sql_for_oracle(sql: str) -> str:
+        normalized = unicodedata.normalize("NFKC", sql)
+        sanitized = (
+            normalized.replace("\u00A0", " ")
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+            .replace("\u201C", '"')
+            .replace("\u201D", '"')
+            .replace("`", "")
+            .replace("\\n", "\n")
+            .replace("\\r", " ")
+            .replace("\\t", " ")
+            .replace('\\"', '"')
+            .replace("\\'", "'")
+            .strip()
+        )
+
+        sanitized = NON_PRINTABLE_SQL_CHARS_PATTERN.sub(" ", sanitized)
+        sanitized = "".join(
+            char for char in sanitized if char in {"\n", "\r", "\t"} or not unicodedata.category(char).startswith("C")
+        )
+
+        if len(sanitized) >= 2 and sanitized[0] == sanitized[-1] and sanitized[0] in {"'", '"'}:
+            sanitized = sanitized[1:-1].strip()
+
+        if sanitized.endswith(";"):
+            sanitized = sanitized[:-1].rstrip()
+        return sanitized
+
+    @staticmethod
+    def _sanitize_ascii_retry_sql(sql: str) -> str:
+        compact = "".join(char for char in sql if char in {"\n", "\r", "\t"} or 32 <= ord(char) <= 126).strip()
+        return compact[:-1].rstrip() if compact.endswith(";") else compact
+
+    @staticmethod
+    def _diagnose_invalid_sql_chars(sql: str) -> str:
+        findings: list[str] = []
+        for index, char in enumerate(sql):
+            code = ord(char)
+            if code < 32 and char not in {"\n", "\r", "\t"}:
+                findings.append(f"pos={index} U+{code:04X}")
+            elif unicodedata.category(char).startswith("C") and char not in {"\n", "\r", "\t"}:
+                findings.append(f"pos={index} U+{code:04X}")
+        return ", ".join(findings[:12])
+
+    @staticmethod
+    def _attach_sql_debug(exc: Exception, input_sql: str, actual_sql: str) -> None:
+        setattr(exc, "oracle_input_sql", input_sql)
+        setattr(exc, "oracle_actual_sql", actual_sql)
 
     @staticmethod
     def ensure_read_only_sql(sql: str) -> None:

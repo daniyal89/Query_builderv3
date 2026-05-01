@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from backend.models.ftp_download import FTPDownloadProfile
+from backend.services.job_runtime import (
+    BackgroundJobCancelled,
+    BackgroundJobPolicy,
+    job_runtime,
+)
 
 
 @dataclass(frozen=True)
@@ -35,9 +40,8 @@ class _FTPJobCancelled(Exception):
 
 
 class FTPDownloadService:
-    _jobs: dict[str, dict[str, Any]] = {}
-    _jobs_lock = threading.Lock()
-    _cancel_events: dict[str, threading.Event] = {}
+    JOB_TYPE = "ftp_download"
+    JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
 
     @classmethod
     def start_download(
@@ -79,14 +83,26 @@ class FTPDownloadService:
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": None,
         }
-        with cls._jobs_lock:
-            cls._cancel_events[job_id] = threading.Event()
-            cls._jobs[job_id] = job_state
-
-        worker = threading.Thread(
-            target=cls._run_download_job,
-            args=(
-                job_id,
+        job_runtime.start_job(
+            job_type=cls.JOB_TYPE,
+            job_id=job_id,
+            initial_snapshot=job_state,
+            payload={
+                "host": normalized_host,
+                "port": port,
+                "output_root": output_root,
+                "file_suffix": file_suffix,
+                "max_workers": max_workers,
+                "max_retries": max_retries,
+                "retry_delay_seconds": retry_delay_seconds,
+                "timeout_seconds": timeout_seconds,
+                "passive_mode": passive_mode,
+                "skip_existing": skip_existing,
+                "profiles": [profile.model_dump(mode="json") for profile in profiles],
+            },
+            policy=cls.JOB_POLICY,
+            worker=lambda running_job_id: cls._run_download_job(
+                running_job_id,
                 normalized_host,
                 port,
                 output_root,
@@ -99,64 +115,129 @@ class FTPDownloadService:
                 skip_existing,
                 profiles,
             ),
-            daemon=True,
         )
-        worker.start()
         return {"job_id": job_id, "status": "queued"}
 
     @classmethod
+    def download_files(
+        cls,
+        host: str,
+        port: int,
+        output_root: str,
+        file_suffix: str,
+        max_workers: int,
+        max_retries: int,
+        retry_delay_seconds: int,
+        timeout_seconds: int,
+        passive_mode: bool,
+        skip_existing: bool,
+        profiles: list[FTPDownloadProfile],
+    ) -> dict[str, Any]:
+        """
+        Run FTP downloads synchronously and return the final aggregate result.
+
+        This compatibility API is kept for internal callers/tests that expect
+        the pre-job-system return shape.
+        """
+        normalized_host = host.strip()
+        if not normalized_host:
+            raise ValueError("FTP host is required.")
+        if not output_root.strip():
+            raise ValueError("Output root folder is required.")
+        if not profiles:
+            raise ValueError("At least one FTP profile is required.")
+
+        normalized_suffix = file_suffix.strip() or ".gz"
+        if not normalized_suffix.startswith("."):
+            normalized_suffix = f".{normalized_suffix}"
+        normalized_suffix = normalized_suffix.lower()
+
+        output_root_path = cls._expand_tokens(output_root, "ROOT")
+        root_dir = Path(output_root_path).expanduser()
+        root_dir.mkdir(parents=True, exist_ok=True)
+
+        prepared_profiles = [cls._prepare_profile(profile, root_dir) for profile in profiles]
+
+        total_found = total_downloaded = total_skipped = total_failed = 0
+        profile_results: list[dict[str, Any]] = []
+        for prepared in prepared_profiles:
+            result = cls._download_profile(
+                host=normalized_host,
+                port=port,
+                file_suffix=normalized_suffix,
+                max_workers=max_workers,
+                max_retries=max_retries,
+                retry_delay_seconds=retry_delay_seconds,
+                timeout_seconds=timeout_seconds,
+                passive_mode=passive_mode,
+                skip_existing=skip_existing,
+                profile=prepared,
+                job_id="sync",
+            )
+            profile_results.append(result)
+            total_found += result["found_files"]
+            total_downloaded += result["downloaded_files"]
+            total_skipped += result["skipped_files"]
+            total_failed += result["failed_files"]
+
+        return {
+            "status": "completed",
+            "host": normalized_host,
+            "output_root": str(root_dir),
+            "total_profiles": len(prepared_profiles),
+            "total_files_found": total_found,
+            "total_downloaded_files": total_downloaded,
+            "total_skipped_files": total_skipped,
+            "total_failed_files": total_failed,
+            "profile_results": profile_results,
+            "error_message": None,
+        }
+
+    @classmethod
     def get_job_status(cls, job_id: str) -> dict[str, Any] | None:
-        with cls._jobs_lock:
-            job = cls._jobs.get(job_id)
-            return dict(job) if job else None
+        return job_runtime.get_job(job_id)
 
     @classmethod
     def stop_download(cls, job_id: str) -> dict[str, Any] | None:
-        with cls._jobs_lock:
-            job = cls._jobs.get(job_id)
-            if not job:
-                return None
-            if job.get("status") in {"completed", "failed", "cancelled"}:
-                return dict(job)
-            event = cls._cancel_events.get(job_id)
-            if event:
-                event.set()
-            job["status"] = "cancelling"
-            job["error_message"] = "Stop requested. Waiting for the current FTP operation to finish..."
-            return dict(job)
+        return job_runtime.stop_job(
+            job_id,
+            "Stop requested. Waiting for the current FTP operation to finish...",
+        )
 
     @classmethod
     def _is_cancelled(cls, job_id: str) -> bool:
-        event = cls._cancel_events.get(job_id)
-        return bool(event and event.is_set())
+        return job_runtime.is_cancelled(job_id)
 
     @classmethod
     def _raise_if_cancelled(cls, job_id: str) -> None:
-        if cls._is_cancelled(job_id):
+        try:
+            job_runtime.raise_if_cancelled(job_id)
+        except BackgroundJobCancelled:
             raise _FTPJobCancelled()
 
     @classmethod
     def _update_job(cls, job_id: str, **updates: Any) -> None:
-        with cls._jobs_lock:
-            if job_id not in cls._jobs:
-                return
-            cls._jobs[job_id].update(updates)
+        job_runtime.update_job(job_id, **updates)
 
     @classmethod
     def _replace_profile_result(cls, job_id: str, result: dict[str, Any]) -> None:
-        with cls._jobs_lock:
-            if job_id not in cls._jobs:
-                return
-            results = list(cls._jobs[job_id].get("profile_results", []))
+        def mutate(snapshot: dict[str, Any]) -> None:
+            results = list(snapshot.get("profile_results", []))
             existing_index = next(
-                (index for index, item in enumerate(results) if item.get("profile_name") == result.get("profile_name")),
+                (
+                    index
+                    for index, item in enumerate(results)
+                    if item.get("profile_name") == result.get("profile_name")
+                ),
                 None,
             )
             if existing_index is None:
                 results.append(result)
             else:
                 results[existing_index] = result
-            cls._jobs[job_id]["profile_results"] = results
+            snapshot["profile_results"] = results
+
+        job_runtime.mutate_job(job_id, mutate)
 
     @classmethod
     def _run_download_job(
@@ -408,7 +489,13 @@ class FTPDownloadService:
         ftp = None
         tasks: list[_DownloadTask] = []
         try:
-            ftp = FTPDownloadService._connect(host, port, timeout_seconds, passive_mode, profile)
+            ftp = FTPDownloadService._connect(
+                host=host,
+                port=port,
+                timeout_seconds=timeout_seconds,
+                passive_mode=passive_mode,
+                profile=profile,
+            )
             names = FTPDownloadService._list_names(ftp)
             for name in names:
                 if not name.lower().endswith(file_suffix):
@@ -442,7 +529,13 @@ class FTPDownloadService:
         for attempt in range(1, max_retries + 1):
             FTPDownloadService._raise_if_cancelled(job_id)
             try:
-                ftp = FTPDownloadService._connect(host, port, timeout_seconds, passive_mode, task.profile)
+                ftp = FTPDownloadService._connect(
+                    host=host,
+                    port=port,
+                    timeout_seconds=timeout_seconds,
+                    passive_mode=passive_mode,
+                    profile=task.profile,
+                )
                 with task.local_path.open("wb") as file_handle:
                     def write_chunk(chunk: bytes) -> None:
                         FTPDownloadService._raise_if_cancelled(job_id)
