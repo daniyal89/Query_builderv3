@@ -52,6 +52,12 @@ type ToolHistoryItem = {
   run_seconds?: number | null;
 };
 
+function isTransientPollTimeout(error: any): boolean {
+  const code = typeof error?.code === "string" ? error.code : "";
+  const message = typeof error?.message === "string" ? error.message.toLowerCase() : "";
+  return code === "ECONNABORTED" || message.includes("timeout");
+}
+
 function isParquetTerminalStatus(status: CsvParquetJobStatusResponse | null): boolean {
   return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
 }
@@ -333,6 +339,10 @@ export const SidebarToolsPage: React.FC = () => {
           setToolHistory((current) => [{ id: `${Date.now()}-parquet`, tool: "parquet" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString(), run_seconds: calculateRunSeconds(latest.started_at, latest.finished_at) }, ...current].slice(0, 10));
         }
       } catch (error: any) {
+        if (isTransientPollTimeout(error)) {
+          setParquetMessage("Status refresh timed out. Job is still running; retrying automatically...");
+          return;
+        }
         const detail = error?.response?.data?.detail || error?.message || "Failed to fetch conversion status.";
         setParquetMessage(detail);
         setParquetJobId(null);
@@ -366,6 +376,10 @@ export const SidebarToolsPage: React.FC = () => {
           setToolHistory((current) => [{ id: `${Date.now()}-build`, tool: "build" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString(), run_seconds: calculateRunSeconds(latest.started_at, latest.finished_at) }, ...current].slice(0, 10));
         }
       } catch (error: any) {
+        if (isTransientPollTimeout(error)) {
+          setBuildMessage("Status refresh timed out. Build is still running; retrying automatically...");
+          return;
+        }
         const detail = error?.response?.data?.detail || error?.message || "Failed to fetch build status.";
         setBuildMessage(detail);
         setBuildJobId(null);
