@@ -14,7 +14,7 @@ export const MergeWizard: React.FC = () => {
       if ("showSaveFilePicker" in window) {
         const response = await fetch(state.enrichResult.download_url);
         const blob = await response.blob();
-        // @ts-ignore
+        // @ts-expect-error showSaveFilePicker is not typed in libdom for all targets
         const handle = await window.showSaveFilePicker({
           suggestedName: "enriched_data.xlsx",
           types: [{ description: "Excel File", accept: { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"] } }]
