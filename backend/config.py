@@ -51,19 +51,27 @@ class Settings(BaseSettings):
     # Standard proxy vars (not prefixed with DASHBOARD_)
     HTTP_PROXY: str | None = None
     HTTPS_PROXY: str | None = None
+    NO_PROXY: str | None = None
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
         import os
         
-        # If proxy settings were loaded from .env, inject them into os.environ
-        # so underlying libraries (urllib, requests, google-auth) can pick them up.
-        if self.HTTP_PROXY:
-            os.environ["HTTP_PROXY"] = self.HTTP_PROXY
-            os.environ["http_proxy"] = self.HTTP_PROXY
-        if self.HTTPS_PROXY:
-            os.environ["HTTPS_PROXY"] = self.HTTPS_PROXY
-            os.environ["https_proxy"] = self.HTTPS_PROXY
+        # Load proxy settings from either DASHBOARD_* or standard env vars and
+        # inject them into os.environ so urllib/requests/google-auth can use them.
+        http_proxy = self.HTTP_PROXY or os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+        https_proxy = self.HTTPS_PROXY or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
+        no_proxy = self.NO_PROXY or os.getenv("NO_PROXY") or os.getenv("no_proxy")
+
+        if http_proxy:
+            os.environ["HTTP_PROXY"] = http_proxy
+            os.environ["http_proxy"] = http_proxy
+        if https_proxy:
+            os.environ["HTTPS_PROXY"] = https_proxy
+            os.environ["https_proxy"] = https_proxy
+        if no_proxy:
+            os.environ["NO_PROXY"] = no_proxy
+            os.environ["no_proxy"] = no_proxy
 
 
 settings = Settings()
