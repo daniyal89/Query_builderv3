@@ -10,6 +10,7 @@ import {
   stopCsvToParquetJob,
 } from "../api/sidebarToolsApi";
 import { pickSystemFile, pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
+import { StatusAlert } from "../components/common/StatusAlert";
 
 interface FieldProps {
   label: string;
@@ -271,6 +272,8 @@ export const SidebarToolsPage: React.FC = () => {
   const [nowMs, setNowMs] = useState<number>(Date.now());
   const isParquetRunning = parquetStatus?.status === "queued" || parquetStatus?.status === "running" || parquetStatus?.status === "cancelling";
   const isBuildRunning = buildStatus?.status === "queued" || buildStatus?.status === "running" || buildStatus?.status === "cancelling";
+  const showBuildSuccess = buildStatus?.status === "completed" && Boolean(buildMessage.trim());
+  const showParquetSuccess = parquetStatus?.status === "completed" && Boolean(parquetMessage.trim());
   const buildRunSeconds = calculateRunSeconds(buildStatus?.started_at, buildStatus?.finished_at, nowMs);
   const parquetRunSeconds = calculateRunSeconds(parquetStatus?.started_at, parquetStatus?.finished_at, nowMs);
   const parquetProgress = useMemo(() => {
@@ -519,11 +522,16 @@ export const SidebarToolsPage: React.FC = () => {
         </div>
       )}
       {(buildStatus?.status === "failed" || parquetStatus?.status === "failed") && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          <p className="font-semibold">Error summary</p>
+        <StatusAlert tone="error" title="Error summary">
           {buildStatus?.status === "failed" && <p>Build: {buildMessage}</p>}
           {parquetStatus?.status === "failed" && <p>CSV→Parquet: {parquetMessage}</p>}
-        </div>
+        </StatusAlert>
+      )}
+      {(showBuildSuccess || showParquetSuccess) && (
+        <StatusAlert tone="success" title="Latest completed jobs">
+          {showBuildSuccess && <p>Build: {buildMessage}</p>}
+          {showParquetSuccess && <p>CSV→Parquet: {parquetMessage}</p>}
+        </StatusAlert>
       )}
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-2xl font-semibold text-slate-900">Data Tools</h1>
