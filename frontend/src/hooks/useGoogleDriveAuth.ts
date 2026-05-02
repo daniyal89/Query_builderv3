@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { getDriveAuthStatus, loginGoogleDrive, logoutGoogleDrive } from "../api/driveApi";
 import type { DriveAuthStatusResponse } from "../types/drive.types";
 
@@ -6,6 +6,7 @@ export function useGoogleDriveAuth() {
   const [authStatus, setAuthStatus] = useState<DriveAuthStatusResponse | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const isActionInProgress = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -28,6 +29,8 @@ export function useGoogleDriveAuth() {
   };
 
   const signIn = async () => {
+    if (isActionInProgress.current) return;
+    isActionInProgress.current = true;
     setIsSigningIn(true);
     try {
       const next = await loginGoogleDrive();
@@ -35,10 +38,13 @@ export function useGoogleDriveAuth() {
       return next;
     } finally {
       setIsSigningIn(false);
+      isActionInProgress.current = false;
     }
   };
 
   const signOut = async () => {
+    if (isActionInProgress.current) return;
+    isActionInProgress.current = true;
     setIsSigningOut(true);
     try {
       const next = await logoutGoogleDrive();
@@ -46,6 +52,7 @@ export function useGoogleDriveAuth() {
       return next;
     } finally {
       setIsSigningOut(false);
+      isActionInProgress.current = false;
     }
   };
 

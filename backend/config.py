@@ -7,6 +7,7 @@ frozen PyInstaller executable, falling back to the project root in dev mode.
 
 import sys
 from pathlib import Path
+from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -44,7 +45,25 @@ class Settings(BaseSettings):
         env_prefix="DASHBOARD_",
         env_file=".env",
         env_file_encoding="utf-8",
+        extra="allow",  # Allow extra fields so pydantic-settings can read proxy vars
     )
+
+    # Standard proxy vars (not prefixed with DASHBOARD_)
+    HTTP_PROXY: str | None = None
+    HTTPS_PROXY: str | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        super().model_post_init(__context)
+        import os
+        
+        # If proxy settings were loaded from .env, inject them into os.environ
+        # so underlying libraries (urllib, requests, google-auth) can pick them up.
+        if self.HTTP_PROXY:
+            os.environ["HTTP_PROXY"] = self.HTTP_PROXY
+            os.environ["http_proxy"] = self.HTTP_PROXY
+        if self.HTTPS_PROXY:
+            os.environ["HTTPS_PROXY"] = self.HTTPS_PROXY
+            os.environ["https_proxy"] = self.HTTPS_PROXY
 
 
 settings = Settings()
