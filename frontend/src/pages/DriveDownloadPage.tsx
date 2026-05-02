@@ -180,7 +180,7 @@ export const DriveDownloadPage: React.FC = () => {
 
   useEffect(() => {
     if (!jobId) return;
-    setIsLoading(!isTerminalStatus(status));
+    setIsLoading(true);
     let cancelled = false;
     const poll = async () => {
       try {
@@ -209,7 +209,7 @@ export const DriveDownloadPage: React.FC = () => {
     };
     poll();
     return () => { cancelled = true; };
-  }, [jobId]);
+  }, [jobId, refreshAuthStatus]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setState((current) => ({ ...current, [key]: value }));

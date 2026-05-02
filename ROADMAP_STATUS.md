@@ -208,7 +208,7 @@ _Last updated: 2026-05-01 (UTC) - frontend tests/build pass locally with dark mo
 
 ## Improvement Backlog (Post Sprint 3)
 
-- [In Progress] Broaden frontend lint coverage from baseline JS rules to TypeScript + React-specific rules (implementation in progress with TS/React hooks lint config enabled and warning burn-down underway (now down to 9 warnings in local lint run)).
+- [In Progress] Broaden frontend lint coverage from baseline JS rules to TypeScript + React-specific rules (implementation in progress with TS/React hooks lint config enabled and warning burn-down underway (now down to 7 warnings in local lint run)).
 - [In Progress] Backend/frontend coverage artifacts are wired in CI and backend + frontend PR test annotations are now published from JUnit reports; frontend quality gate now uploads `frontend_dist/build-report.json` as a CI artifact for bundle observability.
 - [Done] Unified CI meta-gate now runs frontend + backend quality jobs and requires both before merge (`.github/workflows/ci-meta-gate.yml`).
 - [In Progress] Continue Data Tools UX consistency passes using shared status/alert patterns (latest: Sidebar Tools error summary now uses shared `StatusAlert`).
