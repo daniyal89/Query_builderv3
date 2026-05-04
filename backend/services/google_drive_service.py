@@ -893,9 +893,25 @@ class GoogleDriveService:
             with target_path.open("wb") as fh:
                 downloader = MediaIoBaseDownload(fh, request_obj, chunksize=5 * 1024 * 1024)
                 done = False
+                transient_errors = (ConnectionResetError, TimeoutError, OSError)
+                consecutive_failures = 0
                 while not done:
                     cls._raise_if_cancelled(job_id)
-                    _, done = downloader.next_chunk()
+                    try:
+                        _, done = downloader.next_chunk(num_retries=5)
+                        consecutive_failures = 0
+                    except transient_errors as exc:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 3:
+                            raise
+                        cls._logger.warning(
+                            "Transient Drive download error; retrying chunk (job_id=%s, file_id=%s, name=%s, attempt=%s): %s",
+                            job_id,
+                            file_id,
+                            name,
+                            consecutive_failures,
+                            cls._exception_details(exc),
+                        )
             cls._increment_job(job_id, processed_items=1, downloaded_items=1)
         except _DriveJobCancelled:
             raise
