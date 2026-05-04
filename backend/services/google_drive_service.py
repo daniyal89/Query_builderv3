@@ -714,6 +714,28 @@ class GoogleDriveService:
             if cls._is_cancelled(job_id):
                 cls._finish_job(job_id, message="Download stopped by user.")
             else:
+                if type(exc).__name__ == "ServerNotFoundError":
+                    cls._logger.warning(
+                        "Drive API host could not be resolved; attempting public-link fallback (job_id=%s, target_id=%s).",
+                        job_id,
+                        target_id,
+                    )
+                    fallback_link = original_link if original_link.strip() else f"https://drive.google.com/file/d/{target_id}/view"
+                    try:
+                        ok, fallback_msg = cls._try_public_download(
+                            fallback_link,
+                            target_id,
+                            output_path,
+                            overwrite_existing,
+                            export_google_files,
+                            job_id,
+                        )
+                        if ok:
+                            cls._finish_job(job_id, message=f"Fallback public download finished: {output_path}")
+                            return
+                        cls._add_error(job_id, f"Fallback public download failed: {fallback_msg}")
+                    except Exception as fallback_exc:
+                        cls._add_error(job_id, f"Fallback public download failed: {cls._exception_details(fallback_exc)}")
                 detail = cls._exception_details(exc)
                 cls._logger.exception(
                     "Google Drive download job failed (job_id=%s, mode=%s, target_id=%s): %s",
