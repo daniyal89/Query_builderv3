@@ -477,9 +477,10 @@ class GoogleDriveService:
                 proxy_host=explicit_proxy_host,
                 proxy_port=int(proxy_port),
                 proxy_user=explicit_proxy_user,
-                proxy_pass=explicit_proxy_pass,
-                rdns=True,
+                proxy_pass=explicit_proxy_pass
             )
+            if hasattr(proxy_info, "proxy_rdns"):
+                proxy_info.proxy_rdns = True
             return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
 
         if proxy_url:
@@ -505,9 +506,10 @@ class GoogleDriveService:
                     proxy_host=parsed.hostname,
                     proxy_port=parsed.port or 80,
                     proxy_user=parsed.username,
-                    proxy_pass=parsed.password,
-                    rdns=True,
+                    proxy_pass=parsed.password
                 )
+                if hasattr(proxy_info, "proxy_rdns"):
+                    proxy_info.proxy_rdns = True
             if proxy_info is None:
                 proxy_info = httplib2.proxy_info_from_url(proxy_url, method="https")
                 if proxy_info:
