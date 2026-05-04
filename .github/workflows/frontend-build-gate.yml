@@ -45,3 +45,10 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      - name: Upload frontend build report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-report
+          path: frontend_dist/build-report.json
