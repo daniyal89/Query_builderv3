@@ -36,6 +36,8 @@ from backend.models.google_drive import DriveAuthConfig
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 FOLDER_MIME = "application/vnd.google-apps.folder"
 GOOGLE_MIME_PREFIX = "application/vnd.google-apps."
+DRIVE_HTTP_TIMEOUT_SECONDS = 300
+UPLOAD_CHUNK_SIZE_BYTES = 5 * 1024 * 1024
 
 EXPORT_TYPES = {
     "application/vnd.google-apps.document": (
@@ -70,6 +72,7 @@ class GoogleDriveService:
     DOWNLOAD_JOB_TYPE = "google_drive.download"
     UPLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
     DOWNLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
+    _logged_no_proxy_warning = False
 
     @classmethod
     def start_upload(
@@ -670,13 +673,33 @@ class GoogleDriveService:
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 mime_type, _ = mimetypes.guess_type(str(local_file))
-                media = MediaFileUpload(str(local_file), mimetype=mime_type, resumable=True, chunksize=5 * 1024 * 1024)
-                worker_service.files().create(
+                request = worker_service.files().create(
                     body={"name": local_file.name, "parents": [parent_id]},
-                    media_body=media,
+                    media_body=MediaFileUpload(
+                        str(local_file),
+                        mimetype=mime_type,
+                        resumable=True,
+                        chunksize=UPLOAD_CHUNK_SIZE_BYTES,
+                    ),
                     fields="id",
                     supportsAllDrives=True,
-                ).execute()
+                )
+                try:
+                    request.execute(num_retries=5)
+                except Exception as exc:
+                    detail = cls._exception_details(exc)
+                    if "missing a Location: header" not in detail:
+                        raise
+                    cls._logger.warning(
+                        "Resumable upload redirect failed; retrying non-resumable upload for %s",
+                        local_file,
+                    )
+                    worker_service.files().create(
+                        body={"name": local_file.name, "parents": [parent_id]},
+                        media_body=MediaFileUpload(str(local_file), mimetype=mime_type, resumable=False),
+                        fields="id",
+                        supportsAllDrives=True,
+                    ).execute(num_retries=2)
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {executor.submit(upload_one, task): task[0] for task in upload_tasks}
@@ -871,9 +894,25 @@ class GoogleDriveService:
             with target_path.open("wb") as fh:
                 downloader = MediaIoBaseDownload(fh, request_obj, chunksize=5 * 1024 * 1024)
                 done = False
+                transient_errors = (ConnectionResetError, TimeoutError, OSError)
+                consecutive_failures = 0
                 while not done:
                     cls._raise_if_cancelled(job_id)
-                    _, done = downloader.next_chunk()
+                    try:
+                        _, done = downloader.next_chunk(num_retries=5)
+                        consecutive_failures = 0
+                    except transient_errors as exc:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 3:
+                            raise
+                        cls._logger.warning(
+                            "Transient Drive download error; retrying chunk (job_id=%s, file_id=%s, name=%s, attempt=%s): %s",
+                            job_id,
+                            file_id,
+                            name,
+                            consecutive_failures,
+                            cls._exception_details(exc),
+                        )
             cls._increment_job(job_id, processed_items=1, downloaded_items=1)
         except _DriveJobCancelled:
             raise

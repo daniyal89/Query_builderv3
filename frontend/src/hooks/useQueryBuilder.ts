@@ -546,22 +546,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [
-    engine,
-    state.table,
-    state.selectedColumns,
-    state.filters,
-    state.sort,
-    state.joins,
-    state.groupBy,
-    state.aggregates,
-    state.caseExpressions,
-    state.limitRows,
-    state.offset,
-    state.mode,
-    state.pivotConfig,
-    state.marcadoseUnion,
-  ]);
+  }, [engine, state]);
 
   const setTable = useCallback((tableName: string) => {
     setState((prev) => ({
