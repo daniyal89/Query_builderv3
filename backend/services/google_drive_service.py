@@ -435,7 +435,20 @@ class GoogleDriveService:
 
     @classmethod
     def _build_google_http(cls, creds: Credentials | service_account.Credentials):
-        proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+        proxy_url = (
+            settings.HTTPS_PROXY
+            or settings.HTTP_PROXY
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("HTTP_PROXY")
+            or os.getenv("http_proxy")
+        )
+        if proxy_url:
+            if "://" not in proxy_url:
+                proxy_url = f"http://{proxy_url}"
+            cls._logger.info("Google Drive HTTP transport configured with outbound proxy.")
+        else:
+            cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
         if proxy_url:
             proxy_info = httplib2.proxy_info_from_url(proxy_url, method="https")
             if proxy_info:
