@@ -1,5 +1,5 @@
 # Core
-fastapi>=0.111.0
+fastapi>=0.136.1
 uvicorn[standard]>=0.30.0
 duckdb>=1.0.0
 oracledb>=2.0.0
