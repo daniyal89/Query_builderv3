@@ -436,6 +436,10 @@ class GoogleDriveService:
 
     @classmethod
     def _build_google_http(cls, creds: Credentials | service_account.Credentials):
+        explicit_proxy_host = (settings.PROXY_HOST or "").strip() or None
+        explicit_proxy_port = settings.PROXY_PORT
+        explicit_proxy_user = (settings.PROXY_USER or "").strip() or None
+        explicit_proxy_pass = (settings.PROXY_PASS or "").strip() or None
         proxy_url = (
             settings.HTTPS_PROXY
             or settings.HTTP_PROXY
@@ -444,6 +448,22 @@ class GoogleDriveService:
             or os.getenv("HTTP_PROXY")
             or os.getenv("http_proxy")
         )
+        if explicit_proxy_host:
+            proxy_port = explicit_proxy_port or 80
+            cls._logger.info(
+                "Google Drive HTTP transport configured with explicit proxy host=%s port=%s.",
+                explicit_proxy_host,
+                proxy_port,
+            )
+            proxy_info = httplib2.ProxyInfo(
+                proxy_type=httplib2.socks.PROXY_TYPE_HTTP,
+                proxy_host=explicit_proxy_host,
+                proxy_port=int(proxy_port),
+                proxy_user=explicit_proxy_user,
+                proxy_pass=explicit_proxy_pass,
+            )
+            return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
+
         if proxy_url:
             if "://" not in proxy_url:
                 proxy_url = f"http://{proxy_url}"

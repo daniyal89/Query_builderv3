@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     HTTP_PROXY: str | None = None
     HTTPS_PROXY: str | None = None
     NO_PROXY: str | None = None
+    PROXY_HOST: str | None = None
+    PROXY_PORT: int | None = None
+    PROXY_USER: str | None = None
+    PROXY_PASS: str | None = None
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)
