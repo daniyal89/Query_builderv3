@@ -1,4 +1,5 @@
 import html
+import logging
 import mimetypes
 import os
 import re
@@ -12,12 +13,14 @@ from typing import Any, Optional
 from urllib import error, parse, request
 
 from google.auth.transport.requests import Request
+from google_auth_httplib2 import AuthorizedHttp
 from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import httplib2
 
 from backend.config import settings
 from backend.services.job_runtime import (
@@ -60,6 +63,7 @@ class _DriveJobCancelled(Exception):
 
 
 class GoogleDriveService:
+    _logger = logging.getLogger("duckdb_dashboard")
     UPLOAD_JOB_TYPE = "google_drive.upload"
     DOWNLOAD_JOB_TYPE = "google_drive.download"
     UPLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
@@ -430,13 +434,26 @@ class GoogleDriveService:
             return False
 
     @classmethod
+    def _build_google_http(cls, creds: Credentials | service_account.Credentials):
+        proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
+        if proxy_url:
+            proxy_info = httplib2.proxy_info_from_url(proxy_url, method="https")
+            if proxy_info:
+                return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
+        return AuthorizedHttp(creds, http=httplib2.Http(timeout=60))
+
+    @staticmethod
+    def _exception_details(exc: Exception) -> str:
+        return f"{type(exc).__name__}: {exc}"
+
+    @classmethod
     def _get_drive_service(cls, auth: DriveAuthConfig):
         if auth.mode == "service_account":
             path = Path(auth.service_account_json_path or "").expanduser()
             if not path.is_file():
                 raise ValueError("Service-account JSON path is required for service-account mode.")
             creds = service_account.Credentials.from_service_account_file(str(path), scopes=SCOPES)
-            return build("drive", "v3", credentials=creds, cache_discovery=False)
+            return build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
 
         client_path = cls._resolve_oauth_client_path(auth.oauth_client_json_path)
         assert client_path is not None
@@ -452,7 +469,7 @@ class GoogleDriveService:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
 
-        return build("drive", "v3", credentials=creds, cache_discovery=False)
+        return build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
 
     @staticmethod
     def _escape_drive_query(value: str) -> str:
@@ -597,8 +614,10 @@ class GoogleDriveService:
             if cls._is_cancelled(job_id):
                 cls._finish_job(job_id, message="Upload stopped by user.")
             else:
-                cls._add_error(job_id, str(exc))
-                cls._finish_job(job_id, failed=True, message=str(exc))
+                detail = cls._exception_details(exc)
+                cls._logger.exception("Google Drive upload job failed (job_id=%s): %s", job_id, detail)
+                cls._add_error(job_id, detail)
+                cls._finish_job(job_id, failed=True, message=detail)
 
     @classmethod
     def _run_download_job(
@@ -642,8 +661,16 @@ class GoogleDriveService:
             if cls._is_cancelled(job_id):
                 cls._finish_job(job_id, message="Download stopped by user.")
             else:
-                cls._add_error(job_id, str(exc))
-                cls._finish_job(job_id, failed=True, message=str(exc))
+                detail = cls._exception_details(exc)
+                cls._logger.exception(
+                    "Google Drive download job failed (job_id=%s, mode=%s, target_id=%s): %s",
+                    job_id,
+                    auth.mode,
+                    target_id,
+                    detail,
+                )
+                cls._add_error(job_id, detail)
+                cls._finish_job(job_id, failed=True, message=detail)
 
     @classmethod
     def _clear_errors(cls, job_id: str) -> None:
@@ -742,10 +769,14 @@ class GoogleDriveService:
             raise
         except HttpError as exc:
             cls._increment_job(job_id, processed_items=1)
-            cls._add_error(job_id, f"{name}: {exc}")
+            detail = cls._exception_details(exc)
+            cls._logger.exception("Drive file download HttpError (job_id=%s, file_id=%s, name=%s): %s", job_id, file_id, name, detail)
+            cls._add_error(job_id, f"{name}: {detail}")
         except Exception as exc:
             cls._increment_job(job_id, processed_items=1)
-            cls._add_error(job_id, f"{name}: {exc}")
+            detail = cls._exception_details(exc)
+            cls._logger.exception("Drive file download error (job_id=%s, file_id=%s, name=%s): %s", job_id, file_id, name, detail)
+            cls._add_error(job_id, f"{name}: {detail}")
 
     @classmethod
     def _try_public_download(
@@ -789,7 +820,9 @@ class GoogleDriveService:
         except _DriveJobCancelled:
             raise
         except Exception as exc:
-            return False, str(exc)
+            detail = cls._exception_details(exc)
+            cls._logger.exception("Public Drive download failed (job_id=%s, file_id=%s, url=%s): %s", job_id, file_id, public_url, detail)
+            return False, detail
 
     @classmethod
     def _public_download_url(cls, original_link: str, file_id: str, export_google_files: bool) -> tuple[Optional[str], str]:
