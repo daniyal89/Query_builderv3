@@ -2,7 +2,7 @@
  * HomePage.tsx â€” Landing page with local DuckDB connection and route shortcuts.
  */
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PathInput } from "../components/home/PathInput";
 import { TableList } from "../components/home/TableList";
@@ -10,16 +10,41 @@ import { deleteLocalObject } from "../api/schemaApi";
 import { useAppContext } from "../context/AppContext";
 import { useConnection } from "../hooks/useConnection";
 
+const EMERGENCY_PROXY_STORAGE_KEY = "dashboard_emergency_proxy_settings_v1";
+
 export const HomePage: React.FC = () => {
   const { dbPath, setDbPath, connect, isConnecting, isConnected, tables, error, refreshTables } = useConnection();
   const { marcadoseConnection } = useAppContext();
   const [tableActionMessage, setTableActionMessage] = React.useState<string>("");
+  const [emergencyProxyEnabled, setEmergencyProxyEnabled] = useState(false);
+  const [emergencyProxyHost, setEmergencyProxyHost] = useState("10.96.5.20");
+  const [emergencyProxyPort, setEmergencyProxyPort] = useState("80");
 
   useEffect(() => {
     if (dbPath && !isConnected && !isConnecting && !error) {
       connect();
     }
   }, [dbPath, isConnected, isConnecting, error, connect]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(EMERGENCY_PROXY_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { enable?: boolean; host?: string; port?: string };
+      setEmergencyProxyEnabled(Boolean(parsed.enable));
+      setEmergencyProxyHost(parsed.host || "10.96.5.20");
+      setEmergencyProxyPort(parsed.port || "80");
+    } catch {}
+  }, []);
+
+  const saveEmergencyProxySettings = () => {
+    window.localStorage.setItem(EMERGENCY_PROXY_STORAGE_KEY, JSON.stringify({
+      enable: emergencyProxyEnabled,
+      host: emergencyProxyHost.trim() || "10.96.5.20",
+      port: emergencyProxyPort.trim() || "80",
+    }));
+    setTableActionMessage("Saved emergency proxy settings for Drive tools.");
+  };
 
   const handleDeleteTable = async (tableName: string) => {
     const ok = window.confirm(`Delete '${tableName}' from local DuckDB? This action cannot be undone.`);
@@ -85,6 +110,21 @@ export const HomePage: React.FC = () => {
             </span>
           </div>
         </div>
+      </div>
+
+      <div className="mx-auto mb-6 max-w-5xl px-4">
+        <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <h3 className="text-sm font-semibold text-amber-900">Global emergency proxy settings</h3>
+          <p className="mt-1 text-xs text-amber-800">Used by Drive upload/download advanced settings defaults.</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-4">
+            <label className="col-span-4 flex items-center gap-2 text-sm text-amber-900">
+              <input type="checkbox" checked={emergencyProxyEnabled} onChange={(e) => setEmergencyProxyEnabled(e.target.checked)} /> Enable emergency proxy by default
+            </label>
+            <input className="rounded border px-2 py-2 text-sm" value={emergencyProxyHost} onChange={(e) => setEmergencyProxyHost(e.target.value)} placeholder="Proxy host" />
+            <input className="rounded border px-2 py-2 text-sm" value={emergencyProxyPort} onChange={(e) => setEmergencyProxyPort(e.target.value)} placeholder="Proxy port" />
+            <button type="button" onClick={saveEmergencyProxySettings} className="rounded bg-amber-600 px-3 py-2 text-sm font-semibold text-white">Save proxy settings</button>
+          </div>
+        </section>
       </div>
 
       <PathInput

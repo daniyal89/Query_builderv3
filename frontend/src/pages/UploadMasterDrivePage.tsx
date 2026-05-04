@@ -6,6 +6,7 @@ import { useGoogleDriveAuth } from "../hooks/useGoogleDriveAuth";
 import type { DriveAuthConfig, DriveAuthMode, DriveJobStatusResponse } from "../types/drive.types";
 
 const STORAGE_KEY = "drive_upload_master_form_v2";
+const EMERGENCY_PROXY_STORAGE_KEY = "dashboard_emergency_proxy_settings_v1";
 const JOB_STORAGE_KEY = "drive_upload_master_job_v1";
 const formatDuration = (seconds: number) => {
   const s = Math.max(0, Math.floor(seconds));
@@ -52,6 +53,9 @@ type FormState = {
   skipExisting: boolean;
   maxWorkers: number;
   showAdvanced: boolean;
+  enableEmergencyProxy: boolean;
+  emergencyProxyHost: string;
+  emergencyProxyPort: string;
 };
 
 const defaultState: FormState = {
@@ -63,13 +67,18 @@ const defaultState: FormState = {
   skipExisting: true,
   maxWorkers: 3,
   showAdvanced: false,
+  enableEmergencyProxy: false,
+  emergencyProxyHost: "10.96.5.20",
+  emergencyProxyPort: "80",
 };
 
 function readInitialState(): FormState {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultState;
-    return { ...defaultState, ...(JSON.parse(raw) as Partial<FormState>), authMode: "oauth" };
+    const proxyRaw = window.localStorage.getItem(EMERGENCY_PROXY_STORAGE_KEY);
+    const proxy = proxyRaw ? (JSON.parse(proxyRaw) as { enable?: boolean; host?: string; port?: string }) : {};
+    const merged = raw ? { ...defaultState, ...(JSON.parse(raw) as Partial<FormState>) } : { ...defaultState };
+    return { ...merged, enableEmergencyProxy: Boolean(proxy.enable ?? merged.enableEmergencyProxy), emergencyProxyHost: proxy.host ?? merged.emergencyProxyHost, emergencyProxyPort: proxy.port ?? merged.emergencyProxyPort, authMode: "oauth" };
   } catch {
     return defaultState;
   }
@@ -103,6 +112,9 @@ function buildAuth(state: FormState): DriveAuthConfig {
     oauth_client_json_path: null,
     token_json_path: null,
     service_account_json_path: state.authMode === "service_account" ? state.serviceAccountJsonPath.trim() || null : null,
+    enable_emergency_proxy: state.enableEmergencyProxy,
+    emergency_proxy_host: state.enableEmergencyProxy ? (state.emergencyProxyHost.trim() || null) : null,
+    emergency_proxy_port: state.enableEmergencyProxy ? Number(state.emergencyProxyPort || 0) || null : null,
   };
 }
 
@@ -337,6 +349,18 @@ export const UploadMasterDrivePage: React.FC = () => {
                   <input type="radio" checked={state.authMode === "service_account"} onChange={() => update("authMode", "service_account")} />
                   Optional service account
                 </label>
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+                <label className="flex items-center gap-2 font-medium text-amber-900">
+                  <input type="checkbox" checked={state.enableEmergencyProxy} onChange={(e) => update("enableEmergencyProxy", e.target.checked)} />
+                  Enable emergency proxy fallback for this job
+                </label>
+                {state.enableEmergencyProxy && (
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <input className="rounded-md border px-3 py-2" value={state.emergencyProxyHost} onChange={(e) => update("emergencyProxyHost", e.target.value)} placeholder="Proxy host" />
+                    <input className="rounded-md border px-3 py-2" value={state.emergencyProxyPort} onChange={(e) => update("emergencyProxyPort", e.target.value)} placeholder="Proxy port" />
+                  </div>
+                )}
               </div>
               {state.authMode === "service_account" && (
                 <label className="block text-sm font-medium text-slate-700">

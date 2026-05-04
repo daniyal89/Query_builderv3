@@ -26,6 +26,9 @@ class DriveAuthConfig(BaseModel):
         default=None,
         description="Optional service-account JSON path. Required only for service_account mode.",
     )
+    enable_emergency_proxy: bool = Field(default=False, description="Enable emergency proxy fallback for this request.")
+    emergency_proxy_host: Optional[str] = Field(default=None, description="Optional emergency proxy host override.")
+    emergency_proxy_port: Optional[int] = Field(default=None, ge=1, le=65535, description="Optional emergency proxy port override.")
 
     @field_validator("oauth_client_json_path", "token_json_path", "service_account_json_path")
     @classmethod

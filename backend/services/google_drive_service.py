@@ -439,7 +439,7 @@ class GoogleDriveService:
             return False
 
     @classmethod
-    def _build_google_http(cls, creds: Credentials | service_account.Credentials):
+    def _build_google_http(cls, creds: Credentials | service_account.Credentials, auth: DriveAuthConfig | None = None):
         explicit_proxy_host = ((settings.PROXY_HOST or os.getenv("DASHBOARD_PROXY_HOST") or os.getenv("QUERY_BUILDER_PROXY_HOST") or "").strip() or None)
         explicit_proxy_port = settings.PROXY_PORT or int((os.getenv("DASHBOARD_PROXY_PORT") or os.getenv("QUERY_BUILDER_PROXY_PORT") or "0").strip() or 0) or None
         explicit_proxy_user = ((settings.PROXY_USER or os.getenv("DASHBOARD_PROXY_USER") or os.getenv("QUERY_BUILDER_PROXY_USER") or "").strip() or None)
@@ -457,10 +457,10 @@ class GoogleDriveService:
             or os.getenv("http_proxy")
         )
         # Optional emergency fallback: only enabled explicitly per environment.
-        emergency_proxy_enabled = (os.getenv("DASHBOARD_ENABLE_EMERGENCY_PROXY", "").strip().lower() in {"1", "true", "yes", "on"})
+        emergency_proxy_enabled = bool(getattr(auth, "enable_emergency_proxy", False)) or (os.getenv("DASHBOARD_ENABLE_EMERGENCY_PROXY", "").strip().lower() in {"1", "true", "yes", "on"})
         if emergency_proxy_enabled and not explicit_proxy_host and not proxy_url:
-            explicit_proxy_host = os.getenv("DASHBOARD_EMERGENCY_PROXY_HOST", "10.96.5.20").strip() or "10.96.5.20"
-            explicit_proxy_port = int((os.getenv("DASHBOARD_EMERGENCY_PROXY_PORT", "80").strip() or "80"))
+            explicit_proxy_host = ((getattr(auth, "emergency_proxy_host", None) or os.getenv("DASHBOARD_EMERGENCY_PROXY_HOST", "10.96.5.20")).strip() or "10.96.5.20")
+            explicit_proxy_port = int((str(getattr(auth, "emergency_proxy_port", "") or os.getenv("DASHBOARD_EMERGENCY_PROXY_PORT", "80")).strip() or "80"))
             cls._logger.warning(
                 "No proxy config detected; forcing emergency proxy host=%s port=%s.",
                 explicit_proxy_host,
@@ -542,7 +542,7 @@ class GoogleDriveService:
             if not path.is_file():
                 raise ValueError("Service-account JSON path is required for service-account mode.")
             creds = service_account.Credentials.from_service_account_file(str(path), scopes=SCOPES)
-            service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+            service = build("drive", "v3", http=cls._build_google_http(creds, auth), cache_discovery=False)
             return cls._apply_google_api_base_url(service) if apply_base_url else service
 
         client_path = cls._resolve_oauth_client_path(auth.oauth_client_json_path)
@@ -559,7 +559,7 @@ class GoogleDriveService:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
 
-        service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+        service = build("drive", "v3", http=cls._build_google_http(creds, auth), cache_discovery=False)
         return cls._apply_google_api_base_url(service) if apply_base_url else service
 
     @staticmethod

@@ -7,6 +7,9 @@ export interface DriveAuthConfig {
   oauth_client_json_path?: string | null;
   token_json_path?: string | null;
   service_account_json_path?: string | null;
+  enable_emergency_proxy?: boolean;
+  emergency_proxy_host?: string | null;
+  emergency_proxy_port?: number | null;
 }
 
 export interface DriveUploadRequest {
@@ -53,4 +56,10 @@ export interface DriveAuthStatusResponse {
   token_exists: boolean;
   token_valid: boolean;
   message: string;
+}
+
+export interface EmergencyProxySettings {
+  enable: boolean;
+  host: string;
+  port: string;
 }
