@@ -517,14 +517,14 @@ class GoogleDriveService:
         return service
 
     @classmethod
-    def _get_drive_service(cls, auth: DriveAuthConfig):
+    def _get_drive_service(cls, auth: DriveAuthConfig, *, apply_base_url: bool = True):
         if auth.mode == "service_account":
             path = Path(auth.service_account_json_path or "").expanduser()
             if not path.is_file():
                 raise ValueError("Service-account JSON path is required for service-account mode.")
             creds = service_account.Credentials.from_service_account_file(str(path), scopes=SCOPES)
             service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
-            return cls._apply_google_api_base_url(service)
+            return cls._apply_google_api_base_url(service) if apply_base_url else service
 
         client_path = cls._resolve_oauth_client_path(auth.oauth_client_json_path)
         assert client_path is not None
@@ -541,7 +541,7 @@ class GoogleDriveService:
             token_path.write_text(creds.to_json(), encoding="utf-8")
 
         service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
-        return cls._apply_google_api_base_url(service)
+        return cls._apply_google_api_base_url(service) if apply_base_url else service
 
     @staticmethod
     def _escape_drive_query(value: str) -> str:
@@ -650,7 +650,7 @@ class GoogleDriveService:
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 local_file, parent_id = item
-                worker_service = cls._get_drive_service(auth)
+                worker_service = cls._get_drive_service(auth, apply_base_url=False)
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 mime_type, _ = mimetypes.guess_type(str(local_file))
