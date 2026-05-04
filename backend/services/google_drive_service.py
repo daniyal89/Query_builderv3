@@ -36,6 +36,8 @@ from backend.models.google_drive import DriveAuthConfig
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 FOLDER_MIME = "application/vnd.google-apps.folder"
 GOOGLE_MIME_PREFIX = "application/vnd.google-apps."
+DRIVE_HTTP_TIMEOUT_SECONDS = 300
+UPLOAD_CHUNK_SIZE_BYTES = 5 * 1024 * 1024
 
 EXPORT_TYPES = {
     "application/vnd.google-apps.document": (
@@ -464,7 +466,7 @@ class GoogleDriveService:
                 proxy_pass=explicit_proxy_pass,
                 rdns=True,
             )
-            return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
+            return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=DRIVE_HTTP_TIMEOUT_SECONDS))
 
         if proxy_url:
             if "://" not in proxy_url:
@@ -498,9 +500,9 @@ class GoogleDriveService:
                     proxy_info.proxy_rdns = True
 
             if proxy_info:
-                return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
+                return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=DRIVE_HTTP_TIMEOUT_SECONDS))
 
-        return AuthorizedHttp(creds, http=httplib2.Http(timeout=60))
+        return AuthorizedHttp(creds, http=httplib2.Http(timeout=DRIVE_HTTP_TIMEOUT_SECONDS))
 
     @staticmethod
     def _exception_details(exc: Exception) -> str:
@@ -654,13 +656,18 @@ class GoogleDriveService:
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 mime_type, _ = mimetypes.guess_type(str(local_file))
-                media = MediaFileUpload(str(local_file), mimetype=mime_type, resumable=False)
+                media = MediaFileUpload(
+                    str(local_file),
+                    mimetype=mime_type,
+                    resumable=True,
+                    chunksize=UPLOAD_CHUNK_SIZE_BYTES,
+                )
                 worker_service.files().create(
                     body={"name": local_file.name, "parents": [parent_id]},
                     media_body=media,
                     fields="id",
                     supportsAllDrives=True,
-                ).execute()
+                ).execute(num_retries=5)
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {executor.submit(upload_one, task): task[0] for task in upload_tasks}
