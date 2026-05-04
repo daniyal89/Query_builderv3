@@ -28,6 +28,11 @@ def _resolve_runtime_dir() -> Path:
     return _resolve_base_dir() / "runtime"
 
 
+def _candidate_env_paths() -> list[Path]:
+    base = _resolve_base_dir()
+    return [base / ".env", base / "backend" / ".env", Path.cwd() / ".env"]
+
+
 def _read_env_value(env_path: Path, key: str) -> str | None:
     try:
         for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -92,7 +97,15 @@ class Settings(BaseSettings):
                 return None
             return cleaned
         
-        env_path = _resolve_base_dir() / ".env"
+        env_paths = _candidate_env_paths()
+
+        def _from_env_files(*keys: str) -> str | None:
+            for env_path in env_paths:
+                for key in keys:
+                    value = _read_env_value(env_path, key)
+                    if value:
+                        return value
+            return None
 
         # Load proxy settings from settings, process env, or .env file fallback and
         # inject them into os.environ so urllib/requests/google-auth can use them.
@@ -102,9 +115,7 @@ class Settings(BaseSettings):
             or os.getenv("QUERY_BUILDER_HTTP_PROXY")
             or os.getenv("HTTP_PROXY")
             or os.getenv("http_proxy")
-            or _read_env_value(env_path, "DASHBOARD_HTTP_PROXY")
-            or _read_env_value(env_path, "QUERY_BUILDER_HTTP_PROXY")
-            or _read_env_value(env_path, "HTTP_PROXY")
+            or _from_env_files("DASHBOARD_HTTP_PROXY", "QUERY_BUILDER_HTTP_PROXY", "HTTP_PROXY")
         )
         https_proxy = _normalize_proxy(
             self.HTTPS_PROXY
@@ -112,9 +123,7 @@ class Settings(BaseSettings):
             or os.getenv("QUERY_BUILDER_HTTPS_PROXY")
             or os.getenv("HTTPS_PROXY")
             or os.getenv("https_proxy")
-            or _read_env_value(env_path, "DASHBOARD_HTTPS_PROXY")
-            or _read_env_value(env_path, "QUERY_BUILDER_HTTPS_PROXY")
-            or _read_env_value(env_path, "HTTPS_PROXY")
+            or _from_env_files("DASHBOARD_HTTPS_PROXY", "QUERY_BUILDER_HTTPS_PROXY", "HTTPS_PROXY")
         )
         no_proxy = (
             self.NO_PROXY
@@ -122,9 +131,7 @@ class Settings(BaseSettings):
             or os.getenv("QUERY_BUILDER_NO_PROXY")
             or os.getenv("NO_PROXY")
             or os.getenv("no_proxy")
-            or _read_env_value(env_path, "DASHBOARD_NO_PROXY")
-            or _read_env_value(env_path, "QUERY_BUILDER_NO_PROXY")
-            or _read_env_value(env_path, "NO_PROXY")
+            or _from_env_files("DASHBOARD_NO_PROXY", "QUERY_BUILDER_NO_PROXY", "NO_PROXY")
         )
 
         # If only one proxy is configured, reuse it for both protocols because
@@ -145,6 +152,15 @@ class Settings(BaseSettings):
         if no_proxy:
             os.environ["NO_PROXY"] = no_proxy
             os.environ["no_proxy"] = no_proxy
+
+        if not os.getenv("DASHBOARD_PROXY_HOST") and not os.getenv("QUERY_BUILDER_PROXY_HOST"):
+            proxy_host_file = _from_env_files("DASHBOARD_PROXY_HOST", "QUERY_BUILDER_PROXY_HOST", "PROXY_HOST")
+            if proxy_host_file:
+                os.environ.setdefault("DASHBOARD_PROXY_HOST", proxy_host_file)
+        if not os.getenv("DASHBOARD_PROXY_PORT") and not os.getenv("QUERY_BUILDER_PROXY_PORT"):
+            proxy_port_file = _from_env_files("DASHBOARD_PROXY_PORT", "QUERY_BUILDER_PROXY_PORT", "PROXY_PORT")
+            if proxy_port_file:
+                os.environ.setdefault("DASHBOARD_PROXY_PORT", proxy_port_file)
 
 
 settings = Settings()
