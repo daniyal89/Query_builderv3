@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="DASHBOARD_",
-        env_file=".env",
+        env_file=str(_resolve_base_dir() / ".env"),
         env_file_encoding="utf-8",
         extra="allow",  # Allow extra fields so pydantic-settings can read proxy vars
     )
