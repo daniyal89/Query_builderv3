@@ -1,4 +1,5 @@
 import html
+import logging
 import mimetypes
 import os
 import re
@@ -10,14 +11,18 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any, Optional
 from urllib import error, parse, request
+from urllib.parse import urlparse
 
 from google.auth.transport.requests import Request
+from google_auth_httplib2 import AuthorizedHttp
 from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+import httplib2
+import socks
 
 from backend.config import settings
 from backend.services.job_runtime import (
@@ -60,6 +65,7 @@ class _DriveJobCancelled(Exception):
 
 
 class GoogleDriveService:
+    _logger = logging.getLogger("duckdb_dashboard")
     UPLOAD_JOB_TYPE = "google_drive.upload"
     DOWNLOAD_JOB_TYPE = "google_drive.download"
     UPLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
@@ -430,13 +436,111 @@ class GoogleDriveService:
             return False
 
     @classmethod
-    def _get_drive_service(cls, auth: DriveAuthConfig):
+    def _build_google_http(cls, creds: Credentials | service_account.Credentials):
+        explicit_proxy_host = ((settings.PROXY_HOST or os.getenv("DASHBOARD_PROXY_HOST") or os.getenv("QUERY_BUILDER_PROXY_HOST") or "").strip() or None)
+        explicit_proxy_port = settings.PROXY_PORT or int((os.getenv("DASHBOARD_PROXY_PORT") or os.getenv("QUERY_BUILDER_PROXY_PORT") or "0").strip() or 0) or None
+        explicit_proxy_user = ((settings.PROXY_USER or os.getenv("DASHBOARD_PROXY_USER") or os.getenv("QUERY_BUILDER_PROXY_USER") or "").strip() or None)
+        explicit_proxy_pass = ((settings.PROXY_PASS or os.getenv("DASHBOARD_PROXY_PASS") or os.getenv("QUERY_BUILDER_PROXY_PASS") or "").strip() or None)
+        proxy_url = (
+            settings.HTTPS_PROXY
+            or settings.HTTP_PROXY
+            or os.getenv("DASHBOARD_HTTPS_PROXY")
+            or os.getenv("DASHBOARD_HTTP_PROXY")
+            or os.getenv("QUERY_BUILDER_HTTPS_PROXY")
+            or os.getenv("QUERY_BUILDER_HTTP_PROXY")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("HTTP_PROXY")
+            or os.getenv("http_proxy")
+        )
+        # Optional emergency fallback: only enabled explicitly per environment.
+        emergency_proxy_enabled = (os.getenv("DASHBOARD_ENABLE_EMERGENCY_PROXY", "").strip().lower() in {"1", "true", "yes", "on"})
+        if emergency_proxy_enabled and not explicit_proxy_host and not proxy_url:
+            explicit_proxy_host = os.getenv("DASHBOARD_EMERGENCY_PROXY_HOST", "10.96.5.20").strip() or "10.96.5.20"
+            explicit_proxy_port = int((os.getenv("DASHBOARD_EMERGENCY_PROXY_PORT", "80").strip() or "80"))
+            cls._logger.warning(
+                "No proxy config detected; forcing emergency proxy host=%s port=%s.",
+                explicit_proxy_host,
+                explicit_proxy_port,
+            )
+        if explicit_proxy_host:
+            proxy_port = explicit_proxy_port or 80
+            cls._logger.info(
+                "Google Drive HTTP transport configured with explicit proxy host=%s port=%s.",
+                explicit_proxy_host,
+                proxy_port,
+            )
+            proxy_info = httplib2.ProxyInfo(
+                proxy_type=socks.PROXY_TYPE_HTTP,
+                proxy_host=explicit_proxy_host,
+                proxy_port=int(proxy_port),
+                proxy_user=explicit_proxy_user,
+                proxy_pass=explicit_proxy_pass
+            )
+            if hasattr(proxy_info, "proxy_rdns"):
+                proxy_info.proxy_rdns = True
+            return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
+
+        if proxy_url:
+            if "://" not in proxy_url:
+                proxy_url = f"http://{proxy_url}"
+            parsed = urlparse(proxy_url)
+            proxy_host = parsed.hostname
+            proxy_port = parsed.port or 80
+            cls._logger.info(
+                "Google Drive HTTP transport configured with outbound proxy host=%s port=%s.",
+                proxy_host,
+                proxy_port,
+            )
+        else:
+            cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
+
+        if proxy_url:
+            parsed = urlparse(proxy_url)
+            proxy_info = None
+            if parsed.hostname:
+                proxy_info = httplib2.ProxyInfo(
+                    proxy_type=socks.PROXY_TYPE_HTTP,
+                    proxy_host=parsed.hostname,
+                    proxy_port=parsed.port or 80,
+                    proxy_user=parsed.username,
+                    proxy_pass=parsed.password
+                )
+                if hasattr(proxy_info, "proxy_rdns"):
+                    proxy_info.proxy_rdns = True
+            if proxy_info is None:
+                proxy_info = httplib2.proxy_info_from_url(proxy_url, method="https")
+                if proxy_info:
+                    proxy_info.proxy_rdns = True
+
+            if proxy_info:
+                return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
+
+        return AuthorizedHttp(creds, http=httplib2.Http(timeout=60))
+
+    @staticmethod
+    def _exception_details(exc: Exception) -> str:
+        return f"{type(exc).__name__}: {exc}"
+
+    @classmethod
+    def _apply_google_api_base_url(cls, service):
+        base = (settings.GOOGLE_API_BASE_URL or "").strip()
+        if not base:
+            return service
+        normalized = base if base.endswith("/") else f"{base}/"
+        service._baseUrl = f"{normalized}drive/v3/"  # type: ignore[attr-defined]
+        service._rootDesc["rootUrl"] = normalized  # type: ignore[index]
+        return service
+
+    @classmethod
+    def _get_drive_service(cls, auth: DriveAuthConfig, *, apply_base_url: bool = True):
         if auth.mode == "service_account":
             path = Path(auth.service_account_json_path or "").expanduser()
             if not path.is_file():
                 raise ValueError("Service-account JSON path is required for service-account mode.")
             creds = service_account.Credentials.from_service_account_file(str(path), scopes=SCOPES)
-            return build("drive", "v3", credentials=creds, cache_discovery=False)
+            service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+            return cls._apply_google_api_base_url(service) if apply_base_url else service
 
         client_path = cls._resolve_oauth_client_path(auth.oauth_client_json_path)
         assert client_path is not None
@@ -452,7 +556,8 @@ class GoogleDriveService:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
 
-        return build("drive", "v3", credentials=creds, cache_discovery=False)
+        service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+        return cls._apply_google_api_base_url(service) if apply_base_url else service
 
     @staticmethod
     def _escape_drive_query(value: str) -> str:
@@ -561,7 +666,7 @@ class GoogleDriveService:
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 local_file, parent_id = item
-                worker_service = cls._get_drive_service(auth)
+                worker_service = cls._get_drive_service(auth, apply_base_url=False)
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 mime_type, _ = mimetypes.guess_type(str(local_file))
@@ -597,8 +702,10 @@ class GoogleDriveService:
             if cls._is_cancelled(job_id):
                 cls._finish_job(job_id, message="Upload stopped by user.")
             else:
-                cls._add_error(job_id, str(exc))
-                cls._finish_job(job_id, failed=True, message=str(exc))
+                detail = cls._exception_details(exc)
+                cls._logger.exception("Google Drive upload job failed (job_id=%s): %s", job_id, detail)
+                cls._add_error(job_id, detail)
+                cls._finish_job(job_id, failed=True, message=detail)
 
     @classmethod
     def _run_download_job(
@@ -642,8 +749,38 @@ class GoogleDriveService:
             if cls._is_cancelled(job_id):
                 cls._finish_job(job_id, message="Download stopped by user.")
             else:
-                cls._add_error(job_id, str(exc))
-                cls._finish_job(job_id, failed=True, message=str(exc))
+                if type(exc).__name__ == "ServerNotFoundError":
+                    cls._logger.warning(
+                        "Drive API host could not be resolved; attempting public-link fallback (job_id=%s, target_id=%s).",
+                        job_id,
+                        target_id,
+                    )
+                    fallback_link = original_link if original_link.strip() else f"https://drive.google.com/file/d/{target_id}/view"
+                    try:
+                        ok, fallback_msg = cls._try_public_download(
+                            fallback_link,
+                            target_id,
+                            output_path,
+                            overwrite_existing,
+                            export_google_files,
+                            job_id,
+                        )
+                        if ok:
+                            cls._finish_job(job_id, message=f"Fallback public download finished: {output_path}")
+                            return
+                        cls._add_error(job_id, f"Fallback public download failed: {fallback_msg}")
+                    except Exception as fallback_exc:
+                        cls._add_error(job_id, f"Fallback public download failed: {cls._exception_details(fallback_exc)}")
+                detail = cls._exception_details(exc)
+                cls._logger.exception(
+                    "Google Drive download job failed (job_id=%s, mode=%s, target_id=%s): %s",
+                    job_id,
+                    auth.mode,
+                    target_id,
+                    detail,
+                )
+                cls._add_error(job_id, detail)
+                cls._finish_job(job_id, failed=True, message=detail)
 
     @classmethod
     def _clear_errors(cls, job_id: str) -> None:
@@ -742,10 +879,14 @@ class GoogleDriveService:
             raise
         except HttpError as exc:
             cls._increment_job(job_id, processed_items=1)
-            cls._add_error(job_id, f"{name}: {exc}")
+            detail = cls._exception_details(exc)
+            cls._logger.exception("Drive file download HttpError (job_id=%s, file_id=%s, name=%s): %s", job_id, file_id, name, detail)
+            cls._add_error(job_id, f"{name}: {detail}")
         except Exception as exc:
             cls._increment_job(job_id, processed_items=1)
-            cls._add_error(job_id, f"{name}: {exc}")
+            detail = cls._exception_details(exc)
+            cls._logger.exception("Drive file download error (job_id=%s, file_id=%s, name=%s): %s", job_id, file_id, name, detail)
+            cls._add_error(job_id, f"{name}: {detail}")
 
     @classmethod
     def _try_public_download(
@@ -789,7 +930,9 @@ class GoogleDriveService:
         except _DriveJobCancelled:
             raise
         except Exception as exc:
-            return False, str(exc)
+            detail = cls._exception_details(exc)
+            cls._logger.exception("Public Drive download failed (job_id=%s, file_id=%s, url=%s): %s", job_id, file_id, public_url, detail)
+            return False, detail
 
     @classmethod
     def _public_download_url(cls, original_link: str, file_id: str, export_google_files: bool) -> tuple[Optional[str], str]:
