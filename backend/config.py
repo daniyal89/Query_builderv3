@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     PROXY_PORT: int | None = None
     PROXY_USER: str | None = None
     PROXY_PASS: str | None = None
+    GOOGLE_API_BASE_URL: str = "https://www.googleapis.com/"
 
     def model_post_init(self, __context: Any) -> None:
         super().model_post_init(__context)

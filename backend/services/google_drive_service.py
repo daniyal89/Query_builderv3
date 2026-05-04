@@ -462,6 +462,7 @@ class GoogleDriveService:
                 proxy_port=int(proxy_port),
                 proxy_user=explicit_proxy_user,
                 proxy_pass=explicit_proxy_pass,
+                rdns=True,
             )
             return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
 
@@ -478,6 +479,7 @@ class GoogleDriveService:
             )
         else:
             cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
+
         if proxy_url:
             parsed = urlparse(proxy_url)
             proxy_info = None
@@ -488,16 +490,31 @@ class GoogleDriveService:
                     proxy_port=parsed.port or 80,
                     proxy_user=parsed.username,
                     proxy_pass=parsed.password,
+                    rdns=True,
                 )
             if proxy_info is None:
                 proxy_info = httplib2.proxy_info_from_url(proxy_url, method="https")
+                if proxy_info:
+                    proxy_info.proxy_rdns = True
+
             if proxy_info:
                 return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
+
         return AuthorizedHttp(creds, http=httplib2.Http(timeout=60))
 
     @staticmethod
     def _exception_details(exc: Exception) -> str:
         return f"{type(exc).__name__}: {exc}"
+
+    @classmethod
+    def _apply_google_api_base_url(cls, service):
+        base = (settings.GOOGLE_API_BASE_URL or "").strip()
+        if not base:
+            return service
+        normalized = base if base.endswith("/") else f"{base}/"
+        service._baseUrl = f"{normalized}drive/v3/"  # type: ignore[attr-defined]
+        service._rootDesc["rootUrl"] = normalized  # type: ignore[index]
+        return service
 
     @classmethod
     def _get_drive_service(cls, auth: DriveAuthConfig):
@@ -506,7 +523,8 @@ class GoogleDriveService:
             if not path.is_file():
                 raise ValueError("Service-account JSON path is required for service-account mode.")
             creds = service_account.Credentials.from_service_account_file(str(path), scopes=SCOPES)
-            return build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+            service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+            return cls._apply_google_api_base_url(service)
 
         client_path = cls._resolve_oauth_client_path(auth.oauth_client_json_path)
         assert client_path is not None
@@ -522,7 +540,8 @@ class GoogleDriveService:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
 
-        return build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+        service = build("drive", "v3", http=cls._build_google_http(creds), cache_discovery=False)
+        return cls._apply_google_api_base_url(service)
 
     @staticmethod
     def _escape_drive_query(value: str) -> str:
