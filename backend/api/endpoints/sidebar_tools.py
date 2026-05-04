@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import glob
+import os
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -361,6 +362,9 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     relation_sql = _resolve_relation_sql(resolved_input)
 
     with duckdb.connect(str(db_path)) as conn:
+        thread_count = max(1, os.cpu_count() or 1)
+        conn.execute(f"PRAGMA threads={thread_count}")
+        conn.execute("PRAGMA preserve_insertion_order=false")
         if payload.replace:
             _drop_existing_duckdb_object(conn, normalized_object_name)
         conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
