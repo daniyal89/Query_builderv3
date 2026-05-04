@@ -654,7 +654,7 @@ class GoogleDriveService:
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 mime_type, _ = mimetypes.guess_type(str(local_file))
-                media = MediaFileUpload(str(local_file), mimetype=mime_type, resumable=True, chunksize=5 * 1024 * 1024)
+                media = MediaFileUpload(str(local_file), mimetype=mime_type, resumable=False)
                 worker_service.files().create(
                     body={"name": local_file.name, "parents": [parent_id]},
                     media_body=media,
