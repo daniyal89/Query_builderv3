@@ -72,6 +72,7 @@ class GoogleDriveService:
     DOWNLOAD_JOB_TYPE = "google_drive.download"
     UPLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
     DOWNLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
+    _logged_no_proxy_warning = False
 
     @classmethod
     def start_upload(
@@ -484,7 +485,9 @@ class GoogleDriveService:
                 proxy_port,
             )
         else:
-            cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
+            if not cls._logged_no_proxy_warning:
+                cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
+                cls._logged_no_proxy_warning = True
 
         if proxy_url:
             parsed = urlparse(proxy_url)
@@ -660,18 +663,33 @@ class GoogleDriveService:
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 mime_type, _ = mimetypes.guess_type(str(local_file))
-                media = MediaFileUpload(
-                    str(local_file),
-                    mimetype=mime_type,
-                    resumable=True,
-                    chunksize=UPLOAD_CHUNK_SIZE_BYTES,
-                )
-                worker_service.files().create(
+                request = worker_service.files().create(
                     body={"name": local_file.name, "parents": [parent_id]},
-                    media_body=media,
+                    media_body=MediaFileUpload(
+                        str(local_file),
+                        mimetype=mime_type,
+                        resumable=True,
+                        chunksize=UPLOAD_CHUNK_SIZE_BYTES,
+                    ),
                     fields="id",
                     supportsAllDrives=True,
-                ).execute(num_retries=5)
+                )
+                try:
+                    request.execute(num_retries=5)
+                except Exception as exc:
+                    detail = cls._exception_details(exc)
+                    if "missing a Location: header" not in detail:
+                        raise
+                    cls._logger.warning(
+                        "Resumable upload redirect failed; retrying non-resumable upload for %s",
+                        local_file,
+                    )
+                    worker_service.files().create(
+                        body={"name": local_file.name, "parents": [parent_id]},
+                        media_body=MediaFileUpload(str(local_file), mimetype=mime_type, resumable=False),
+                        fields="id",
+                        supportsAllDrives=True,
+                    ).execute(num_retries=2)
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {executor.submit(upload_one, task): task[0] for task in upload_tasks}
