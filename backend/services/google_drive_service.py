@@ -471,7 +471,7 @@ class GoogleDriveService:
                 proxy_pass=explicit_proxy_pass,
                 rdns=True,
             )
-            return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=DRIVE_HTTP_TIMEOUT_SECONDS))
+            return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
 
         if proxy_url:
             if "://" not in proxy_url:
@@ -485,9 +485,7 @@ class GoogleDriveService:
                 proxy_port,
             )
         else:
-            if not cls._logged_no_proxy_warning:
-                cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
-                cls._logged_no_proxy_warning = True
+            cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
 
         if proxy_url:
             parsed = urlparse(proxy_url)
@@ -507,9 +505,9 @@ class GoogleDriveService:
                     proxy_info.proxy_rdns = True
 
             if proxy_info:
-                return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=DRIVE_HTTP_TIMEOUT_SECONDS))
+                return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
 
-        return AuthorizedHttp(creds, http=httplib2.Http(timeout=DRIVE_HTTP_TIMEOUT_SECONDS))
+        return AuthorizedHttp(creds, http=httplib2.Http(timeout=60))
 
     @staticmethod
     def _exception_details(exc: Exception) -> str:

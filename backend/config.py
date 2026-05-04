@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,13 +51,13 @@ class Settings(BaseSettings):
     )
 
     # Standard proxy vars (not prefixed with DASHBOARD_)
-    HTTP_PROXY: str | None = None
-    HTTPS_PROXY: str | None = None
-    NO_PROXY: str | None = None
-    PROXY_HOST: str | None = None
-    PROXY_PORT: int | None = None
-    PROXY_USER: str | None = None
-    PROXY_PASS: str | None = None
+    HTTP_PROXY: str | None = Field(default=None, validation_alias=AliasChoices("DASHBOARD_HTTP_PROXY", "HTTP_PROXY", "http_proxy", "QUERY_BUILDER_HTTP_PROXY"))
+    HTTPS_PROXY: str | None = Field(default=None, validation_alias=AliasChoices("DASHBOARD_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy", "QUERY_BUILDER_HTTPS_PROXY"))
+    NO_PROXY: str | None = Field(default=None, validation_alias=AliasChoices("DASHBOARD_NO_PROXY", "NO_PROXY", "no_proxy", "QUERY_BUILDER_NO_PROXY"))
+    PROXY_HOST: str | None = Field(default=None, validation_alias=AliasChoices("DASHBOARD_PROXY_HOST", "PROXY_HOST", "QUERY_BUILDER_PROXY_HOST"))
+    PROXY_PORT: int | None = Field(default=None, validation_alias=AliasChoices("DASHBOARD_PROXY_PORT", "PROXY_PORT", "QUERY_BUILDER_PROXY_PORT"))
+    PROXY_USER: str | None = Field(default=None, validation_alias=AliasChoices("DASHBOARD_PROXY_USER", "PROXY_USER", "QUERY_BUILDER_PROXY_USER"))
+    PROXY_PASS: str | None = Field(default=None, validation_alias=AliasChoices("DASHBOARD_PROXY_PASS", "PROXY_PASS", "QUERY_BUILDER_PROXY_PASS"))
     GOOGLE_API_BASE_URL: str = "https://www.googleapis.com/"
 
     def model_post_init(self, __context: Any) -> None:
