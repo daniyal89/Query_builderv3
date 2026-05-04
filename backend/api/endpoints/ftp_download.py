@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.models.ftp_download import (
     FTPDownloadRequest,
@@ -33,7 +34,7 @@ def start_ftp_download(request: Request, payload: FTPDownloadRequest) -> FTPDown
             profiles=payload.profiles,
         )
         return FTPDownloadStartResponse(**result)
-    except HTTPException:
+    except (HTTPException, StarletteHTTPException):
         raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
