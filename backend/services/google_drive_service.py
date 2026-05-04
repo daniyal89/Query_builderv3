@@ -11,6 +11,7 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any, Optional
 from urllib import error, parse, request
+from urllib.parse import urlparse
 
 from google.auth.transport.requests import Request
 from google_auth_httplib2 import AuthorizedHttp
@@ -446,11 +447,29 @@ class GoogleDriveService:
         if proxy_url:
             if "://" not in proxy_url:
                 proxy_url = f"http://{proxy_url}"
-            cls._logger.info("Google Drive HTTP transport configured with outbound proxy.")
+            parsed = urlparse(proxy_url)
+            proxy_host = parsed.hostname
+            proxy_port = parsed.port or 80
+            cls._logger.info(
+                "Google Drive HTTP transport configured with outbound proxy host=%s port=%s.",
+                proxy_host,
+                proxy_port,
+            )
         else:
             cls._logger.warning("Google Drive HTTP transport has no proxy configured; using direct internet route.")
         if proxy_url:
-            proxy_info = httplib2.proxy_info_from_url(proxy_url, method="https")
+            parsed = urlparse(proxy_url)
+            proxy_info = None
+            if parsed.hostname:
+                proxy_info = httplib2.ProxyInfo(
+                    proxy_type=httplib2.socks.PROXY_TYPE_HTTP,
+                    proxy_host=parsed.hostname,
+                    proxy_port=parsed.port or 80,
+                    proxy_user=parsed.username,
+                    proxy_pass=parsed.password,
+                )
+            if proxy_info is None:
+                proxy_info = httplib2.proxy_info_from_url(proxy_url, method="https")
             if proxy_info:
                 return AuthorizedHttp(creds, http=httplib2.Http(proxy_info=proxy_info, timeout=60))
         return AuthorizedHttp(creds, http=httplib2.Http(timeout=60))
