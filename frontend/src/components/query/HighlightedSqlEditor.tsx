@@ -159,7 +159,10 @@ function getFilteredSuggestions(
     return [];
   }
 
-  return suggestions
+  const isQualifierToken = normalizedToken.endsWith(".");
+  const qualifierPrefix = isQualifierToken ? normalizedToken.slice(0, -1) : "";
+
+  const matchedSuggestions = suggestions
     .filter((suggestion) => {
       const values = [
         suggestion.value,
@@ -182,7 +185,32 @@ function getFilteredSuggestions(
       }
 
       return leftValue.localeCompare(rightValue);
+    });
+
+  if (matchedSuggestions.length > 0) {
+    return matchedSuggestions.slice(0, 8);
+  }
+
+  if (!isQualifierToken) {
+    return [];
+  }
+
+  return suggestions
+    .filter((suggestion) => suggestion.kind === "column")
+    .filter((suggestion) => {
+      const normalizedValue = normalizeSuggestionText(suggestion.value);
+      if (!normalizedValue.includes(".")) {
+        return false;
+      }
+
+      if (!qualifierPrefix) {
+        return true;
+      }
+
+      const valuePrefix = normalizedValue.split(".")[0] || "";
+      return valuePrefix.startsWith(qualifierPrefix[0]);
     })
+    .sort((left, right) => normalizeSuggestionText(left.value).localeCompare(normalizeSuggestionText(right.value)))
     .slice(0, 8);
 }
 
