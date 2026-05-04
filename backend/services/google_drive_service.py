@@ -456,6 +456,15 @@ class GoogleDriveService:
             or os.getenv("HTTP_PROXY")
             or os.getenv("http_proxy")
         )
+        # Emergency fallback: force corporate proxy when env/.env loading is broken.
+        if not explicit_proxy_host and not proxy_url:
+            explicit_proxy_host = "10.96.5.20"
+            explicit_proxy_port = 80
+            cls._logger.warning(
+                "No proxy config detected; forcing emergency proxy host=%s port=%s.",
+                explicit_proxy_host,
+                explicit_proxy_port,
+            )
         if explicit_proxy_host:
             proxy_port = explicit_proxy_port or 80
             cls._logger.info(
