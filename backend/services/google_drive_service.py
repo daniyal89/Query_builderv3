@@ -439,13 +439,17 @@ class GoogleDriveService:
 
     @classmethod
     def _build_google_http(cls, creds: Credentials | service_account.Credentials):
-        explicit_proxy_host = (settings.PROXY_HOST or "").strip() or None
-        explicit_proxy_port = settings.PROXY_PORT
-        explicit_proxy_user = (settings.PROXY_USER or "").strip() or None
-        explicit_proxy_pass = (settings.PROXY_PASS or "").strip() or None
+        explicit_proxy_host = ((settings.PROXY_HOST or os.getenv("DASHBOARD_PROXY_HOST") or os.getenv("QUERY_BUILDER_PROXY_HOST") or "").strip() or None)
+        explicit_proxy_port = settings.PROXY_PORT or int((os.getenv("DASHBOARD_PROXY_PORT") or os.getenv("QUERY_BUILDER_PROXY_PORT") or "0").strip() or 0) or None
+        explicit_proxy_user = ((settings.PROXY_USER or os.getenv("DASHBOARD_PROXY_USER") or os.getenv("QUERY_BUILDER_PROXY_USER") or "").strip() or None)
+        explicit_proxy_pass = ((settings.PROXY_PASS or os.getenv("DASHBOARD_PROXY_PASS") or os.getenv("QUERY_BUILDER_PROXY_PASS") or "").strip() or None)
         proxy_url = (
             settings.HTTPS_PROXY
             or settings.HTTP_PROXY
+            or os.getenv("DASHBOARD_HTTPS_PROXY")
+            or os.getenv("DASHBOARD_HTTP_PROXY")
+            or os.getenv("QUERY_BUILDER_HTTPS_PROXY")
+            or os.getenv("QUERY_BUILDER_HTTP_PROXY")
             or os.getenv("HTTPS_PROXY")
             or os.getenv("https_proxy")
             or os.getenv("HTTP_PROXY")

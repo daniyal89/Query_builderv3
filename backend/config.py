@@ -78,9 +78,27 @@ class Settings(BaseSettings):
         
         # Load proxy settings from either DASHBOARD_* or standard env vars and
         # inject them into os.environ so urllib/requests/google-auth can use them.
-        http_proxy = _normalize_proxy(self.HTTP_PROXY or os.getenv("HTTP_PROXY") or os.getenv("http_proxy"))
-        https_proxy = _normalize_proxy(self.HTTPS_PROXY or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy"))
-        no_proxy = self.NO_PROXY or os.getenv("NO_PROXY") or os.getenv("no_proxy")
+        http_proxy = _normalize_proxy(
+            self.HTTP_PROXY
+            or os.getenv("DASHBOARD_HTTP_PROXY")
+            or os.getenv("QUERY_BUILDER_HTTP_PROXY")
+            or os.getenv("HTTP_PROXY")
+            or os.getenv("http_proxy")
+        )
+        https_proxy = _normalize_proxy(
+            self.HTTPS_PROXY
+            or os.getenv("DASHBOARD_HTTPS_PROXY")
+            or os.getenv("QUERY_BUILDER_HTTPS_PROXY")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+        )
+        no_proxy = (
+            self.NO_PROXY
+            or os.getenv("DASHBOARD_NO_PROXY")
+            or os.getenv("QUERY_BUILDER_NO_PROXY")
+            or os.getenv("NO_PROXY")
+            or os.getenv("no_proxy")
+        )
 
         # If only one proxy is configured, reuse it for both protocols because
         # Google APIs are HTTPS and many enterprise proxies expose one endpoint.
