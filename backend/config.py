@@ -28,6 +28,21 @@ def _resolve_runtime_dir() -> Path:
     return _resolve_base_dir() / "runtime"
 
 
+def _read_env_value(env_path: Path, key: str) -> str | None:
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            if name.strip() != key:
+                continue
+            return value.strip().strip("\"\'")
+    except OSError:
+        return None
+    return None
+
+
 class Settings(BaseSettings):
     """Application-wide configuration constants."""
 
@@ -77,7 +92,9 @@ class Settings(BaseSettings):
                 return None
             return cleaned
         
-        # Load proxy settings from either DASHBOARD_* or standard env vars and
+        env_path = _resolve_base_dir() / ".env"
+
+        # Load proxy settings from settings, process env, or .env file fallback and
         # inject them into os.environ so urllib/requests/google-auth can use them.
         http_proxy = _normalize_proxy(
             self.HTTP_PROXY
@@ -85,6 +102,9 @@ class Settings(BaseSettings):
             or os.getenv("QUERY_BUILDER_HTTP_PROXY")
             or os.getenv("HTTP_PROXY")
             or os.getenv("http_proxy")
+            or _read_env_value(env_path, "DASHBOARD_HTTP_PROXY")
+            or _read_env_value(env_path, "QUERY_BUILDER_HTTP_PROXY")
+            or _read_env_value(env_path, "HTTP_PROXY")
         )
         https_proxy = _normalize_proxy(
             self.HTTPS_PROXY
@@ -92,6 +112,9 @@ class Settings(BaseSettings):
             or os.getenv("QUERY_BUILDER_HTTPS_PROXY")
             or os.getenv("HTTPS_PROXY")
             or os.getenv("https_proxy")
+            or _read_env_value(env_path, "DASHBOARD_HTTPS_PROXY")
+            or _read_env_value(env_path, "QUERY_BUILDER_HTTPS_PROXY")
+            or _read_env_value(env_path, "HTTPS_PROXY")
         )
         no_proxy = (
             self.NO_PROXY
@@ -99,6 +122,9 @@ class Settings(BaseSettings):
             or os.getenv("QUERY_BUILDER_NO_PROXY")
             or os.getenv("NO_PROXY")
             or os.getenv("no_proxy")
+            or _read_env_value(env_path, "DASHBOARD_NO_PROXY")
+            or _read_env_value(env_path, "QUERY_BUILDER_NO_PROXY")
+            or _read_env_value(env_path, "NO_PROXY")
         )
 
         # If only one proxy is configured, reuse it for both protocols because
