@@ -69,7 +69,9 @@ export async function startBuildDuckDbJob(payload: BuildDuckDbPayload): Promise<
 }
 
 export async function getBuildDuckDbJobStatus(jobId: string): Promise<BuildDuckDbJobStatusResponse> {
-  const { data } = await apiClient.get<BuildDuckDbJobStatusResponse>(`/sidebar-tools/build-duckdb/status/${jobId}`);
+  const { data } = await apiClient.get<BuildDuckDbJobStatusResponse>(`/sidebar-tools/build-duckdb/status/${jobId}`, {
+    timeout: 120_000,
+  });
   return data;
 }
 
@@ -89,7 +91,9 @@ export async function startCsvToParquetJob(payload: CsvToParquetPayload): Promis
 }
 
 export async function getCsvToParquetJobStatus(jobId: string): Promise<CsvParquetJobStatusResponse> {
-  const { data } = await apiClient.get<CsvParquetJobStatusResponse>(`/sidebar-tools/csv-to-parquet/status/${jobId}`);
+  const { data } = await apiClient.get<CsvParquetJobStatusResponse>(`/sidebar-tools/csv-to-parquet/status/${jobId}`, {
+    timeout: 120_000,
+  });
   return data;
 }
 
