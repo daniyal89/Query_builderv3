@@ -22,6 +22,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 import httplib2
+import socks
 
 from backend.config import settings
 from backend.services.job_runtime import (
@@ -456,7 +457,7 @@ class GoogleDriveService:
                 proxy_port,
             )
             proxy_info = httplib2.ProxyInfo(
-                proxy_type=httplib2.socks.PROXY_TYPE_HTTP,
+                proxy_type=socks.PROXY_TYPE_HTTP,
                 proxy_host=explicit_proxy_host,
                 proxy_port=int(proxy_port),
                 proxy_user=explicit_proxy_user,
@@ -482,7 +483,7 @@ class GoogleDriveService:
             proxy_info = None
             if parsed.hostname:
                 proxy_info = httplib2.ProxyInfo(
-                    proxy_type=httplib2.socks.PROXY_TYPE_HTTP,
+                    proxy_type=socks.PROXY_TYPE_HTTP,
                     proxy_host=parsed.hostname,
                     proxy_port=parsed.port or 80,
                     proxy_user=parsed.username,
