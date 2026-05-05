@@ -51,7 +51,7 @@ jobs:
 
       - name: Publish backend test annotations
         if: always()
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@v6
         with:
           report_paths: backend-test-results.xml
           check_name: Backend Test Report
