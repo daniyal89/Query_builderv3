@@ -458,6 +458,23 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
     window.localStorage.setItem(getWorkspaceStateStorageKey(engine), JSON.stringify(payload));
   }, [engine, state]);
 
+  const previewDependencyKey = JSON.stringify({
+    table: state.table,
+    selectedColumns: state.selectedColumns,
+    filters: state.filters,
+    sort: state.sort,
+    joins: state.joins,
+    groupBy: state.groupBy,
+    aggregates: state.aggregates,
+    caseExpressions: state.caseExpressions,
+    functionColumns: state.functionColumns,
+    limitRows: state.limitRows,
+    offset: state.offset,
+    mode: state.mode,
+    pivotConfig: state.pivotConfig,
+    marcadoseUnion: state.marcadoseUnion,
+  });
+
   useEffect(() => {
     let cancelled = false;
 
@@ -546,7 +563,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [engine, state]);
+  }, [engine, previewDependencyKey]);
 
   const setTable = useCallback((tableName: string) => {
     setState((prev) => ({
