@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import glob
+import gzip
 import os
 import uuid
 from pathlib import Path
@@ -217,6 +218,77 @@ def _resolve_relation_sql(input_path: str) -> str:
     raise ValueError(f"No readable files matched '{input_path}'.")
 
 
+
+
+def _validate_gzip_file(path: Path) -> tuple[bool, str | None]:
+    if path.suffix.lower() != ".gz":
+        return True, None
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(2)
+
+        if header != b"\x1f\x8b":
+            try:
+                pd.read_csv(path, compression=None, nrows=5, encoding="utf-8", encoding_errors="replace")
+                return True, "PLAIN_TEXT_GZ_FALLBACK"
+            except Exception:
+                return False, "NOT_GZIP_HEADER"
+
+        with gzip.open(path, "rb") as gz_handle:
+            while gz_handle.read(1024 * 1024):
+                pass
+        return True, None
+    except EOFError:
+        return False, "TRUNCATED_EOF"
+    except OSError as exc:
+        return False, f"GZIP_OSERROR:{exc}"
+
+
+def _partition_valid_csv_sources(files: list[Path]) -> tuple[list[Path], list[dict[str, str]], list[dict[str, str]]]:
+    valid_files: list[Path] = []
+    invalid_files: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+    for source_file in files:
+        is_valid, reason = _validate_gzip_file(source_file)
+        if is_valid:
+            valid_files.append(source_file)
+            if reason:
+                warnings.append({"file": str(source_file), "reason": reason})
+            continue
+        invalid_files.append({"file": str(source_file), "reason": reason or "INVALID_GZIP"})
+    return valid_files, invalid_files, warnings
+
+
+def _resolve_parquet_only_glob(input_path: str) -> str:
+    cleaned = sanitize_local_path_input(input_path.replace("\u00A0", " "), "input_path").strip().strip('"').strip("'")
+    normalized = cleaned.replace("\\", "/")
+    path_obj = Path(normalized).expanduser()
+
+    if path_obj.is_file():
+        if path_obj.suffix.lower() != ".parquet":
+            raise ValueError("Build step requires Parquet input. Provide a .parquet file or folder with parquet outputs.")
+        return str(path_obj)
+
+    if path_obj.is_dir():
+        pattern = str((path_obj / "**/*.parquet").as_posix())
+        if any(_is_readable_input_file(item) for item in glob.glob(pattern, recursive=True)):
+            return pattern
+        raise ValueError(f"No parquet files found under '{path_obj}'.")
+
+    parquet_matches = [item for item in glob.glob(normalized, recursive=True) if item.lower().endswith('.parquet') and _is_readable_input_file(item)]
+    if parquet_matches:
+        return normalized
+
+    if "*" in normalized and ".parquet" not in normalized.lower():
+        base_prefix = normalized.split("*")[0]
+        base_dir = Path(base_prefix).expanduser()
+        candidate_dir = base_dir if base_dir.is_dir() else base_dir.parent
+        candidate = str((candidate_dir / "**/*.parquet").as_posix())
+        if any(_is_readable_input_file(item) for item in glob.glob(candidate, recursive=True)):
+            return candidate
+
+    raise ValueError("Build step could not find parquet outputs. Run CSV→Parquet first and pass that parquet folder/path.")
+
 def _resolve_csv_parquet_read_sql(input_path: str) -> str:
     input_path_sql = _sql_string_literal(input_path)
     return (
@@ -358,7 +430,7 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     db_path = Path(sanitize_local_path_input(payload.db_path, "db_path")).expanduser().resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     object_sql = f'"{normalized_object_name.replace(chr(34), chr(34) * 2)}"'
-    resolved_input = _resolve_existing_input_glob(payload.input_path)
+    resolved_input = _resolve_parquet_only_glob(payload.input_path)
     relation_sql = _resolve_relation_sql(resolved_input)
 
     with duckdb.connect(str(db_path)) as conn:
@@ -432,17 +504,36 @@ def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
 def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
     try:
         files, output_root, input_root, single_target = _build_csv_to_parquet_targets(payload)
+        valid_files, invalid_files, warning_files = _partition_valid_csv_sources(files)
         output_root.mkdir(parents=True, exist_ok=True)
+        if not valid_files:
+            invalid_summary = "; ".join(f"{item['file']} ({item['reason']})" for item in invalid_files[:5])
+            raise ValueError(f"No valid input files after gzip pre-validation. Invalid files: {invalid_summary}")
         compression_sql = _sql_string_literal(payload.compression)
         lookup_mode = bool(payload.hir_file and payload.supp_mapper_file)
         if lookup_mode:
             hir_div, hir_sdo, supp = _load_lookup_tables(payload.hir_file or "", payload.supp_mapper_file or "")
         reported_output_path = str(single_target if single_target is not None else output_root)
-        _update_csv_job(job_id, status="running", total_files=len(files), output_path=reported_output_path, skipped_files=0)
-        skipped_files = 0
+        precheck_message = "CSV to Parquet conversion started."
+        if invalid_files:
+            precheck_message = (
+                f"Skipped {len(invalid_files)} invalid gzip file(s) during pre-validation."
+                + (f" {len(warning_files)} .gz file(s) treated as plain CSV." if warning_files else "")
+            )
+        elif warning_files:
+            precheck_message = f"{len(warning_files)} .gz file(s) treated as plain CSV."
+        _update_csv_job(
+            job_id,
+            status="running",
+            total_files=len(valid_files),
+            output_path=reported_output_path,
+            skipped_files=len(invalid_files),
+            message=precheck_message,
+        )
+        skipped_files = len(invalid_files)
 
         with duckdb.connect() as conn:
-            for index, source_file in enumerate(files, start=1):
+            for index, source_file in enumerate(valid_files, start=1):
                 if job_runtime.is_cancelled(job_id):
                     _update_csv_job(
                         job_id,
@@ -461,7 +552,7 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                         processed_files=index,
                         skipped_files=skipped_files,
                         current_file=str(source_file),
-                        message=f"Skipping existing parquet file ({index}/{len(files)}).",
+                        message=f"Skipping existing parquet file ({index}/{len(valid_files)}).",
                     )
                     continue
                 _update_csv_job(
@@ -469,12 +560,12 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     processed_files=index - 1,
                     skipped_files=skipped_files,
                     current_file=str(source_file),
-                    message=f"Processing file {index}/{len(files)}...",
+                    message=f"Processing file {index}/{len(valid_files)}...",
                 )
                 if lookup_mode:
                     if not _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp):
                         skipped_files += 1
-                        _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files, message=f"Skipping empty file ({index}/{len(files)}).")
+                        _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files, message=f"Skipping empty file ({index}/{len(valid_files)}).")
                         continue
                 else:
                     relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
@@ -490,9 +581,11 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
             status="completed",
             current_file=None,
             message=(
-                f"Parquet conversion completed successfully for {len(files)} file(s). "
+                f"Parquet conversion completed successfully for {len(valid_files)} file(s). "
                 f"Skipped existing: {skipped_files}."
                 + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
+                + (f" Invalid gzip files: {len(invalid_files)}." if invalid_files else "")
+                + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else "")
             ),
             finished_at=datetime.now().isoformat(timespec="seconds"),
             skipped_files=skipped_files,
@@ -590,6 +683,10 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
         matched_files = _list_matching_input_files(resolved_input)
         if not matched_files:
             raise ValueError(f"No readable files matched '{resolved_input}'.")
+        matched_files, invalid_files, warning_files = _partition_valid_csv_sources(matched_files)
+        if not matched_files:
+            invalid_summary = "; ".join(f"{item['file']} ({item['reason']})" for item in invalid_files[:5])
+            raise ValueError(f"No valid input files after gzip pre-validation. Invalid files: {invalid_summary}")
 
         compression_sql = _sql_string_literal(payload.compression)
         lookup_mode = bool(payload.hir_file and payload.supp_mapper_file)
@@ -615,7 +712,9 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                         f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
                     )
             return SidebarToolResponse(
-                message="Parquet conversion completed successfully." + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else ""),
+                message="Parquet conversion completed successfully." + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
+            + (f" Invalid gzip files: {len(invalid_files)}." if invalid_files else "")
+                + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else ""),
                 output_path=str(output_path),
             )
 
@@ -625,7 +724,7 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
         input_root = _infer_input_root(resolved_input, matched_files)
 
         converted_count = 0
-        skipped_count = 0
+        skipped_count = len(invalid_files)
         with duckdb.connect() as conn:
             for source_file in matched_files:
                 target_file = _parquet_target_for_input(output_root, input_root, source_file)
@@ -647,8 +746,10 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                 converted_count += 1
 
         return SidebarToolResponse(
-            message=f"Parquet conversion completed successfully for {converted_count} file(s). Skipped existing: {skipped_count}."
-            + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else ""),
+            message=f"Parquet conversion completed successfully for {converted_count} file(s). Skipped existing/invalid: {skipped_count}."
+            + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
+            + (f" Invalid gzip files: {len(invalid_files)}." if invalid_files else "")
+                + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else ""),
             output_path=str(output_root),
         )
     except HTTPException:
