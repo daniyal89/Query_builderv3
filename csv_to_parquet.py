@@ -33,9 +33,25 @@ def main() -> int:
     output_sql = f"'{str(output_path).replace(chr(39), chr(39) * 2)}'"
     compression_sql = f"'{args.compression.replace(chr(39), chr(39) * 2)}'"
     with duckdb.connect() as conn:
+        columns_info = conn.execute(f"DESCRIBE SELECT * FROM read_csv_auto({input_sql}, filename = true) LIMIT 0").fetchall()
+        col_names = [row[0] for row in columns_info]
+        
+        if "DIV_CODE" in col_names and "DISCOM" not in col_names:
+            select_sql = f"""SELECT *, 
+                CASE 
+                    WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
+                    WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
+                    WHEN starts_with(DIV_CODE, 'DIV3') THEN 'MVVNL'
+                    WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
+                    WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
+                    ELSE NULL
+                END AS DISCOM
+                FROM read_csv_auto({input_sql}, union_by_name = true, filename = true)"""
+        else:
+            select_sql = f"SELECT * FROM read_csv_auto({input_sql}, union_by_name = true, filename = true)"
+            
         conn.execute(
-            f"COPY (SELECT * FROM read_csv_auto({input_sql}, union_by_name = true, filename = true)) "
-            f"TO {output_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})",
+            f"COPY ({select_sql}) TO {output_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
         )
     print(f"Parquet created at: {output_path}")
     return 0

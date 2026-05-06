@@ -79,6 +79,23 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     if "DIV_CODE" in df.columns:
         df["DIV_CODE"] = df["DIV_CODE"].astype(str)
         df = df.merge(hir_div, on="DIV_CODE", how="left")
+        
+        import numpy as np
+        conditions = [
+            df["DIV_CODE"].str.startswith("DIV1", na=False),
+            df["DIV_CODE"].str.startswith("DIV2", na=False),
+            df["DIV_CODE"].str.startswith("DIV3", na=False),
+            df["DIV_CODE"].str.startswith("DIV4", na=False),
+            df["DIV_CODE"].str.startswith("DIV5", na=False),
+        ]
+        choices = ["PVVNL", "DVVNL", "MVVNL", "PuVNL", "KESCO"]
+        derived_discom = np.select(conditions, choices, default=None)
+        
+        if "DISCOM" in df.columns:
+            df["DISCOM"] = df["DISCOM"].fillna(pd.Series(derived_discom, index=df.index))
+        else:
+            df["DISCOM"] = derived_discom
+            
     if "SUB_DIV_CODE" in df.columns:
         df["SUB_DIV_CODE"] = df["SUB_DIV_CODE"].astype(str)
         df = df.merge(hir_sdo, on="SUB_DIV_CODE", how="left")
@@ -570,9 +587,26 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                 else:
                     relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                     target_sql = _sql_string_literal(str(target_file))
+                    
+                    columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
+                    col_names = [row[0] for row in columns_info]
+                    
+                    if "DIV_CODE" in col_names and "DISCOM" not in col_names:
+                        select_sql = f"""SELECT *, 
+                            CASE 
+                                WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV3') THEN 'MVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
+                                ELSE NULL
+                            END AS DISCOM
+                            FROM {relation_sql}"""
+                    else:
+                        select_sql = f"SELECT * FROM {relation_sql}"
+                        
                     conn.execute(
-                        f"COPY (SELECT * FROM {relation_sql}) "
-                        f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                        f"COPY ({select_sql}) TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
                     )
                 _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files)
 
@@ -707,9 +741,25 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                 if lookup_mode:
                     _apply_csv_enrichment(matched_files[0], output_path, payload.compression, hir_div, hir_sdo, supp)
                 else:
+                    columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
+                    col_names = [row[0] for row in columns_info]
+                    
+                    if "DIV_CODE" in col_names and "DISCOM" not in col_names:
+                        select_sql = f"""SELECT *, 
+                            CASE 
+                                WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV3') THEN 'MVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
+                                ELSE NULL
+                            END AS DISCOM
+                            FROM {relation_sql}"""
+                    else:
+                        select_sql = f"SELECT * FROM {relation_sql}"
+                        
                     conn.execute(
-                        f"COPY (SELECT * FROM {relation_sql}) "
-                        f"TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                        f"COPY ({select_sql}) TO {output_path_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
                     )
             return SidebarToolResponse(
                 message="Parquet conversion completed successfully." + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
@@ -739,9 +789,26 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                 else:
                     relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                     target_sql = _sql_string_literal(str(target_file))
+                    
+                    columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
+                    col_names = [row[0] for row in columns_info]
+                    
+                    if "DIV_CODE" in col_names and "DISCOM" not in col_names:
+                        select_sql = f"""SELECT *, 
+                            CASE 
+                                WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV3') THEN 'MVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
+                                ELSE NULL
+                            END AS DISCOM
+                            FROM {relation_sql}"""
+                    else:
+                        select_sql = f"SELECT * FROM {relation_sql}"
+                        
                     conn.execute(
-                        f"COPY (SELECT * FROM {relation_sql}) "
-                        f"TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                        f"COPY ({select_sql}) TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
                     )
                 converted_count += 1
 
