@@ -36,8 +36,9 @@ def main() -> int:
         columns_info = conn.execute(f"DESCRIBE SELECT * FROM read_csv_auto({input_sql}, filename = true) LIMIT 0").fetchall()
         col_names = [row[0] for row in columns_info]
         
-        if "DIV_CODE" in col_names and "DISCOM" not in col_names:
-            select_sql = f"""SELECT *, 
+        if "DIV_CODE" in col_names:
+            discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+            select_sql = f"""SELECT *{discom_exclude} 
                 CASE 
                     WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
                     WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'

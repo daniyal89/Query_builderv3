@@ -91,10 +91,7 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
         choices = ["PVVNL", "DVVNL", "MVVNL", "PuVNL", "KESCO"]
         derived_discom = np.select(conditions, choices, default=None)
         
-        if "DISCOM" in df.columns:
-            df["DISCOM"] = df["DISCOM"].fillna(pd.Series(derived_discom, index=df.index))
-        else:
-            df["DISCOM"] = derived_discom
+        df["DISCOM"] = derived_discom
             
     if "SUB_DIV_CODE" in df.columns:
         df["SUB_DIV_CODE"] = df["SUB_DIV_CODE"].astype(str)
@@ -591,8 +588,9 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
                     col_names = [row[0] for row in columns_info]
                     
-                    if "DIV_CODE" in col_names and "DISCOM" not in col_names:
-                        select_sql = f"""SELECT *, 
+                    if "DIV_CODE" in col_names:
+                        discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        select_sql = f"""SELECT *{discom_exclude} 
                             CASE 
                                 WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
                                 WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
@@ -744,8 +742,9 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
                     col_names = [row[0] for row in columns_info]
                     
-                    if "DIV_CODE" in col_names and "DISCOM" not in col_names:
-                        select_sql = f"""SELECT *, 
+                    if "DIV_CODE" in col_names:
+                        discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        select_sql = f"""SELECT *{discom_exclude} 
                             CASE 
                                 WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
                                 WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
@@ -793,8 +792,9 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
                     col_names = [row[0] for row in columns_info]
                     
-                    if "DIV_CODE" in col_names and "DISCOM" not in col_names:
-                        select_sql = f"""SELECT *, 
+                    if "DIV_CODE" in col_names:
+                        discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        select_sql = f"""SELECT *{discom_exclude} 
                             CASE 
                                 WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
                                 WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
