@@ -92,6 +92,17 @@ Build a modern BI platform for fast self-service analytics with support for file
 - Expanded GitHub Actions quality workflows to run on every branch push plus manual dispatch so feature branches keep delivery visibility.
 - Added BI Phase 1 API/state tests plus a frontend page test so the new live workspace flow is covered beyond model-only validation.
 
+### 1.8 BI Phase 1 UX and connector fixes
+**Status:** Done
+**Owner:** Codex (GPT-5.3-Codex)
+**Last Updated:** 2026-05-08
+**Notes:**
+- Added DuckDB source table enumeration and optional table selection support for multi-table `.duckdb` files.
+- Expanded source insight payload to include `table_names` and `selected_table` metadata.
+- Updated dataset creation payload to support selected DuckDB table names.
+- Updated frontend BI Phase 1 page to show the `Source table` selector, persist workspace/source selection, and display available fields when creating metrics.
+- Improved preview rendering to include all columns found in sample rows, not only schema-derived columns.
+
 ---
 
 ## Phase 2 — Advanced BI Experience

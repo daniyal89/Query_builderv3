@@ -96,6 +96,7 @@ async def create_dataset(
                 data_source_id=payload.data_source_id,
                 name=payload.name.strip(),
             ),
+            table_name=payload.table_name,
         )
     except Exception as exc:  # pragma: no cover - covered through translated cases
         raise _translate_bi_error(exc) from exc

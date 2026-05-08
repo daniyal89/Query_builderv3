@@ -37,6 +37,7 @@ class BIPhase1CreateDatasetRequest(BaseModel):
     workspace_id: str = Field(..., min_length=1)
     data_source_id: str = Field(..., min_length=1)
     name: str = Field(..., min_length=1)
+    table_name: str | None = None
 
 
 class BIPhase1CreateMetricRequest(BaseModel):
@@ -66,6 +67,8 @@ class BIPhase1SourceInsightResponse(BaseModel):
     source_id: str = Field(..., min_length=1)
     detected_type: DataSourceType
     capabilities: dict[str, bool] = Field(default_factory=dict)
+    table_names: list[str] = Field(default_factory=list)
+    selected_table: str | None = Field(default=None)
     schema_rows: list[dict[str, str]] = Field(default_factory=list, alias="schema")
     preview_rows: list[dict[str, Any]] = Field(default_factory=list)
     status: str = Field(default="active")

@@ -39,6 +39,7 @@ export async function createBIDataset(payload: {
   workspace_id: string;
   data_source_id: string;
   name: string;
+  table_name?: string | null;
 }): Promise<BIDataset> {
   const response = await apiClient.post<BIDataset>("/bi-phase1/datasets", payload);
   return response.data;

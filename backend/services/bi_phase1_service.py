@@ -126,20 +126,32 @@ class BIPhase1Service:
 
         raise ValueError("Could not detect a supported source type from the selected file.")
 
-    def _build_source_insight(self, source_id: str, source_type: DataSourceType, connector: Connector, location: str, status: str) -> dict[str, Any]:
-        schema_rows = connector.infer_schema(location)
+    def _build_source_insight(
+        self,
+        source_id: str,
+        source_type: DataSourceType,
+        connector: Connector,
+        location: str,
+        status: str,
+        selected_table: str | None = None,
+    ) -> dict[str, Any]:
+        table_names = connector.list_tables(location)
+        chosen_table = selected_table or (table_names[0] if table_names else None)
+        schema_rows = connector.infer_schema(location, table_name=chosen_table)
         preview_rows = [
             {
                 key: self._normalize_preview_value(value)
                 for key, value in row.items()
             }
-            for row in connector.preview(location, limit=5)
+            for row in connector.preview(location, limit=5, table_name=chosen_table)
         ]
-        load_strategy = connector.load_to_engine(location)
+        load_strategy = connector.load_to_engine(location, table_name=chosen_table)
         return {
             "source_id": source_id,
             "detected_type": source_type,
             "capabilities": connector.capabilities(),
+            "table_names": table_names,
+            "selected_table": chosen_table,
             "schema": [{"name": str(item["name"]), "type": str(item["type"])} for item in schema_rows],
             "preview_rows": preview_rows,
             "status": status,
@@ -171,7 +183,7 @@ class BIPhase1Service:
         self._audit(actor, "source.register", source.id)
         return source
 
-    def create_dataset(self, actor: str, role: Role, dataset: Dataset) -> Dataset:
+    def create_dataset(self, actor: str, role: Role, dataset: Dataset, table_name: str | None = None) -> Dataset:
         self.require_role(role, {"Admin", "Editor"})
         if dataset.workspace_id not in self.store.workspaces:
             raise KeyError(f"Workspace '{dataset.workspace_id}' was not found.")
@@ -180,9 +192,16 @@ class BIPhase1Service:
 
         source = self.store.data_sources[dataset.data_source_id]
         insight = self.store.source_registry.get(source.id)
-        if insight is None:
+        if insight is None or (table_name and insight.get("selected_table") != table_name):
             detected_type, connector = self._resolve_connector(source.location, source.source_type)
-            insight = self._build_source_insight(source.id, detected_type, connector, source.location, source.status)
+            insight = self._build_source_insight(
+                source.id,
+                detected_type,
+                connector,
+                source.location,
+                source.status,
+                selected_table=table_name,
+            )
             self.store.source_registry[source.id] = insight
 
         self.store.datasets[dataset.id] = dataset

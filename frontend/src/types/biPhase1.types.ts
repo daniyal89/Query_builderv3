@@ -69,6 +69,8 @@ export interface BISourceInsight {
   source_id: string;
   detected_type: BIDataSourceType;
   capabilities: Record<string, boolean>;
+  table_names: string[];
+  selected_table?: string | null;
   schema: Array<{ name: string; type: string }>;
   preview_rows: Array<Record<string, unknown>>;
   status: string;

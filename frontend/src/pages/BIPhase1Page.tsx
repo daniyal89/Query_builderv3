@@ -141,6 +141,7 @@ export function BIPhase1Page() {
     workspace_id: "",
     data_source_id: "",
     name: "",
+    table_name: "",
   });
   const [metricForm, setMetricForm] = useState<{
     dataset_id: string;
@@ -216,17 +217,28 @@ export function BIPhase1Page() {
     setDatasetForm((current) => {
       const workspaceId = ensureCurrentSelection(current.workspace_id, workspaceIds);
       const sourceId = ensureCurrentSelection(current.data_source_id, sourceIds);
+      const selectedInsight =
+        state.source_insights.find((insight) => insight.source_id === sourceId) ?? null;
       const defaultName =
         current.name ||
         (sourceId ? `${state.data_sources.find((source) => source.id === sourceId)?.name ?? "Source"} Dataset` : "");
+      const defaultTableName =
+        current.table_name || selectedInsight?.selected_table || selectedInsight?.table_names[0] || "";
       if (
         workspaceId === current.workspace_id &&
         sourceId === current.data_source_id &&
-        defaultName === current.name
+        defaultName === current.name &&
+        defaultTableName === current.table_name
       ) {
         return current;
       }
-      return { ...current, workspace_id: workspaceId, data_source_id: sourceId, name: defaultName };
+      return {
+        ...current,
+        workspace_id: workspaceId,
+        data_source_id: sourceId,
+        name: defaultName,
+        table_name: defaultTableName,
+      };
     });
 
     setMetricForm((current) => {
@@ -371,7 +383,13 @@ export function BIPhase1Page() {
     }, "Dataset published.");
   };
 
-  const previewColumns = selectedSourceInsight?.schema.map((column) => column.name) ?? [];
+  const previewColumns = useMemo(() => {
+    if (!selectedSourceInsight) return [];
+    const schemaNames = selectedSourceInsight.schema.map((column) => column.name);
+    const rowKeys = selectedSourceInsight.preview_rows.flatMap((row) => Object.keys(row));
+    const uniqueColumns = Array.from(new Set([...schemaNames, ...rowKeys]));
+    return uniqueColumns;
+  }, [selectedSourceInsight]);
 
   return (
     <section className="space-y-6">
@@ -678,6 +696,28 @@ export function BIPhase1Page() {
                     ))}
                   </select>
                 </Field>
+                {selectedSourceInsight?.table_names.length > 1 ? (
+                  <Field label="Source table">
+                    <select
+                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none"
+                      value={datasetForm.table_name}
+                      onChange={(event) =>
+                        setDatasetForm((current) => ({ ...current, table_name: event.target.value }))
+                      }
+                    >
+                      <option value="">Select table</option>
+                      {selectedSourceInsight.table_names.map((tableName) => (
+                        <option key={tableName} value={tableName}>
+                          {tableName}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                ) : selectedSourceInsight?.table_names.length === 1 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    Using table: <span className="font-medium">{selectedSourceInsight.table_names[0]}</span>
+                  </div>
+                ) : null}
                 <Field label="Dataset name">
                   <input
                     className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none"
@@ -694,7 +734,8 @@ export function BIPhase1Page() {
                     isSaving ||
                     datasetForm.workspace_id === "" ||
                     datasetForm.data_source_id === "" ||
-                    datasetForm.name.trim() === ""
+                    datasetForm.name.trim() === "" ||
+                    (selectedSourceInsight?.table_names.length > 1 && datasetForm.table_name === "")
                   }
                   className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
@@ -899,6 +940,13 @@ export function BIPhase1Page() {
                     placeholder="SUM(amount)"
                   />
                 </Field>
+                {selectedDatasetFields.length > 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    Available fields: {selectedDatasetFields.map((field) => field.name).join(", ")}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500">Select a dataset to see available fields.</p>
+                )}
                 <button
                   type="submit"
                   disabled={
