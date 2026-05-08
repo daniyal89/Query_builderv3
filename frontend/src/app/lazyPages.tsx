@@ -47,3 +47,7 @@ export const DriveDownloadPage = createLazyPage("/drive-download", () =>
 export const SidebarToolsPage = createLazyPage("/sidebar-6-tools", () =>
   import("../pages/SidebarToolsPage").then((module) => ({ default: module.SidebarToolsPage })),
 );
+
+export const BIPhase1Page = createLazyPage("/bi-phase1", () =>
+  import("../pages/BIPhase1Page").then((module) => ({ default: module.BIPhase1Page })),
+);

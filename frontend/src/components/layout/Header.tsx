@@ -16,6 +16,7 @@ function getPageTitle(pathname: string, dbPath: string): string {
   if (pathname.startsWith("/folder-merge")) return "Folder Merge";
   if (pathname.startsWith("/ftp-download")) return "FTP Download";
   if (pathname.startsWith("/sidebar-6-tools")) return "Data Tools";
+  if (pathname.startsWith("/bi-phase1")) return "BI Phase 1 Workspace";
   return dbPath ? dbPath.split("\\").pop()?.split("/").pop() || "Data Dashboard" : "Data Dashboard";
 }
 

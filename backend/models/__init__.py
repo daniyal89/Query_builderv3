@@ -10,6 +10,17 @@ from backend.models.merge import (
     EnrichmentResponse,
     UploadSheetsResponse,
 )
+from backend.models.bi_entities import (
+    Workspace,
+    DataSource,
+    Dataset,
+    Table,
+    FieldModel,
+    Metric,
+    Dashboard,
+    Chart,
+)
+
 from backend.models.ftp_download import (
     FTPDownloadProfile,
     FTPDownloadRequest,
@@ -38,4 +49,12 @@ __all__ = [
     "FTPDownloadStartResponse",
     "FTPDownloadStatusResponse",
     "FTPProfileResult",
+    "Workspace",
+    "DataSource",
+    "Dataset",
+    "Table",
+    "FieldModel",
+    "Metric",
+    "Dashboard",
+    "Chart",
 ]

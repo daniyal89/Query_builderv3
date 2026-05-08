@@ -32,6 +32,7 @@ const navigationSections = [
     links: [
       { to: "/ftp-download", label: "FTP Download" },
       { to: "/sidebar-6-tools", label: "Data Tools" },
+      { to: "/bi-phase1", label: "BI Phase 1" },
       { to: "/drive-upload-master", label: "Upload master in Drive" },
       { to: "/drive-download", label: "Drive Download" },
     ],
@@ -40,7 +41,7 @@ const navigationSections = [
 
 export const Sidebar: React.FC = () => {
   useEffect(() => {
-    return scheduleRoutePrefetch(["/query/local", "/import", "/sidebar-6-tools"]);
+    return scheduleRoutePrefetch(["/query/local", "/import", "/sidebar-6-tools", "/bi-phase1"]);
   }, []);
 
   const handlePrefetch = (path: string) => {
