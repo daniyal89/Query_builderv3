@@ -15,6 +15,7 @@ from backend.models.bi_phase1_api import (
     BIPhase1StateResponse,
 )
 from backend.services.connectors import CSVConnector, Connector, DuckDBFileConnector, ParquetConnector
+from backend.services.duckdb_service import DuckDBService
 
 Role = Literal["Admin", "Editor", "Viewer"]
 
@@ -45,10 +46,11 @@ class BIPhase1Store:
 
 
 class BIPhase1Service:
-    def __init__(self) -> None:
+    def __init__(self, duckdb_service: DuckDBService | None = None) -> None:
         self.store = BIPhase1Store()
+        self._duckdb_service = duckdb_service
         self._connectors: dict[str, Connector] = {
-            "duckdb": DuckDBFileConnector(),
+            "duckdb": DuckDBFileConnector(duckdb_service),
             "parquet": ParquetConnector(),
             "csv_family": CSVConnector(),
         }

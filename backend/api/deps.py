@@ -8,8 +8,8 @@ from backend.services.bi_phase1_service import BIPhase1Service
 from backend.services.duckdb_service import DuckDBService
 from backend.services.oracle_service import OracleService
 
-_bi_phase1_service = BIPhase1Service()
 _duckdb_service = DuckDBService()
+_bi_phase1_service = BIPhase1Service(_duckdb_service)
 _oracle_service = OracleService()
 
 

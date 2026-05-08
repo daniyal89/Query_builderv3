@@ -39,6 +39,17 @@ class DuckDBService:
     def is_connected(self) -> bool:
         return self._conn is not None
 
+    @property
+    def current_db_path(self) -> Optional[str]:
+        return str(self._db_path) if self._db_path else None
+
+    def execute_on_connection(self, query: str, params: tuple = ()) -> list:
+        """Execute a query on the current connection and return results."""
+        if not self.is_connected:
+            raise RuntimeError("No database connection available.")
+        with self._lock:
+            return self._conn.execute(query, params).fetchall()
+
     def _normalize_user_path(self, raw_path: str) -> Path:
         value = (raw_path or "").strip()
         if not value:

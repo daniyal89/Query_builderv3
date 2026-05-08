@@ -7,6 +7,8 @@ from pathlib import Path
 
 import duckdb
 
+from backend.services.duckdb_service import DuckDBService
+
 
 class Connector(ABC):
     @abstractmethod
@@ -29,20 +31,36 @@ class Connector(ABC):
 
 
 class DuckDBFileConnector(Connector):
+    def __init__(self, duckdb_service: DuckDBService | None = None) -> None:
+        self._duckdb_service = duckdb_service
+
     def detect(self, source: str) -> bool:
         return source.lower().endswith(".duckdb")
 
     def preview(self, source: str, limit: int = 20) -> list[dict]:
-        with duckdb.connect(source, read_only=True) as con:
-            table = con.execute("show tables").fetchone()[0]
-            cols = [row[1] for row in con.execute(f"pragma table_info('{table}')").fetchall()]
-            rows = con.execute(f"select * from \"{table}\" limit ?", [limit]).fetchall()
+        if self._duckdb_service and self._duckdb_service.is_connected and self._duckdb_service.current_db_path == source:
+            # Use existing connection
+            table = self._duckdb_service.execute_on_connection("show tables")[0][0]
+            cols = [row[1] for row in self._duckdb_service.execute_on_connection(f"pragma table_info('{table}')")]
+            rows = self._duckdb_service.execute_on_connection(f"select * from \"{table}\" limit ?", (limit,))
+        else:
+            # Open new read-only connection
+            with duckdb.connect(source, read_only=True) as con:
+                table = con.execute("show tables").fetchone()[0]
+                cols = [row[1] for row in con.execute(f"pragma table_info('{table}')").fetchall()]
+                rows = con.execute(f"select * from \"{table}\" limit ?", [limit]).fetchall()
         return [dict(zip(cols, row, strict=False)) for row in rows]
 
     def infer_schema(self, source: str) -> list[dict]:
-        with duckdb.connect(source, read_only=True) as con:
-            table = con.execute("show tables").fetchone()[0]
-            info = con.execute(f"pragma table_info('{table}')").fetchall()
+        if self._duckdb_service and self._duckdb_service.is_connected and self._duckdb_service.current_db_path == source:
+            # Use existing connection
+            table = self._duckdb_service.execute_on_connection("show tables")[0][0]
+            info = self._duckdb_service.execute_on_connection(f"pragma table_info('{table}')")
+        else:
+            # Open new read-only connection
+            with duckdb.connect(source, read_only=True) as con:
+                table = con.execute("show tables").fetchone()[0]
+                info = con.execute(f"pragma table_info('{table}')").fetchall()
         return [{"name": c[1], "type": c[2]} for c in info]
 
     def load_to_engine(self, source: str, mode: str = "view") -> str:
