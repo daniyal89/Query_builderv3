@@ -65,28 +65,32 @@ Build a modern BI platform for fast self-service analytics with support for file
 ### 1.5 Visualization Builder v1
 **Status:** Done  
 **Owner:** Codex (GPT-5.3-Codex)  
-**Last Updated:** 2026-05-07  
+**Last Updated:** 2026-05-08  
 **Notes:**
 - Chart domain model supports table/bar/line/pie/KPI chart types for builder integration.
 - Existing query/filter/sort models support visual filter/sort/top-N backend execution semantics.
 - Added frontend route `/bi-phase1` accessible from sidebar sub-header for Phase 1 workspace entry point.
+- Replaced the placeholder BI page with a live workspace builder that can create workspaces, register sources, inspect schema/preview rows, and save chart definitions.
 
 ### 1.6 Dashboard Builder v1
 **Status:** Done  
 **Owner:** Codex (GPT-5.3-Codex)  
-**Last Updated:** 2026-05-07  
+**Last Updated:** 2026-05-08  
 **Notes:**
 - Dashboard and chart linking models implemented for multi-widget composition with persisted chart IDs.
 - Global and cross-filter behavior is supported by shared query filter model and chart-level query execution backend.
 - Frontend navigation now exposes BI Phase 1 workflow from Operations section and header title mapping.
+- BI Phase 1 now includes a working dashboard composer that bundles saved charts into named dashboard records through `/api/bi-phase1`.
 
 ### 1.7 MVP Delivery Hardening
-**Status:** Done  
-**Owner:** Codex (GPT-5.3-Codex)  
-**Last Updated:** 2026-05-07  
+**Status:** Done
+**Owner:** Codex (GPT-5.3-Codex)
+**Last Updated:** 2026-05-08
 **Notes:**
 - Added role enforcement helper and audit trail recording in `BIPhase1Service`.
 - Added unit tests covering registry/audit persistence and role-enabled workflows.
+- Expanded GitHub Actions quality workflows to run on every branch push plus manual dispatch so feature branches keep delivery visibility.
+- Added BI Phase 1 API/state tests plus a frontend page test so the new live workspace flow is covered beyond model-only validation.
 
 ---
 

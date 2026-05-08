@@ -83,6 +83,8 @@ class Chart(BaseModel):
     dataset_id: str = Field(..., min_length=1)
     title: str = Field(..., min_length=1)
     chart_type: ChartType
+    field_ids: list[str] = Field(default_factory=list)
+    metric_ids: list[str] = Field(default_factory=list)
 
 
 class Dashboard(BaseModel):

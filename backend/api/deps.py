@@ -4,15 +4,21 @@ deps.py â€” Shared FastAPI dependencies injected via Depends().
 
 from fastapi import HTTPException, status
 
+from backend.services.bi_phase1_service import BIPhase1Service
 from backend.services.duckdb_service import DuckDBService
 from backend.services.oracle_service import OracleService
 
+_bi_phase1_service = BIPhase1Service()
 _duckdb_service = DuckDBService()
 _oracle_service = OracleService()
 
 
 def get_db_service() -> DuckDBService:
     return _duckdb_service
+
+
+def get_bi_phase1_service() -> BIPhase1Service:
+    return _bi_phase1_service
 
 
 def get_connected_db() -> DuckDBService:

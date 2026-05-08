@@ -82,11 +82,17 @@ class ParquetConnector(Connector):
 class CSVConnector(Connector):
     def detect(self, source: str) -> bool:
         lowered = source.lower()
-        return lowered.endswith(".csv") or lowered.endswith(".tsv") or lowered.endswith(".csv.gz") or lowered.endswith(".json.gz")
+        return (
+            lowered.endswith(".csv")
+            or lowered.endswith(".tsv")
+            or lowered.endswith(".json")
+            or lowered.endswith(".csv.gz")
+            or lowered.endswith(".json.gz")
+        )
 
     def preview(self, source: str, limit: int = 20) -> list[dict]:
         with duckdb.connect() as con:
-            if source.lower().endswith(".json.gz"):
+            if source.lower().endswith(".json") or source.lower().endswith(".json.gz"):
                 df = con.execute("select * from read_json_auto(?) limit ?", [source, limit]).fetchdf()
             else:
                 delim = "\t" if source.lower().endswith(".tsv") else ","
@@ -95,7 +101,7 @@ class CSVConnector(Connector):
 
     def infer_schema(self, source: str) -> list[dict]:
         with duckdb.connect() as con:
-            if source.lower().endswith(".json.gz"):
+            if source.lower().endswith(".json") or source.lower().endswith(".json.gz"):
                 info = con.execute("describe select * from read_json_auto(?)", [source]).fetchall()
             else:
                 delim = "\t" if source.lower().endswith(".tsv") else ","
@@ -103,7 +109,7 @@ class CSVConnector(Connector):
         return [{"name": r[0], "type": r[1]} for r in info]
 
     def load_to_engine(self, source: str, mode: str = "view") -> str:
-        if source.lower().endswith(".json.gz"):
+        if source.lower().endswith(".json") or source.lower().endswith(".json.gz"):
             return f"create or replace view phase1_source as select * from read_json_auto('{source}')"
         delim = "\t" if source.lower().endswith(".tsv") else ","
         return f"create or replace view phase1_source as select * from read_csv_auto('{source}', delim='{delim}')"

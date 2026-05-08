@@ -2,13 +2,8 @@ name: Frontend Quality Gate
 
 on:
   push:
-    branches:
-      - main
-      - work
   pull_request:
-    branches:
-      - main
-      - work
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -1,6 +1,6 @@
 # Query Builder Project Roadmap & Execution Status
 
-_Last updated: 2026-05-01 (UTC) - frontend tests/build pass locally with dark mode baseline, new SQL highlighting, virtualized result rendering, route prefetching, and generated bundle reports; the frontend CI gate now runs both tests and build; the backend suite now passes locally end-to-end (`108 passed`) with the persistent job runtime in place for FTP, Drive, and Sidebar Tools; repeated-table join aliasing is implemented; Sprint 6 security hardening is functionally complete, including Google Drive logout/revoke UX; subquery remains deferred; Sprint 2 Data Tools UX consistency implementation continues with shared alert-component adoption in progress, including completed-job success summaries in Sidebar Tools._
+_Last updated: 2026-05-08 (UTC) - frontend tests/build pass locally with dark mode baseline, new SQL highlighting, virtualized result rendering, route prefetching, and generated bundle reports; the frontend CI gate now runs both tests and build; the backend suite now passes locally end-to-end (`108 passed`) with the persistent job runtime in place for FTP, Drive, and Sidebar Tools; repeated-table join aliasing is implemented; Sprint 6 security hardening is functionally complete, including Google Drive logout/revoke UX; subquery remains deferred; Sprint 2 Data Tools UX consistency implementation continues with shared alert-component adoption in progress, including completed-job success summaries in Sidebar Tools; CI workflow coverage now includes all branch pushes plus manual dispatch so feature branches like `codex_BI` receive the same quality gates; the BI Phase 1 page is now backed by live workspace/source/dataset/chart/dashboard flows instead of static placeholder cards._
 
 ## Status Legend
 - `[Done]`
@@ -101,6 +101,7 @@ _Last updated: 2026-05-01 (UTC) - frontend tests/build pass locally with dark mo
 - `[Done]` Frontend CI quality gate now runs both `npm test` and `npm run build` on push/PR via `.github/workflows/frontend-build-gate.yml`.
 - `[Done]` Frontend lint gate now has a baseline ESLint v9 flat configuration (`frontend/eslint.config.js`) so CI lint execution is enforceable.
 - `[Done]` Backend CI now runs the full `tests/backend` suite via `.github/workflows/backend-targeted-tests.yml`.
+- `[Done]` Frontend/backend/meta CI workflows now run on every branch push and support `workflow_dispatch`, so feature branches keep the same quality visibility before merge.
 - `[In Progress]` Sprint 3 next-priority work is active: CI/observability expansion beyond current frontend/backend test-build gates is in progress.
 
 ---
@@ -125,8 +126,9 @@ _Last updated: 2026-05-01 (UTC) - frontend tests/build pass locally with dark mo
 ## Cross-cutting Git / Release Progress
 
 ### Branch/merge state (current workspace)
-- Active branch currently: `work` (local implementation branch).
-- Worktree currently clean after latest implementation commits.
+- Active branch currently: `codex_BI` (local tracking branch).
+- Current workspace changes are focused on CI workflow coverage and the associated roadmap/tracker updates.
+- Current workspace now also includes a live BI Phase 1 workspace implementation with new backend endpoints, frontend forms, and focused tests.
 - Latest verified local state includes passing frontend tests/build, targeted backend hardening tests, and targeted backend query-builder/query-workflow tests.
 - Latest verified local state now also includes a passing full backend suite (`python -m pytest tests/backend` => `108 passed`).
 - Remote push/merge for Sprint 0 is reported completed by maintainer.
@@ -211,4 +213,5 @@ _Last updated: 2026-05-01 (UTC) - frontend tests/build pass locally with dark mo
 - [In Progress] Broaden frontend lint coverage from baseline JS rules to TypeScript + React-specific rules (implementation in progress with TS/React hooks lint config enabled and warning burn-down underway (now down to 7 warnings in local lint run)).
 - [In Progress] Backend/frontend coverage artifacts are wired in CI and backend + frontend PR test annotations are now published from JUnit reports; frontend quality gate now uploads `frontend_dist/build-report.json` as a CI artifact for bundle observability.
 - [Done] Unified CI meta-gate now runs frontend + backend quality jobs and requires both before merge (`.github/workflows/ci-meta-gate.yml`).
+- [Done] Frontend/backend/dependency-review workflows now support feature-branch execution and manual dispatch, improving CI visibility on `codex_BI`-style implementation branches.
 - [In Progress] Continue Data Tools UX consistency passes using shared status/alert patterns (latest: Sidebar Tools error summary now uses shared `StatusAlert`).

@@ -8,6 +8,7 @@ endpoint defined in the endpoints/ package is served under /api/*.
 from fastapi import APIRouter
 
 from backend.api.endpoints import (
+    bi_phase1,
     connection,
     ftp_download,
     google_drive,
@@ -24,6 +25,7 @@ from backend.api.endpoints import (
 api_router = APIRouter(prefix="/api")
 
 api_router.include_router(connection.router, tags=["Connection"])
+api_router.include_router(bi_phase1.router, tags=["BI Phase 1"])
 api_router.include_router(schema.router, tags=["Schema"])
 api_router.include_router(oracle.router, tags=["Marcadose"])
 api_router.include_router(query.router, tags=["Query"])
