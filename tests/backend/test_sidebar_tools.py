@@ -74,6 +74,104 @@ def test_sidebar_csv_to_parquet_supports_gz_when_pattern_is_csv_gz(tmp_path: Pat
     assert output_path.exists()
 
 
+def test_sidebar_csv_to_parquet_normalizes_numeric_supply_type_before_lookup_join(tmp_path: Path) -> None:
+    source = tmp_path / "input.csv"
+    source.write_text(
+        "ACCT_ID,DIV_CODE,SUPPLY_TYPE,LOAD,LOAD_UNIT\n"
+        "1001,DIV100,49.0,5,KW\n",
+        encoding="utf-8",
+    )
+
+    hir_lookup = tmp_path / "hir.csv"
+    hir_lookup.write_text(
+        "DIV_CODE,DISCOM,CIR_SP_ID,ZON_SP_ID,DIV_NAME,CIRCLE_NAME,ZONE_NAME,SDO_SP_ID,SDO_NAME\n"
+        "DIV100,DVVNL,C1,Z1,Div A,Circle A,Zone A,SDO100,Sub Div A\n",
+        encoding="utf-8",
+    )
+
+    supp_lookup = tmp_path / "supp.csv"
+    supp_lookup.write_text(
+        "SUPPLY_TYPE,SUPPLY_TYPE_NAME\n"
+        "49,LMV\n",
+        encoding="utf-8",
+    )
+
+    output_path = tmp_path / "enriched.parquet"
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/csv-to-parquet",
+        json={
+            "input_path": str(source),
+            "output_path": str(output_path),
+            "compression": "zstd",
+            "hir_file": str(hir_lookup),
+            "supp_mapper_file": str(supp_lookup),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    rows = duckdb.connect().execute(
+        'SELECT SUPPLY_TYPE, SUPPLY_TYPE_NAME FROM read_parquet(?)',
+        [str(output_path)],
+    ).fetchall()
+
+    assert rows == [("49", "LMV")]
+
+
+def test_sidebar_csv_to_parquet_normalizes_other_identifier_keys_before_enrichment_join(tmp_path: Path) -> None:
+    source = tmp_path / "input_identifiers.csv"
+    source.write_text(
+        "ACCT_ID,DIV_CODE,SDO_CODE,SUPPLY_TYPE,LOAD,LOAD_UNIT\n"
+        "1001.0,101.0,501.0,49.0,5,KW\n",
+        encoding="utf-8",
+    )
+
+    hir_lookup = tmp_path / "hir_identifiers.csv"
+    hir_lookup.write_text(
+        "DIV_CODE,DISCOM,CIR_SP_ID,ZON_SP_ID,DIV_NAME,CIRCLE_NAME,ZONE_NAME,SDO_SP_ID,SDO_NAME\n"
+        "101,DVVNL,11,21,Div A,Circle A,Zone A,501,Sub Div A\n",
+        encoding="utf-8",
+    )
+
+    supp_lookup = tmp_path / "supp_identifiers.csv"
+    supp_lookup.write_text(
+        "SUPPLY_TYPE,SUPPLY_TYPE_NAME\n"
+        "49,LMV\n",
+        encoding="utf-8",
+    )
+
+    output_path = tmp_path / "normalized_identifiers.parquet"
+    client = TestClient(app)
+    response = client.post(
+        "/api/sidebar-tools/csv-to-parquet",
+        json={
+            "input_path": str(source),
+            "output_path": str(output_path),
+            "compression": "zstd",
+            "hir_file": str(hir_lookup),
+            "supp_mapper_file": str(supp_lookup),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    rows = duckdb.connect().execute(
+        """
+        SELECT
+            ACCT_ID,
+            DIV_CODE,
+            SUB_DIV_CODE,
+            SUPPLY_TYPE,
+            DIV_NAME,
+            SDO_NAME,
+            SUPPLY_TYPE_NAME
+        FROM read_parquet(?)
+        """,
+        [str(output_path)],
+    ).fetchall()
+
+    assert rows == [("1001", "101", "501", "49", "Div A", "Sub Div A", "LMV")]
+
+
 def test_sidebar_csv_to_parquet_rejects_unknown_compression(tmp_path: Path) -> None:
     csv_path = tmp_path / "input.csv"
     output_path = tmp_path / "out.parquet"
