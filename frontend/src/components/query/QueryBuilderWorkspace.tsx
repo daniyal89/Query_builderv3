@@ -112,7 +112,7 @@ function buildMarcadoseMasterTable(
   discom: string,
   schemaName = "MERCADOS"
 ): string {
-  return `${schemaName || "MERCADOS"}.CM_master_data_${monthTag}_${discom}`;
+  return `${schemaName || "MERCADOS"}.CM_MASTER_DATA_${monthTag.toUpperCase()}_${discom}`;
 }
 
 function parseMonthTagFromMasterTable(tableName: string): { monthTag: string; year: number; monthIndex: number } | null {
@@ -128,36 +128,6 @@ function parseMonthTagFromMasterTable(tableName: string): { monthTag: string; ye
   return { monthTag, year, monthIndex };
 }
 
-function pickLatestAvailableMasterTable(
-  tables: TableMetadata[],
-  discom: string,
-  schemaName = "MERCADOS"
-): string | null {
-  const schema = (schemaName || "MERCADOS").toUpperCase();
-  const discomUpper = discom.toUpperCase();
-
-  const candidates = tables
-    .map((table) => table.table_name)
-    .filter((name) => {
-      const normalized = name.toUpperCase();
-      return normalized.startsWith(`${schema}.CM_MASTER_DATA_`) && normalized.endsWith(`_${discomUpper}`);
-    })
-    .map((name) => ({ name, parsed: parseMonthTagFromMasterTable(name) }))
-    .filter(
-      (item): item is { name: string; parsed: { monthTag: string; year: number; monthIndex: number } } =>
-        item.parsed !== null
-    );
-
-  if (!candidates.length) return null;
-
-  candidates.sort((a, b) => {
-    if (a.parsed.year !== b.parsed.year) return b.parsed.year - a.parsed.year;
-    if (a.parsed.monthIndex !== b.parsed.monthIndex) return b.parsed.monthIndex - a.parsed.monthIndex;
-    return a.name.localeCompare(b.name);
-  });
-
-  return candidates[0].name;
-}
 
 export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   engine,
@@ -432,14 +402,10 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
       marcadoseUnion.base_discom,
       marcadoseUnion.schema_name
     );
-    if (metadataTables.some((table) => table.table_name === requested)) return requested;
-    return (
-      pickLatestAvailableMasterTable(
-        metadataTables,
-        marcadoseUnion.base_discom,
-        marcadoseUnion.schema_name
-      ) || requested
+    const caseInsensitiveMatch = metadataTables.find(
+      (table) => table.table_name.toLowerCase() === requested.toLowerCase()
     );
+    return caseInsensitiveMatch ? caseInsensitiveMatch.table_name : requested;
   }, [marcadoseUnion.base_discom, marcadoseUnion.month_tag, marcadoseUnion.schema_name, metadataTables]);
 
   useEffect(() => {
@@ -476,18 +442,11 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     }
 
     const requestedTable = buildMarcadoseMasterTable(next.month_tag, next.base_discom, next.schema_name);
-    const fallbackTable =
-      pickLatestAvailableMasterTable(metadataTables, next.base_discom, next.schema_name) || requestedTable;
-    const availableTable = metadataTables.some((table) => table.table_name === requestedTable)
-      ? requestedTable
-      : fallbackTable;
-
-    if (availableTable !== requestedTable) {
-      const parsed = parseMonthTagFromMasterTable(availableTable);
-      if (parsed && parsed.monthTag !== next.month_tag) {
-        next.month_tag = parsed.monthTag;
-      }
-    }
+    
+    const caseInsensitiveMatch = metadataTables.find(
+      (table) => table.table_name.toLowerCase() === requestedTable.toLowerCase()
+    );
+    const availableTable = caseInsensitiveMatch ? caseInsensitiveMatch.table_name : requestedTable;
 
     setMarcadoseUnion(next);
     setTable(availableTable);
