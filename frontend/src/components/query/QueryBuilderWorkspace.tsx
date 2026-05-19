@@ -178,7 +178,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     resetSqlToBuilder,
     applyState,
     executeQuery,
-  } = useQueryBuilder(engine);
+  } = useQueryBuilder(engine, metadataTables);
 
   useEffect(() => {
     try {
@@ -209,10 +209,18 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   useEffect(() => {
     if (engine !== "oracle") return;
 
-    const tableNames = [
+    const tableNamesRaw = [
       state.table,
       ...state.joins.map((join) => join.table),
-    ].filter((tableName) => tableName.trim() !== "");
+    ];
+    
+    if (state.marcadoseUnion?.enabled) {
+      state.marcadoseUnion.discoms.forEach(discom => {
+        tableNamesRaw.push(buildMarcadoseMasterTable(state.marcadoseUnion.month_tag, discom, state.marcadoseUnion.schema_name));
+      });
+    }
+
+    const tableNames = Array.from(new Set(tableNamesRaw)).filter((tableName) => tableName.trim() !== "");
 
     const tableMap = new Map(metadataTables.map((table) => [table.table_name, table]));
 

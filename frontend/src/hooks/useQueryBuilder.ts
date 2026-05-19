@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { executeQuery as executeQueryApi, previewQuery as previewQueryApi } from "../api/queryApi";
 import type { QueryEngine } from "../types/connection.types";
+import type { TableMetadata } from "../types/schema.types";
 import type {
   FilterCondition,
   JoinClause,
@@ -336,12 +337,38 @@ function pruneRemovedTableReferences(
   };
 }
 
-function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine): QueryPayload {
+function buildBuilderPayload(state: QueryBuilderState, engine: QueryEngine, metadataTables: TableMetadata[] = []): QueryPayload {
+  let select = state.selectedColumns;
+  
+  if (select.length === 0 && state.marcadoseUnion?.enabled) {
+    const schema = state.marcadoseUnion.schema_name || "MERCADOS";
+    const monthTag = state.marcadoseUnion.month_tag.toUpperCase();
+    const tableNames = state.marcadoseUnion.discoms.map(d => `${schema}.CM_MASTER_DATA_${monthTag}_${d.toUpperCase()}`);
+    
+    const tablesMeta = tableNames.map(name => metadataTables.find(t => t.table_name.toUpperCase() === name)).filter((t): t is TableMetadata => !!t && t.columns && t.columns.length > 0);
+    
+    if (tablesMeta.length === tableNames.length && tablesMeta.length > 0) {
+      // Compute intersection of column names (case insensitive)
+      let intersection = tablesMeta[0].columns.map(c => c.name.toUpperCase());
+      for (let i = 1; i < tablesMeta.length; i++) {
+        const currentCols = new Set(tablesMeta[i].columns.map(c => c.name.toUpperCase()));
+        intersection = intersection.filter(c => currentCols.has(c));
+      }
+      select = intersection.map((c) => `${state.table}.${c}`);
+    } else {
+      // Fallback if not all metadata is loaded: just use base table
+      const baseMeta = metadataTables.find((t) => t.table_name.toUpperCase() === state.table.toUpperCase());
+      if (baseMeta && baseMeta.columns && baseMeta.columns.length > 0) {
+        select = baseMeta.columns.map((c) => `${state.table}.${c.name}`);
+      }
+    }
+  }
+
   return {
     execution_mode: "builder",
     engine,
     table: state.table,
-    select: state.selectedColumns,
+    select,
     filters: getValidFilters(state.filters),
     sort: state.sort,
     joins: getJoinPayloads(state),
@@ -423,7 +450,10 @@ function toPersistableState(state: QueryBuilderState): PersistableQueryBuilderSt
   };
 }
 
-export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilderReturn {
+export function useQueryBuilder(
+  engine: QueryEngine = "duckdb",
+  metadataTables: TableMetadata[] = []
+): UseQueryBuilderReturn {
   const [state, setState] = useState<QueryBuilderState>(initialState);
 
   useEffect(() => {
@@ -529,7 +559,8 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
       setState((prev) => ({ ...prev, isPreviewLoading: true, previewError: null }));
 
       try {
-        const preview = await previewQueryApi(buildBuilderPayload(state, engine));
+        const payload = buildBuilderPayload(state, engine, metadataTables);
+        const preview = await previewQueryApi(payload);
         if (cancelled) return;
 
         setState((prev) => {
@@ -1011,7 +1042,7 @@ export function useQueryBuilder(engine: QueryEngine = "duckdb"): UseQueryBuilder
 
     try {
       const payload: QueryPayload = isBuilderMode
-        ? buildBuilderPayload(state, engine)
+        ? buildBuilderPayload(state, engine, metadataTables)
         : {
           execution_mode: "sql",
           engine,
