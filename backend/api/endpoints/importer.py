@@ -17,7 +17,7 @@ from backend.services.csv_import_service import CSVImportService
 from backend.utils.upload_limits import read_upload_bytes
 
 router = APIRouter()
-MAX_PARSE_CSV_BYTES = 100 * 1024 * 1024
+MAX_PARSE_CSV_BYTES = 500 * 1024 * 1024
 
 class ParseResult(BaseModel):
     file_id: str
