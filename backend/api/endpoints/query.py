@@ -209,16 +209,18 @@ async def execute_query(
                 ),
                 payload.marcadose_union,
             )
-            attempted_sql = executed_sql
             executed_count_sql = MarcadoseUnionService.build_total_count_sql(
                 QueryBuilderService.normalize_manual_sql(
                     QueryBuilderService.render_sql(count_sql, count_params, payload.engine),
                 ),
                 payload.marcadose_union,
             )
-            columns, rows, _ = service.execute(executed_sql)
+            # Execute lightweight count query FIRST to avoid Oracle connection
+            # state issues after fetching large data result sets (ORA-00911).
             attempted_sql = executed_count_sql
             _, count_rows, _ = service.execute(executed_count_sql)
+            attempted_sql = executed_sql
+            columns, rows, _ = service.execute(executed_sql)
         else:
             columns, rows, _ = service.execute(data_sql, params)
             _, count_rows, _ = service.execute(count_sql, count_params)

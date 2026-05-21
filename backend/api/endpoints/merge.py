@@ -22,9 +22,9 @@ from backend.utils.path_safety import sanitize_local_path_input
 from backend.utils.upload_limits import enforce_total_upload_limit, read_upload_bytes
 
 router = APIRouter()
-MAX_UPLOAD_SHEETS_FILE_BYTES = 100 * 1024 * 1024
-MAX_UPLOAD_SHEETS_TOTAL_BYTES = 500 * 1024 * 1024
-MAX_ENRICH_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_UPLOAD_SHEETS_FILE_BYTES = 500 * 1024 * 1024
+MAX_UPLOAD_SHEETS_TOTAL_BYTES = 1000 * 1024 * 1024
+MAX_ENRICH_UPLOAD_BYTES = 500 * 1024 * 1024
 
 
 @router.post(

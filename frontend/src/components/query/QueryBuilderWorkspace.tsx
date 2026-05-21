@@ -79,33 +79,40 @@ const MONTH_INDEX_BY_SHORT_NAME: Record<string, number> = {
   dec: 11,
 };
 
-function getCurrentMonthInput(): string {
-  return new Date().toISOString().slice(0, 7);
+const MONTH_SHORT_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH_DISPLAY_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+function getYearOptions(): number[] {
+  const currentYear = new Date().getFullYear();
+  const years: number[] = [];
+  for (let y = currentYear + 2; y >= 2020; y--) {
+    years.push(y);
+  }
+  return years;
 }
 
-function monthTagToInput(monthTag: string): string {
+const YEAR_OPTIONS = getYearOptions();
+
+function splitMonthTag(monthTag: string): { monthShort: string; year: string } {
   const match = /^([a-z]{3})_(\d{4})$/i.exec(monthTag.trim());
-  if (!match) return getCurrentMonthInput();
-
-  const monthIndex = MONTH_INDEX_BY_SHORT_NAME[match[1].toLowerCase()];
-  if (monthIndex === undefined) return getCurrentMonthInput();
-
-  return `${match[2]}-${String(monthIndex + 1).padStart(2, "0")}`;
+  if (!match) {
+    const now = new Date();
+    return { monthShort: MONTH_SHORT_NAMES[now.getMonth()], year: String(now.getFullYear()) };
+  }
+  return { monthShort: match[1].toLowerCase(), year: match[2] };
 }
 
-function monthInputToTag(monthInput: string): string {
-  const [year, month] = monthInput.split("-");
-  const date = new Date(Number(year), Number(month) - 1, 1);
-  const monthName = date.toLocaleString("en-US", { month: "short" }).toLowerCase();
-  return `${monthName}_${year}`;
+function buildMonthTag(monthShort: string, year: string): string {
+  return `${monthShort}_${year}`;
 }
+
 
 function buildMarcadoseMasterTable(
   monthTag: string,
   discom: string,
   schemaName = "MERCADOS"
 ): string {
-  return `${schemaName || "MERCADOS"}.CM_master_data_${monthTag}_${discom}`;
+  return `${schemaName || "MERCADOS"}.CM_MASTER_DATA_${monthTag.toUpperCase()}_${discom}`;
 }
 
 function parseMonthTagFromMasterTable(tableName: string): { monthTag: string; year: number; monthIndex: number } | null {
@@ -121,36 +128,6 @@ function parseMonthTagFromMasterTable(tableName: string): { monthTag: string; ye
   return { monthTag, year, monthIndex };
 }
 
-function pickLatestAvailableMasterTable(
-  tables: TableMetadata[],
-  discom: string,
-  schemaName = "MERCADOS"
-): string | null {
-  const schema = (schemaName || "MERCADOS").toUpperCase();
-  const discomUpper = discom.toUpperCase();
-
-  const candidates = tables
-    .map((table) => table.table_name)
-    .filter((name) => {
-      const normalized = name.toUpperCase();
-      return normalized.startsWith(`${schema}.CM_MASTER_DATA_`) && normalized.endsWith(`_${discomUpper}`);
-    })
-    .map((name) => ({ name, parsed: parseMonthTagFromMasterTable(name) }))
-    .filter(
-      (item): item is { name: string; parsed: { monthTag: string; year: number; monthIndex: number } } =>
-        item.parsed !== null
-    );
-
-  if (!candidates.length) return null;
-
-  candidates.sort((a, b) => {
-    if (a.parsed.year !== b.parsed.year) return b.parsed.year - a.parsed.year;
-    if (a.parsed.monthIndex !== b.parsed.monthIndex) return b.parsed.monthIndex - a.parsed.monthIndex;
-    return a.name.localeCompare(b.name);
-  });
-
-  return candidates[0].name;
-}
 
 export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   engine,
@@ -201,7 +178,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     resetSqlToBuilder,
     applyState,
     executeQuery,
-  } = useQueryBuilder(engine);
+  } = useQueryBuilder(engine, metadataTables);
 
   useEffect(() => {
     try {
@@ -232,10 +209,18 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
   useEffect(() => {
     if (engine !== "oracle") return;
 
-    const tableNames = [
+    const tableNamesRaw = [
       state.table,
       ...state.joins.map((join) => join.table),
-    ].filter((tableName) => tableName.trim() !== "");
+    ];
+    
+    if (state.marcadoseUnion?.enabled) {
+      state.marcadoseUnion.discoms.forEach(discom => {
+        tableNamesRaw.push(buildMarcadoseMasterTable(state.marcadoseUnion.month_tag, discom, state.marcadoseUnion.schema_name));
+      });
+    }
+
+    const tableNames = Array.from(new Set(tableNamesRaw)).filter((tableName) => tableName.trim() !== "");
 
     const tableMap = new Map(metadataTables.map((table) => [table.table_name, table]));
 
@@ -425,14 +410,10 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
       marcadoseUnion.base_discom,
       marcadoseUnion.schema_name
     );
-    if (metadataTables.some((table) => table.table_name === requested)) return requested;
-    return (
-      pickLatestAvailableMasterTable(
-        metadataTables,
-        marcadoseUnion.base_discom,
-        marcadoseUnion.schema_name
-      ) || requested
+    const caseInsensitiveMatch = metadataTables.find(
+      (table) => table.table_name.toLowerCase() === requested.toLowerCase()
     );
+    return caseInsensitiveMatch ? caseInsensitiveMatch.table_name : requested;
   }, [marcadoseUnion.base_discom, marcadoseUnion.month_tag, marcadoseUnion.schema_name, metadataTables]);
 
   useEffect(() => {
@@ -469,18 +450,11 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     }
 
     const requestedTable = buildMarcadoseMasterTable(next.month_tag, next.base_discom, next.schema_name);
-    const fallbackTable =
-      pickLatestAvailableMasterTable(metadataTables, next.base_discom, next.schema_name) || requestedTable;
-    const availableTable = metadataTables.some((table) => table.table_name === requestedTable)
-      ? requestedTable
-      : fallbackTable;
-
-    if (availableTable !== requestedTable) {
-      const parsed = parseMonthTagFromMasterTable(availableTable);
-      if (parsed && parsed.monthTag !== next.month_tag) {
-        next.month_tag = parsed.monthTag;
-      }
-    }
+    
+    const caseInsensitiveMatch = metadataTables.find(
+      (table) => table.table_name.toLowerCase() === requestedTable.toLowerCase()
+    );
+    const availableTable = caseInsensitiveMatch ? caseInsensitiveMatch.table_name : requestedTable;
 
     setMarcadoseUnion(next);
     setTable(availableTable);
@@ -677,19 +651,43 @@ WHERE 1 = 1`;
               </label>
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-[180px,minmax(0,1fr),minmax(280px,1fr)]">
+            <div className="grid gap-4 lg:grid-cols-[260px,minmax(0,1fr),minmax(280px,1fr)]">
               <div>
-                <label className="mb-1 block text-xs font-semibold text-gray-600">Month</label>
-                <input
-                  type="month"
-                  value={monthTagToInput(marcadoseUnion.month_tag)}
-                  onChange={(event) =>
-                    applyMarcadoseUnionUpdates({
-                      month_tag: monthInputToTag(event.target.value),
-                    })
-                  }
-                  className="w-full rounded border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                />
+                <label className="mb-1 block text-xs font-semibold text-gray-600">Month &amp; Year</label>
+                <div className="flex gap-2">
+                  <select
+                    value={splitMonthTag(marcadoseUnion.month_tag).monthShort}
+                    onChange={(event) => {
+                      const { year } = splitMonthTag(marcadoseUnion.month_tag);
+                      applyMarcadoseUnionUpdates({
+                        month_tag: buildMonthTag(event.target.value, year),
+                      });
+                    }}
+                    className="w-full rounded border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  >
+                    {MONTH_SHORT_NAMES.map((short, index) => (
+                      <option key={short} value={short}>
+                        {MONTH_DISPLAY_NAMES[index]}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={splitMonthTag(marcadoseUnion.month_tag).year}
+                    onChange={(event) => {
+                      const { monthShort } = splitMonthTag(marcadoseUnion.month_tag);
+                      applyMarcadoseUnionUpdates({
+                        month_tag: buildMonthTag(monthShort, event.target.value),
+                      });
+                    }}
+                    className="w-28 shrink-0 rounded border border-gray-300 p-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  >
+                    {YEAR_OPTIONS.map((y) => (
+                      <option key={y} value={String(y)}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <p className="mt-1 text-xs text-gray-400">Tag: {marcadoseUnion.month_tag}</p>
               </div>
 

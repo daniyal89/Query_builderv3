@@ -50,14 +50,38 @@ def _read_lookup_file(file_path: str) -> pd.DataFrame:
     return pd.read_excel(sanitized_path)
 
 
+def _normalize_identifier_like_value(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    if re.fullmatch(r"-?\d+\.0+", text):
+        return text.split(".", 1)[0]
+
+    return text
+
+
+def _normalize_identifier_like_series(series: pd.Series | Any) -> pd.Series:
+    return pd.Series(series).map(_normalize_identifier_like_value)
+
+
 def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     hir_raw = _read_lookup_file(hir_file)
-    hir_raw["DIV_CODE"] = hir_raw.get("DIV_CODE", "").astype(str)
+    hir_raw["DIV_CODE"] = _normalize_identifier_like_series(hir_raw.get("DIV_CODE", ""))
+    if "CIR_SP_ID" in hir_raw.columns:
+        hir_raw["CIR_SP_ID"] = _normalize_identifier_like_series(hir_raw["CIR_SP_ID"])
+    if "ZON_SP_ID" in hir_raw.columns:
+        hir_raw["ZON_SP_ID"] = _normalize_identifier_like_series(hir_raw["ZON_SP_ID"])
+    if "SDO_SP_ID" in hir_raw.columns:
+        hir_raw["SDO_SP_ID"] = _normalize_identifier_like_series(hir_raw["SDO_SP_ID"])
     hir_div = hir_raw[["DIV_CODE", "DISCOM", "CIR_SP_ID", "ZON_SP_ID", "DIV_NAME", "CIRCLE_NAME", "ZONE_NAME"]].drop_duplicates("DIV_CODE")
     hir_sdo = hir_raw[["SDO_SP_ID", "SDO_NAME"]].rename(columns={"SDO_SP_ID": "SUB_DIV_CODE"}).drop_duplicates("SUB_DIV_CODE")
 
     supp = _read_lookup_file(supp_mapper_file)
-    supp["SUPPLY_TYPE"] = supp.get("SUPPLY_TYPE", "").astype(str)
+    supp["SUPPLY_TYPE"] = _normalize_identifier_like_series(supp.get("SUPPLY_TYPE", ""))
     supp = supp.drop_duplicates("SUPPLY_TYPE")
     return hir_div, hir_sdo, supp
 
@@ -73,11 +97,11 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     if "BILLED_AMOUNT" in df.columns and "TOTAL_AMT" not in df.columns:
         df["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
     if "SDO_CODE" in df.columns and "SUB_DIV_CODE" not in df.columns:
-        df["SUB_DIV_CODE"] = df["SDO_CODE"].astype(str)
-    df["ACCT_ID"] = df.get("ACCT_ID", "").astype(str)
+        df["SUB_DIV_CODE"] = _normalize_identifier_like_series(df["SDO_CODE"])
+    df["ACCT_ID"] = _normalize_identifier_like_series(df.get("ACCT_ID", ""))
     df = df[df["ACCT_ID"].str.fullmatch(r"\d+", na=False)]
     if "DIV_CODE" in df.columns:
-        df["DIV_CODE"] = df["DIV_CODE"].astype(str)
+        df["DIV_CODE"] = _normalize_identifier_like_series(df["DIV_CODE"])
         df = df.merge(hir_div, on="DIV_CODE", how="left")
         
         import numpy as np
@@ -94,10 +118,10 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
         df["DISCOM"] = derived_discom
             
     if "SUB_DIV_CODE" in df.columns:
-        df["SUB_DIV_CODE"] = df["SUB_DIV_CODE"].astype(str)
+        df["SUB_DIV_CODE"] = _normalize_identifier_like_series(df["SUB_DIV_CODE"])
         df = df.merge(hir_sdo, on="SUB_DIV_CODE", how="left")
     if "SUPPLY_TYPE" in df.columns:
-        df["SUPPLY_TYPE"] = df["SUPPLY_TYPE"].astype(str)
+        df["SUPPLY_TYPE"] = _normalize_identifier_like_series(df["SUPPLY_TYPE"])
         df = df.merge(supp, on="SUPPLY_TYPE", how="left")
 
     unit = df.get("LOAD_UNIT", "").astype(str).str.upper().str.strip()

@@ -199,14 +199,14 @@ class MarcadoseUnionService:
             return cls.apply(normalized, config)
 
         aliased_count_sql = cls.COUNT_SELECT_PATTERN.sub(
-            "SELECT COUNT(*) AS __CNT__ FROM ",
+            'SELECT COUNT(*) AS "__CNT__" FROM ',
             normalized,
             count=1,
         )
 
         union_count_sql = cls.apply(aliased_count_sql, config)
 
-        return f"SELECT COALESCE(SUM(__CNT__), 0) AS TOTAL_COUNT FROM (\n{union_count_sql}\n)"
+        return f'SELECT COALESCE(SUM("__CNT__"), 0) AS TOTAL_COUNT FROM (\n{union_count_sql}\n)'
 
     @staticmethod
     def append_grand_total(columns: list[str], rows: list[list[Any]]) -> list[list[Any]]:
