@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from backend.api.deps import get_db_service
 from backend.models.connection import ConnectionRequest, ConnectionResponse
-from backend.services.duckdb_service import DuckDBService
+from backend.services.duckdb_service import DatabaseLockedError, DuckDBService
 
 router = APIRouter()
 
@@ -49,29 +49,22 @@ async def connect_to_duckdb(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except DatabaseLockedError as exc:
+        # The file is held exclusively by another OS process — this is a
+        # client-correctable condition, not a server fault (423 Locked).
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=str(exc),
+        ) from exc
     except RuntimeError as exc:
-        detail = str(exc)
-        if "being used by another process" in detail.lower() or "file is already open in" in detail.lower():
-            detail = (
-                f"{detail}\n\n"
-                "Hint: close the other process using this .duckdb file, or connect to a copy/new database path."
-            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=detail,
+            detail=str(exc),
         ) from exc
-
-    if db.is_read_only:
-        msg = (
-            f"Connected in READ-ONLY mode (file is open in another process). "
-            f"Found {tables_count} table(s). Write operations are disabled."
-        )
-    else:
-        msg = f"Successfully connected. Found {tables_count} table(s)."
 
     return ConnectionResponse(
         status="connected",
         db_path=payload.db_path,
         tables_count=tables_count,
-        message=msg,
+        message=f"Successfully connected. Found {tables_count} table(s).",
     )
