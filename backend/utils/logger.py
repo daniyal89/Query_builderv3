@@ -1,5 +1,6 @@
 import json
 import logging
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from logging.handlers import TimedRotatingFileHandler
@@ -98,6 +99,28 @@ class ErrorOnlyFilter(logging.Filter):
         return record.levelno >= logging.ERROR
 
 
+class WindowsSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """TimedRotatingFileHandler that avoids WinError 32 on Windows.
+
+    The standard handler renames the active log file during rollover, which
+    fails on Windows when another handle still has the file open.  This
+    subclass instead copies the current file to the backup path and then
+    truncates the original in-place, so the open file handle is never moved.
+    """
+
+    def rotate(self, source: str, dest: str) -> None:  # type: ignore[override]
+        """Copy *source* to *dest* and truncate *source*."""
+        try:
+            shutil.copy2(source, dest)
+            # Truncate the original file in-place to preserve the open handle.
+            with open(source, "w", encoding="utf-8") as fh:
+                pass
+        except Exception:
+            # Fall back to the default rename behaviour on non-Windows or
+            # when the file is no longer locked.
+            super().rotate(source, dest)
+
+
 def setup_logger() -> logging.Logger:
     """Initialize and configure the centralized application logger."""
     logger = logging.getLogger("duckdb_dashboard")
@@ -120,11 +143,13 @@ def setup_logger() -> logging.Logger:
     formatter = JsonFormatter()
 
     # File Handler
-    file_handler = TimedRotatingFileHandler(log_file, when="h", interval=12, backupCount=2, encoding="utf-8")
+    file_handler = WindowsSafeTimedRotatingFileHandler(
+        log_file, when="h", interval=12, backupCount=2, encoding="utf-8"
+    )
     file_handler.setFormatter(formatter)
     file_handler.addFilter(ImportantLogFilter())
 
-    error_file_handler = TimedRotatingFileHandler(
+    error_file_handler = WindowsSafeTimedRotatingFileHandler(
         error_log_file,
         when="h",
         interval=12,

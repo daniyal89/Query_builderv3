@@ -29,15 +29,21 @@ class DuckDBService:
     _conn: Optional[duckdb.DuckDBPyConnection]
     _db_path: Optional[Path]
     _lock: threading.Lock
+    _read_only: bool
 
     def __init__(self) -> None:
         self._conn = None
         self._db_path = None
         self._lock = threading.Lock()
+        self._read_only = False
 
     @property
     def is_connected(self) -> bool:
         return self._conn is not None
+
+    @property
+    def is_read_only(self) -> bool:
+        return self._read_only
 
     def _normalize_user_path(self, raw_path: str) -> Path:
         value = (raw_path or "").strip()
@@ -65,14 +71,35 @@ class DuckDBService:
                 except Exception:
                     pass
 
+            # Try read-write first; if the file is locked by another process,
+            # fall back to read-only so the user still gets a working connection.
+            read_only = False
             try:
                 self._conn = duckdb.connect(str(resolved), read_only=False)
-                self._db_path = resolved
+            except duckdb.IOException as exc:
+                err_msg = str(exc)
+                if "being used by another process" in err_msg or "already open" in err_msg.lower():
+                    try:
+                        self._conn = duckdb.connect(str(resolved), read_only=True)
+                        read_only = True
+                    except duckdb.Error as exc2:
+                        self._conn = None
+                        self._db_path = None
+                        self._read_only = False
+                        raise RuntimeError(f"Failed to open DuckDB database: {exc2}") from exc2
+                else:
+                    self._conn = None
+                    self._db_path = None
+                    self._read_only = False
+                    raise RuntimeError(f"Failed to open DuckDB database: {exc}") from exc
             except duckdb.Error as exc:
                 self._conn = None
                 self._db_path = None
+                self._read_only = False
                 raise RuntimeError(f"Failed to open DuckDB database: {exc}") from exc
 
+            self._db_path = resolved
+            self._read_only = read_only
             tables = self._fetch_table_entries_unlocked()
             try:
                 SampleSnapshotService.capture_duckdb_once(self._conn, resolved)
@@ -90,6 +117,7 @@ class DuckDBService:
                     pass
                 self._conn = None
                 self._db_path = None
+                self._read_only = False
 
     def list_tables(self) -> list[TableMetadata]:
         self._ensure_connected()

@@ -177,9 +177,18 @@ async def enrich_data(
             join_keys=keys_to_join,
         )
 
+        if result_df.empty and len(result_df.columns) == 0:
+            raise ValueError("Enrichment produced no data. Check that your join keys match.")
+
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            result_df.to_excel(writer, index=False)
+        try:
+            result_df.to_excel(
+                output, index=False, sheet_name="EnrichedData", engine="openpyxl"
+            )
+        except Exception as write_exc:
+            raise ValueError(
+                f"Failed to generate Excel output: {write_exc}"
+            ) from write_exc
         output.seek(0)
 
         headers = {
