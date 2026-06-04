@@ -61,9 +61,17 @@ async def connect_to_duckdb(
             detail=detail,
         ) from exc
 
+    if db.is_read_only:
+        msg = (
+            f"Connected in READ-ONLY mode (file is open in another process). "
+            f"Found {tables_count} table(s). Write operations are disabled."
+        )
+    else:
+        msg = f"Successfully connected. Found {tables_count} table(s)."
+
     return ConnectionResponse(
         status="connected",
         db_path=payload.db_path,
         tables_count=tables_count,
-        message=f"Successfully connected. Found {tables_count} table(s).",
+        message=msg,
     )
