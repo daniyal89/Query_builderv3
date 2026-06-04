@@ -158,7 +158,8 @@ def _archive_existing_master_if_needed(
     object_type: str,
     month_label: str | None,
 ) -> None:
-    if object_name.strip().lower() != "master" or object_type.upper() != "TABLE":
+    target_lower = object_name.strip().lower()
+    if target_lower not in {"master", "billed"} or object_type.upper() != "TABLE":
         return
 
     prev_label = _previous_month_label(month_label or "")
@@ -167,14 +168,14 @@ def _archive_existing_master_if_needed(
 
     existing = conn.execute(
         "SELECT table_type FROM information_schema.tables "
-        "WHERE table_schema = current_schema() AND lower(table_name) = 'master' LIMIT 1"
+        f"WHERE table_schema = current_schema() AND lower(table_name) = '{target_lower}' LIMIT 1"
     ).fetchone()
     if not existing or existing[0] != "BASE TABLE":
         return
 
-    archive_name = f"master_{prev_label}"
+    archive_name = f"{target_lower}_{prev_label}"
     _drop_existing_duckdb_object(conn, archive_name)
-    conn.execute(f"ALTER TABLE \"master\" RENAME TO \"{archive_name}\"")
+    conn.execute(f"ALTER TABLE \"{target_lower}\" RENAME TO \"{archive_name}\"")
 
 
 
@@ -198,14 +199,18 @@ def _normalize_master_object_name(object_name: str, object_type: str, month_labe
         return cleaned
 
     lowered = cleaned.lower()
-    if not (lowered == "master" or lowered.startswith("master_")):
+    is_master = lowered == "master" or lowered.startswith("master_")
+    is_billed = lowered == "billed" or lowered.startswith("billed_")
+    
+    if not (is_master or is_billed):
         return cleaned
 
     month_code = _month_code_mmyy(month_label or "")
     if not month_code:
-        raise ValueError("month_label is required for master table/view names and must be like MAR_2026 or 0326.")
+        raise ValueError("month_label is required for master/billed table/view names and must be like MAR_2026 or 0326.")
 
-    return f"Master_{month_code}"
+    prefix = "Master" if is_master else "Billed"
+    return f"{prefix}_{month_code}"
 def _sql_string_literal(value: str) -> str:
     return f"'{value.replace(chr(39), chr(39) * 2)}'"
 
