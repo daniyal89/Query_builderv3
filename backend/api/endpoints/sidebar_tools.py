@@ -32,6 +32,7 @@ from backend.models.sidebar_tools import (
 )
 from backend.utils.path_safety import sanitize_local_path_input
 from backend.utils.rate_limits import enforce_rate_limit
+from backend.api.deps import get_db_service
 
 router = APIRouter()
 VALID_OBJECT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -158,7 +159,8 @@ def _archive_existing_master_if_needed(
     object_type: str,
     month_label: str | None,
 ) -> None:
-    if object_name.strip().lower() != "master" or object_type.upper() != "TABLE":
+    target_lower = object_name.strip().lower()
+    if target_lower not in {"master", "billed"} or object_type.upper() != "TABLE":
         return
 
     prev_label = _previous_month_label(month_label or "")
@@ -167,14 +169,14 @@ def _archive_existing_master_if_needed(
 
     existing = conn.execute(
         "SELECT table_type FROM information_schema.tables "
-        "WHERE table_schema = current_schema() AND lower(table_name) = 'master' LIMIT 1"
+        f"WHERE table_schema = current_schema() AND lower(table_name) = '{target_lower}' LIMIT 1"
     ).fetchone()
     if not existing or existing[0] != "BASE TABLE":
         return
 
-    archive_name = f"master_{prev_label}"
+    archive_name = f"{target_lower}_{prev_label}"
     _drop_existing_duckdb_object(conn, archive_name)
-    conn.execute(f"ALTER TABLE \"master\" RENAME TO \"{archive_name}\"")
+    conn.execute(f"ALTER TABLE \"{target_lower}\" RENAME TO \"{archive_name}\"")
 
 
 
@@ -198,10 +200,24 @@ def _normalize_master_object_name(object_name: str, object_type: str, month_labe
         return cleaned
 
     lowered = cleaned.lower()
-    if not (lowered == "master" or lowered.startswith("master_")):
+    is_master = lowered == "master" or lowered.startswith("master_")
+    is_billed = lowered == "billed" or lowered.startswith("billed_")
+    
+    if not (is_master or is_billed):
         return cleaned
 
-    month_code = _month_code_mmyy(month_label or "")
+    label = (month_label or "").strip()
+
+    if is_billed:
+        # For billed, allow daily format or whatever label they provide
+        if not label and "_" in cleaned:
+            return cleaned  # They already named it like Billed_02062026
+        if not label:
+            raise ValueError("month_label (e.g. 02062026) is required for Billed tables.")
+        return f"Billed_{label}"
+
+    # For master, strictly enforce MMYY
+    month_code = _month_code_mmyy(label)
     if not month_code:
         raise ValueError("month_label is required for master table/view names and must be like MAR_2026 or 0326.")
 
@@ -459,7 +475,6 @@ def _drop_existing_duckdb_object(conn: duckdb.DuckDBPyConnection, object_name: s
     else:
         conn.execute(f"DROP TABLE {object_sql}")
 
-
 def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     normalized_object_name = _normalize_master_object_name(payload.object_name, payload.object_type, payload.month_label)
     if not VALID_OBJECT_NAME.fullmatch(normalized_object_name):
@@ -467,17 +482,32 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
 
     db_path = Path(sanitize_local_path_input(payload.db_path, "db_path")).expanduser().resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    object_sql = f'"{normalized_object_name.replace(chr(34), chr(34) * 2)}"'
+    object_sql = f'"{ normalized_object_name.replace(chr(34), chr(34) * 2)}"'
     resolved_input = _resolve_parquet_only_glob(payload.input_path)
     relation_sql = _resolve_relation_sql(resolved_input)
 
-    with duckdb.connect(str(db_path)) as conn:
-        thread_count = max(1, os.cpu_count() or 1)
-        conn.execute(f"PRAGMA threads={thread_count}")
-        conn.execute("PRAGMA preserve_insertion_order=false")
-        if payload.replace:
-            _drop_existing_duckdb_object(conn, normalized_object_name)
-        conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
+    # Temporarily release the dashboard's singleton connection to avoid
+    # DuckDB write-write conflicts (DuckDB allows only one writer at a time).
+    svc = get_db_service()
+    dashboard_was_connected = svc.is_connected and svc._db_path == db_path
+    if dashboard_was_connected:
+        svc.disconnect()
+
+    try:
+        with duckdb.connect(str(db_path)) as conn:
+            thread_count = max(1, os.cpu_count() or 1)
+            conn.execute(f"PRAGMA threads={thread_count}")
+            conn.execute("PRAGMA preserve_insertion_order=false")
+            if payload.replace:
+                _drop_existing_duckdb_object(conn, normalized_object_name)
+            conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
+    finally:
+        # Reconnect the dashboard so the user can immediately see the new table.
+        if dashboard_was_connected:
+            try:
+                svc.connect(str(db_path))
+            except Exception:
+                pass  # Non-fatal: user can manually reconnect from the UI.
 
     month_text = f" for {payload.month_label}" if payload.month_label else ""
     return str(db_path), f"Created {payload.object_type} {normalized_object_name}{month_text}."
