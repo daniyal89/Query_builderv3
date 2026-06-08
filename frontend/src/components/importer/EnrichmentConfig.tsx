@@ -15,14 +15,18 @@ interface EnrichmentConfigProps {
     mergedFile: File,
     joinKeys: JoinKeyMapping[]
   ) => void;
+  onCancel?: () => void;
   isLoading: boolean;
+  enrichProgress?: string | null;
 }
 
 export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
   uploadResult,
   uploadedFile,
   onSubmit,
+  onCancel,
   isLoading,
+  enrichProgress,
 }) => {
   const {
     dbPath,
@@ -38,11 +42,19 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
   const [joinKeys, setJoinKeys] = useState<JoinKeyMapping[]>([{ fileColumn: "", tableColumn: "" }]);
   const [columnsToFetch, setColumnsToFetch] = useState<string[]>([]);
   const [didAutoLoadOnMount, setDidAutoLoadOnMount] = useState(false);
+  const [columnSearchQuery, setColumnSearchQuery] = useState("");
 
   const availableMasterColumns = useMemo(
     () => tables?.find((table) => table.table_name === masterTable)?.columns.map((column) => column.name) || [],
     [masterTable, tables]
   );
+
+  /** Filtered columns based on search query */
+  const filteredMasterColumns = useMemo(() => {
+    if (!columnSearchQuery.trim()) return availableMasterColumns;
+    const query = columnSearchQuery.trim().toLowerCase();
+    return availableMasterColumns.filter((col) => col.toLowerCase().includes(query));
+  }, [availableMasterColumns, columnSearchQuery]);
 
   useEffect(() => {
     if (tables.length === 0) return;
@@ -71,6 +83,14 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
     setColumnsToFetch((prev) =>
       prev.includes(column) ? prev.filter((item) => item !== column) : [...prev, column]
     );
+  };
+
+  const handleSelectAll = () => {
+    setColumnsToFetch([...availableMasterColumns]);
+  };
+
+  const handleDeselectAll = () => {
+    setColumnsToFetch([]);
   };
 
   const handleSubmit = () => {
@@ -120,6 +140,9 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
 
   const uniqueUploadColumns = Array.from(new Set(uploadResult.detected_columns.map((column) => column.name)));
 
+  const allSelected = availableMasterColumns.length > 0 && columnsToFetch.length === availableMasterColumns.length;
+  const someSelected = columnsToFetch.length > 0 && columnsToFetch.length < availableMasterColumns.length;
+
   return (
     <div className="enrichment-config rounded-lg bg-white p-6 shadow">
       <h3 className="mb-4 text-xl font-bold">Phase 3: Enrich Data</h3>
@@ -130,6 +153,30 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
           <span className="font-semibold">{uploadedFile?.name}</span>
         </p>
       </div>
+
+      {/* Progress indicator during enrichment */}
+      {isLoading && enrichProgress && (
+        <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <div className="flex items-center gap-3">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-blue-800">{enrichProgress}</p>
+              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-blue-100">
+                <div className="h-full animate-pulse rounded-full bg-blue-500" style={{ width: "70%" }} />
+              </div>
+            </div>
+          </div>
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="mt-3 rounded border border-red-300 bg-white px-4 py-1.5 text-sm font-semibold text-red-700 transition hover:bg-red-50"
+            >
+              ✕ Stop Enrichment
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="mb-6">
         <div className="mb-1 flex items-center justify-between gap-3">
@@ -145,7 +192,7 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
               value={dbPath}
               onChange={(event) => setDbPath(event.target.value)}
               className="w-full rounded border border-gray-300 p-2 font-mono text-sm"
-              placeholder="e.g., C:\\Users\\aimld\\your_data.duckdb"
+              placeholder="e.g., C:\Users\aimld\your_data.duckdb"
             />
             <button
               type="button"
@@ -247,7 +294,38 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
         </div>
 
         <div>
-          <h4 className="mb-3 font-semibold text-gray-800">Fetch Columns (From Master)</h4>
+          <div className="mb-3 flex items-center justify-between">
+            <h4 className="font-semibold text-gray-800">
+              Fetch Columns (From Master)
+              {availableMasterColumns.length > 0 && (
+                <span className="ml-2 text-xs font-normal text-gray-500">
+                  {columnsToFetch.length}/{availableMasterColumns.length} selected
+                </span>
+              )}
+            </h4>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={allSelected ? handleDeselectAll : handleSelectAll}
+                disabled={availableMasterColumns.length === 0}
+                className="rounded border border-indigo-200 bg-white px-2.5 py-1 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {allSelected ? "Deselect All" : "Select All"}
+              </button>
+            </div>
+          </div>
+
+          {/* Column search box */}
+          <div className="mb-2">
+            <input
+              type="text"
+              value={columnSearchQuery}
+              onChange={(e) => setColumnSearchQuery(e.target.value)}
+              placeholder="🔍 Search columns..."
+              className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm placeholder-gray-400 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            />
+          </div>
+
           <div className="h-48 overflow-y-auto rounded border border-gray-300 bg-gray-50 p-3">
             {availableMasterColumns.length === 0 ? (
               <p className="text-sm italic text-gray-500">
@@ -255,8 +333,12 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
                   ? "No columns found for the selected DuckDB table. Choose another table if needed."
                   : "No columns found. Connect the DuckDB file above to load the selected table schema."}
               </p>
+            ) : filteredMasterColumns.length === 0 ? (
+              <p className="text-sm italic text-gray-500">
+                No columns match "{columnSearchQuery}". Try a different search.
+              </p>
             ) : (
-              availableMasterColumns.map((column) => (
+              filteredMasterColumns.map((column) => (
                 <label
                   key={column}
                   className="mb-1.5 flex cursor-pointer items-center gap-2 rounded p-1 hover:bg-gray-100"
@@ -275,21 +357,32 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
         </div>
       </div>
 
-      <button
-        onClick={handleSubmit}
-        disabled={
-          isLoading ||
-          joinKeys.some(k => !k.fileColumn || !k.tableColumn) ||
-          joinKeys.length === 0 ||
-          columnsToFetch.length === 0 ||
-          !dbPath ||
-          !uploadedFile ||
-          !isConnected
-        }
-        className="mt-4 w-full rounded bg-indigo-600 px-4 py-3 font-bold text-white shadow transition hover:bg-indigo-700 disabled:opacity-50"
-      >
-        {isLoading ? "Enriching Data..." : "Enrich & Generate File"}
-      </button>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          onClick={handleSubmit}
+          disabled={
+            isLoading ||
+            joinKeys.some(k => !k.fileColumn || !k.tableColumn) ||
+            joinKeys.length === 0 ||
+            columnsToFetch.length === 0 ||
+            !dbPath ||
+            !uploadedFile ||
+            !isConnected
+          }
+          className="rounded bg-indigo-600 px-4 py-3 font-bold text-white shadow transition hover:bg-indigo-700 disabled:opacity-50"
+        >
+          {isLoading ? "Enriching Data..." : "Enrich & Generate File"}
+        </button>
+        {isLoading && onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded border border-red-300 bg-white px-4 py-3 font-semibold text-red-700 transition hover:bg-red-50"
+          >
+            ✕ Stop
+          </button>
+        )}
+      </div>
       <p className="mt-3 text-sm text-gray-500">
         Large files or wide Excel exports can take a few minutes to process and download.
       </p>

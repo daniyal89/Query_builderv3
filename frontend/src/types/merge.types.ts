@@ -61,4 +61,8 @@ export interface MergeWizardState {
   isLoading: boolean;
   error: string | null;
   uploadedFile?: File | null;
+  /** Enrichment progress message shown while the request is in-flight. */
+  enrichProgress: string | null;
+  /** Blob URL for the enriched file download (created after enrichment completes). */
+  downloadBlobUrl: string | null;
 }
