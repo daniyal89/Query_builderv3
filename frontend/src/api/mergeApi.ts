@@ -39,7 +39,8 @@ export async function enrichData(
   masterTable: string,
   fetchColumns: string[],
   joinKeys: JoinKeyMapping[],
-  file: File
+  file: File,
+  signal?: AbortSignal
 ): Promise<{ blob: Blob; headers: Record<string, string> }> {
   const formData = new FormData();
   formData.append("file", file);
@@ -52,6 +53,7 @@ export async function enrichData(
     headers: { "Content-Type": "multipart/form-data" },
     responseType: "blob",
     timeout: LONG_RUNNING_TIMEOUT_MS,
+    signal,
   });
 
   return {

@@ -3,7 +3,7 @@
  */
 
 // @ts-nocheck
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { enrichData, uploadSheets } from "../api/mergeApi";
 import type {
   JoinKeyMapping,
@@ -38,7 +38,12 @@ export function useMergeWizard() {
     enrichResult: null,
     isLoading: false,
     error: null,
+    enrichProgress: null,
+    downloadBlobUrl: null,
   });
+
+  // AbortController ref for cancelling in-flight enrichment requests
+  const enrichAbortRef = useRef<AbortController | null>(null);
 
   const handleUpload = async (files: File[]) => {
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
@@ -70,30 +75,55 @@ export function useMergeWizard() {
     mergedFile: File,
     joinKeys: JoinKeyMapping[]
   ) => {
-    setState((prev) => ({ ...prev, isLoading: true, error: null }));
+    // Cancel any previous in-flight request
+    enrichAbortRef.current?.abort();
+    const abortController = new AbortController();
+    enrichAbortRef.current = abortController;
+
+    setState((prev) => ({
+      ...prev,
+      isLoading: true,
+      error: null,
+      enrichProgress: "Sending data to server for enrichment...",
+    }));
+
+    // Simulate progress updates with a timer
+    const startMs = Date.now();
+    const progressTimer = window.setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - startMs) / 1000);
+      if (elapsedSec < 5) {
+        setState((prev) => ({ ...prev, enrichProgress: "Processing uploaded file and running JOIN query..." }));
+      } else if (elapsedSec < 15) {
+        setState((prev) => ({ ...prev, enrichProgress: `Enriching data... (${elapsedSec}s elapsed)` }));
+      } else if (elapsedSec < 60) {
+        setState((prev) => ({ ...prev, enrichProgress: `Still processing — large files take a while... (${elapsedSec}s elapsed)` }));
+      } else {
+        const mins = Math.floor(elapsedSec / 60);
+        setState((prev) => ({ ...prev, enrichProgress: `Processing ${mins}m ${elapsedSec % 60}s — please be patient for large datasets...` }));
+      }
+    }, 2000);
+
     try {
       const { blob, headers } = await enrichData(
         dbPath,
         masterTable,
         fetchColumns,
         joinKeys,
-        mergedFile
+        mergedFile,
+        abortController.signal
       );
 
-      const url = window.URL.createObjectURL(new Blob([blob]));
-      const link = document.createElement("a");
-      link.href = url;
-      link.setAttribute("download", "enriched_data.xlsx");
-      document.body.appendChild(link);
-      link.click();
-      link.parentNode?.removeChild(link);
+      window.clearInterval(progressTimer);
+
+      // Create a blob URL so the user can download later via Save-As
+      const blobUrl = window.URL.createObjectURL(new Blob([blob]));
 
       const matched = parseInt(headers["x-matched-rows"] || "0", 10);
       const unmatched = parseInt(headers["x-unmatched-rows"] || "0", 10);
       const total = parseInt(headers["x-total-rows"] || "0", 10);
 
       const mockResult = {
-        download_url: "#",
+        download_url: blobUrl,
         total_rows: total,
         matched_rows: matched,
         unmatched_rows: unmatched,
@@ -105,23 +135,58 @@ export function useMergeWizard() {
         step: "download",
         enrichResult: mockResult,
         isLoading: false,
+        enrichProgress: null,
+        downloadBlobUrl: blobUrl,
       }));
     } catch (err: any) {
+      window.clearInterval(progressTimer);
+
+      // If user cancelled, don't treat as error
+      if (err?.name === "CanceledError" || err?.code === "ERR_CANCELED" || abortController.signal.aborted) {
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          enrichProgress: null,
+          error: null,
+        }));
+        return;
+      }
+
       setState((prev) => ({
         ...prev,
         isLoading: false,
+        enrichProgress: null,
         error: getRequestErrorMessage(err, "Failed to enrich data", "enrich"),
       }));
     }
   };
 
+  const cancelEnrich = () => {
+    enrichAbortRef.current?.abort();
+    enrichAbortRef.current = null;
+    setState((prev) => ({
+      ...prev,
+      isLoading: false,
+      enrichProgress: null,
+      error: "Enrichment cancelled by user.",
+    }));
+  };
+
   const resetWizard = () => {
+    // Revoke any existing blob URL to free memory
+    if (state.downloadBlobUrl) {
+      window.URL.revokeObjectURL(state.downloadBlobUrl);
+    }
+    enrichAbortRef.current?.abort();
+    enrichAbortRef.current = null;
     setState({
       step: "upload",
       uploadResult: null,
       enrichResult: null,
       isLoading: false,
       error: null,
+      enrichProgress: null,
+      downloadBlobUrl: null,
     });
   };
 
@@ -129,6 +194,7 @@ export function useMergeWizard() {
     state,
     handleUpload,
     handleEnrich,
+    cancelEnrich,
     resetWizard,
   };
 }

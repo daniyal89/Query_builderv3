@@ -36,6 +36,10 @@ class MergeService:
         if not join_keys:
             raise ValueError("At least one join key mapping is required.")
 
+        # Column names (case-insensitive) that represent account IDs and need zero-padding
+        _ACCT_ID_ALIASES = {"acct_id", "account_id"}
+        _ACCT_ID_PAD_WIDTH = 10
+
         # Validate that every fileColumn exists in the uploaded dataframe
         for mapping in join_keys:
             file_col = mapping.get("fileColumn", "")
@@ -48,16 +52,50 @@ class MergeService:
                     f"Available columns: {list(merged_df.columns)}"
                 )
 
+        # --- Basic key cleaning on the uploaded file data ---
+        # 1. Strip whitespace from all key columns
+        # 2. Zero-pad account ID columns to 10 digits
+        for mapping in join_keys:
+            file_col = mapping["fileColumn"]
+            col_series = merged_df[file_col].astype(str).str.strip()
+
+            # Remove ".0" suffix from float-like strings (e.g. "1234567890.0" → "1234567890")
+            col_series = col_series.str.replace(r"\.0$", "", regex=True)
+
+            # Zero-pad account ID values that are purely numeric but shorter than 10 digits
+            if file_col.lower() in _ACCT_ID_ALIASES or mapping.get("tableColumn", "").lower() in _ACCT_ID_ALIASES:
+                col_series = col_series.where(
+                    ~col_series.str.fullmatch(r"\d+", na=False),
+                    col_series.str.zfill(_ACCT_ID_PAD_WIDTH),
+                )
+
+            merged_df[file_col] = col_series
+
         normalized_master_table = master_table.strip()
         if not normalized_master_table:
             raise ValueError("A DuckDB source table is required for enrichment.")
 
-        # Build dynamic JOIN clause — cast both sides to VARCHAR to handle type mismatches
+        # Build dynamic JOIN clause — cast both sides to VARCHAR, TRIM whitespace,
+        # and zero-pad account ID columns on the master-table side as well.
         join_conditions = []
         for mapping in join_keys:
-            join_conditions.append(
-                f'CAST(df."{mapping["fileColumn"]}" AS VARCHAR) = CAST(source."{mapping["tableColumn"]}" AS VARCHAR)'
+            file_col = mapping["fileColumn"]
+            table_col = mapping["tableColumn"]
+            is_acct_id = (
+                file_col.lower() in _ACCT_ID_ALIASES
+                or table_col.lower() in _ACCT_ID_ALIASES
             )
+
+            file_expr = f'TRIM(CAST(df."{file_col}" AS VARCHAR))'
+            if is_acct_id:
+                table_expr = (
+                    f'LPAD(TRIM(CAST(source."{table_col}" AS VARCHAR)), '
+                    f'{_ACCT_ID_PAD_WIDTH}, \'0\')'
+                )
+            else:
+                table_expr = f'TRIM(CAST(source."{table_col}" AS VARCHAR))'
+
+            join_conditions.append(f"{file_expr} = {table_expr}")
         join_clause = " AND ".join(join_conditions)
 
         fetch_cols_str = ", ".join([f'source."{column}"' for column in fetch_columns])
