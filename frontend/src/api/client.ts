@@ -10,7 +10,7 @@ import axios from "axios";
 /** Axios instance pre-configured for the dashboard API. */
 const apiClient = axios.create({
   baseURL: "/api",
-  timeout: 30_000,
+  timeout: 600_000, // Increased timeout to 10 minutes for heavy queries
   headers: {
     "Content-Type": "application/json",
   },
