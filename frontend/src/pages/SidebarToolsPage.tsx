@@ -2,12 +2,16 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   BuildDuckDbJobStatusResponse,
   CsvParquetJobStatusResponse,
+  FullPipelineStatusResponse,
   getBuildDuckDbJobStatus,
   getCsvToParquetJobStatus,
+  getFullPipelineStatus,
   startBuildDuckDbJob,
   stopBuildDuckDbJob,
   startCsvToParquetJob,
   stopCsvToParquetJob,
+  startFullPipeline,
+  stopFullPipeline,
 } from "../api/sidebarToolsApi";
 import { pickSystemFile, pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 import { StatusAlert } from "../components/common/StatusAlert";
@@ -24,6 +28,7 @@ const BUILD_FORM_STORAGE_KEY = "sidebar_tools_build_form_v1";
 const BUILD_STATUS_STORAGE_KEY = "sidebar_tools_build_status_v1";
 const UPPCL_PRESET_STORAGE_KEY = "sidebar_tools_uppcl_preset_paths_v1";
 const DATA_TOOLS_HISTORY_STORAGE_KEY = "sidebar_tools_job_history_v1";
+const PIPELINE_JOB_STORAGE_KEY = "sidebar_tools_pipeline_job_v1";
 
 type UppclPresetPaths = {
   build_db_path: string;
@@ -46,12 +51,40 @@ type PersistedBuildJobState = {
 
 type ToolHistoryItem = {
   id: string;
-  tool: "build" | "parquet";
+  tool: "build" | "parquet" | "pipeline";
   status: string;
   message: string;
   timestamp: string;
   run_seconds?: number | null;
 };
+
+type PersistedPipelineJobState = {
+  jobId: string | null;
+  status: FullPipelineStatusResponse | null;
+  message: string;
+};
+
+function isPipelineTerminalStatus(status: FullPipelineStatusResponse | null): boolean {
+  return status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+}
+
+function readInitialPipelineJobState(): { jobId: string | null; status: FullPipelineStatusResponse | null; message: string } {
+  try {
+    const raw = window.localStorage.getItem(PIPELINE_JOB_STORAGE_KEY);
+    if (!raw) return { jobId: null, status: null, message: "" };
+    const parsed = JSON.parse(raw) as Partial<PersistedPipelineJobState>;
+    const jobId = typeof parsed.jobId === "string" && parsed.jobId.trim() ? parsed.jobId : null;
+    const status = parsed.status ?? null;
+    const message = typeof parsed.message === "string" ? parsed.message : "";
+    return {
+      jobId: jobId && !isPipelineTerminalStatus(status as FullPipelineStatusResponse | null) ? jobId : null,
+      status,
+      message,
+    };
+  } catch {
+    return { jobId: null, status: null, message: "" };
+  }
+}
 
 function isTransientPollError(error: any): boolean {
   const code = typeof error?.code === "string" ? error.code : "";
@@ -265,6 +298,18 @@ export const SidebarToolsPage: React.FC = () => {
     hir_file: initialParquetForm.hir_file,
     supp_mapper_file: initialParquetForm.supp_mapper_file,
   });
+  const [pipelineForm, setPipelineForm] = useState({
+    input_path: initialParquetForm.input_path,
+    parquet_output_path: initialParquetForm.output_path,
+    compression: initialParquetForm.compression,
+    hir_file: initialParquetForm.hir_file,
+    supp_mapper_file: initialParquetForm.supp_mapper_file,
+    db_path: initialBuildForm.db_path,
+    object_name: initialBuildForm.object_name,
+    object_type: initialBuildForm.object_type as "TABLE" | "VIEW",
+    replace: initialBuildForm.replace,
+    month_label: initialBuildForm.month_label,
+  });
   const [buildMessage, setBuildMessage] = useState(initialBuildStatus.message);
   const [buildJobId, setBuildJobId] = useState<string | null>(initialBuildStatus.jobId);
   const [buildStatus, setBuildStatus] = useState<BuildDuckDbJobStatusResponse | null>(initialBuildStatus.status);
@@ -275,12 +320,22 @@ export const SidebarToolsPage: React.FC = () => {
   const [uppclPresetPaths, setUppclPresetPaths] = useState<UppclPresetPaths>(initialUppclPresetPaths);
   const [toolHistory, setToolHistory] = useState<ToolHistoryItem[]>(initialToolHistory);
   const [nowMs, setNowMs] = useState<number>(Date.now());
+
+  // Pipeline state
+  const initialPipelineJobState = useMemo(() => readInitialPipelineJobState(), []);
+  const [pipelineMessage, setPipelineMessage] = useState(initialPipelineJobState.message);
+  const [pipelineJobId, setPipelineJobId] = useState<string | null>(initialPipelineJobState.jobId);
+  const [pipelineStatus, setPipelineStatus] = useState<FullPipelineStatusResponse | null>(initialPipelineJobState.status);
+
   const isParquetRunning = parquetStatus?.status === "queued" || parquetStatus?.status === "running" || parquetStatus?.status === "cancelling";
   const isBuildRunning = buildStatus?.status === "queued" || buildStatus?.status === "running" || buildStatus?.status === "cancelling";
+  const isPipelineRunning = pipelineStatus?.status === "queued" || pipelineStatus?.status === "running" || pipelineStatus?.status === "cancelling";
   const showBuildSuccess = buildStatus?.status === "completed" && Boolean(buildMessage.trim());
   const showParquetSuccess = parquetStatus?.status === "completed" && Boolean(parquetMessage.trim());
+  const showPipelineSuccess = pipelineStatus?.status === "completed" && Boolean(pipelineMessage.trim());
   const buildRunSeconds = calculateRunSeconds(buildStatus?.started_at, buildStatus?.finished_at, nowMs);
   const parquetRunSeconds = calculateRunSeconds(parquetStatus?.started_at, parquetStatus?.finished_at, nowMs);
+  const pipelineRunSeconds = calculateRunSeconds(pipelineStatus?.started_at, pipelineStatus?.finished_at, nowMs);
   const parquetProgress = useMemo(() => {
     if (!parquetStatus || parquetStatus.total_files <= 0) return 0;
     return Math.min(100, Math.round((parquetStatus.processed_files / parquetStatus.total_files) * 100));
@@ -312,10 +367,55 @@ export const SidebarToolsPage: React.FC = () => {
   }, [toolHistory]);
 
   useEffect(() => {
-    if (!isBuildRunning && !isParquetRunning) return;
+    if (!isBuildRunning && !isParquetRunning && !isPipelineRunning) return;
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [isBuildRunning, isParquetRunning]);
+  }, [isBuildRunning, isParquetRunning, isPipelineRunning]);
+
+  // Pipeline persistence
+  useEffect(() => {
+    if (!pipelineJobId && !pipelineStatus && !pipelineMessage.trim()) {
+      window.localStorage.removeItem(PIPELINE_JOB_STORAGE_KEY);
+      return;
+    }
+    const payload: PersistedPipelineJobState = {
+      jobId: pipelineJobId,
+      status: pipelineStatus,
+      message: pipelineMessage,
+    };
+    window.localStorage.setItem(PIPELINE_JOB_STORAGE_KEY, JSON.stringify(payload));
+  }, [pipelineJobId, pipelineStatus, pipelineMessage]);
+
+  // Pipeline polling
+  useEffect(() => {
+    if (!pipelineJobId) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const latest = await getFullPipelineStatus(pipelineJobId);
+        setPipelineStatus(latest);
+        if (latest.status === "completed" || latest.status === "failed" || latest.status === "cancelled") {
+          setPipelineJobId(null);
+          const finalMessage = latest.message;
+          setPipelineMessage(finalMessage);
+          setToolHistory((current) => [{ id: `${Date.now()}-pipeline`, tool: "pipeline" as const, status: latest.status, message: finalMessage, timestamp: new Date().toISOString(), run_seconds: calculateRunSeconds(latest.started_at, latest.finished_at) }, ...current].slice(0, 10));
+        }
+      } catch (error: any) {
+        if (isTransientPollError(error)) {
+          setPipelineMessage("Connection interrupted. Pipeline is still running on server; retrying automatically...");
+          return;
+        }
+        const detail = error?.response?.data?.detail || error?.message || "Failed to fetch pipeline status.";
+        setPipelineMessage(detail);
+        setPipelineJobId(null);
+        setPipelineStatus((previous) =>
+          previous
+            ? { ...previous, status: "failed", message: error?.response?.status === 404 ? "Pipeline job not found. Start a new pipeline." : detail }
+            : null,
+        );
+      }
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [pipelineJobId]);
 
   useEffect(() => {
     window.localStorage.setItem(PARQUET_FORM_STORAGE_KEY, JSON.stringify(parquetForm));
@@ -422,7 +522,20 @@ export const SidebarToolsPage: React.FC = () => {
       hir_file: "",
       supp_mapper_file: "",
     });
-    setStatusNote("UPPCL preset applied. Adjust month/path values if needed.");
+    // Also populate the pipeline form
+    setPipelineForm({
+      input_path: uppclPresetPaths.parquet_input_path,
+      parquet_output_path: uppclPresetPaths.parquet_output_path,
+      compression: "snappy",
+      hir_file: "",
+      supp_mapper_file: "",
+      db_path: uppclPresetPaths.build_db_path,
+      object_name: `MASTER_${normalizeMonthSuffix(monthLabel)}`,
+      object_type: "TABLE",
+      replace: true,
+      month_label: monthLabel,
+    });
+    setStatusNote("UPPCL preset applied to all forms. Adjust month/path values if needed.");
   };
 
   const resetUppclPresetPaths = () => {
@@ -516,26 +629,69 @@ export const SidebarToolsPage: React.FC = () => {
     }
   };
 
+  const runPipeline = async () => {
+    if (!pipelineForm.input_path.trim() || !pipelineForm.parquet_output_path.trim() || !pipelineForm.db_path.trim() || !pipelineForm.object_name.trim()) {
+      setPipelineMessage("Pre-check failed: CSV input, parquet output, DuckDB path and object name are all required.");
+      return;
+    }
+    setPipelineMessage("");
+    try {
+      const started = await startFullPipeline({
+        ...pipelineForm,
+        hir_file: pipelineForm.hir_file.trim() || undefined,
+        supp_mapper_file: pipelineForm.supp_mapper_file.trim() || undefined,
+      });
+      setPipelineJobId(started.job_id);
+      setPipelineStatus({
+        job_id: started.job_id,
+        status: "queued",
+        message: started.message,
+        current_phase: "queued",
+        parquet_processed_files: 0,
+        parquet_total_files: 0,
+        parquet_skipped_files: 0,
+        build_progress_percent: 0,
+        overall_progress_percent: 0,
+      });
+      setPipelineMessage(`Full pipeline started. Job ID: ${started.job_id}`);
+    } catch (error: any) {
+      setPipelineMessage(error?.response?.data?.detail || error?.message || "Pipeline failed.");
+    }
+  };
+
+  const stopPipelineFn = async () => {
+    if (!pipelineJobId) return;
+    try {
+      const stopped = await stopFullPipeline(pipelineJobId);
+      setPipelineStatus(stopped);
+      setPipelineMessage(stopped.message);
+    } catch (error: any) {
+      setPipelineMessage(error?.response?.data?.detail || error?.message || "Unable to stop pipeline.");
+    }
+  };
+
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      {(isBuildRunning || isParquetRunning) && (
+      {(isBuildRunning || isParquetRunning || isPipelineRunning) && (
         <div className="sticky top-2 z-20 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-800 shadow-sm">
-          Active: {isBuildRunning ? `Build (${buildStatus?.status ?? "running"})` : ""}{isBuildRunning && isParquetRunning ? " | " : ""}{isParquetRunning ? `CSV→Parquet (${parquetStatus?.status ?? "running"})` : ""}
+          Active: {isBuildRunning ? `Build (${buildStatus?.status ?? "running"})` : ""}{isBuildRunning && (isParquetRunning || isPipelineRunning) ? " | " : ""}{isParquetRunning ? `CSV→Parquet (${parquetStatus?.status ?? "running"})` : ""}{isParquetRunning && isPipelineRunning ? " | " : ""}{isPipelineRunning ? `Pipeline (${pipelineStatus?.status ?? "running"})` : ""}
           <p className="mt-1 text-indigo-700">
-            Runtime: {isBuildRunning && buildRunSeconds !== null ? `Build ${formatDuration(buildRunSeconds)}` : ""}{isBuildRunning && isParquetRunning ? " | " : ""}{isParquetRunning && parquetRunSeconds !== null ? `CSV→Parquet ${formatDuration(parquetRunSeconds)}` : ""}
+            Runtime: {isBuildRunning && buildRunSeconds !== null ? `Build ${formatDuration(buildRunSeconds)}` : ""}{isBuildRunning && (isParquetRunning || isPipelineRunning) ? " | " : ""}{isParquetRunning && parquetRunSeconds !== null ? `CSV→Parquet ${formatDuration(parquetRunSeconds)}` : ""}{isParquetRunning && isPipelineRunning ? " | " : ""}{isPipelineRunning && pipelineRunSeconds !== null ? `Pipeline ${formatDuration(pipelineRunSeconds)}` : ""}
           </p>
         </div>
       )}
-      {(buildStatus?.status === "failed" || parquetStatus?.status === "failed") && (
+      {(buildStatus?.status === "failed" || parquetStatus?.status === "failed" || pipelineStatus?.status === "failed") && (
         <StatusAlert tone="error" title="Error summary">
           {buildStatus?.status === "failed" && <p>Build: {buildMessage}</p>}
           {parquetStatus?.status === "failed" && <p>CSV→Parquet: {parquetMessage}</p>}
+          {pipelineStatus?.status === "failed" && <p>Pipeline: {pipelineMessage}</p>}
         </StatusAlert>
       )}
-      {(showBuildSuccess || showParquetSuccess) && (
+      {(showBuildSuccess || showParquetSuccess || showPipelineSuccess) && (
         <StatusAlert tone="success" title="Latest completed jobs">
           {showBuildSuccess && <p>Build: {buildMessage}</p>}
           {showParquetSuccess && <p>CSV→Parquet: {parquetMessage}</p>}
+          {showPipelineSuccess && <p>Pipeline: {pipelineMessage}</p>}
         </StatusAlert>
       )}
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
@@ -595,6 +751,113 @@ export const SidebarToolsPage: React.FC = () => {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* ── Full Pipeline Card ── */}
+      <div className="rounded-lg border-2 border-violet-300 bg-gradient-to-r from-violet-50 to-indigo-50 p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-violet-900">⚡ Full Pipeline (CSV→Parquet → Build DuckDB)</h2>
+        <p className="mt-2 text-sm text-violet-700">
+          Run both steps in one click. Fill in your inputs once and the system chains CSV→Parquet then auto-builds the DuckDB table.
+        </p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <Field label="Input CSV/GZ path or glob" help="Source CSV files. Example: G:/MASTER/MAR_2026/*.csv.gz">
+            <div className="flex gap-2">
+              <input className="w-full rounded border p-2" value={pipelineForm.input_path} onChange={(e) => setPipelineForm((p) => ({ ...p, input_path: e.target.value }))} />
+              <button type="button" onClick={async () => { const folder = await pickSystemFolder(); if (folder) setPipelineForm((p) => ({ ...p, input_path: `${folder}/*.csv.gz` })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Folder...</button>
+            </div>
+          </Field>
+          <Field label="Parquet output folder" help="Where parquet files will be written. Example: G:/MASTER_PARQUET/MAR_2026">
+            <div className="flex gap-2">
+              <input className="w-full rounded border p-2" value={pipelineForm.parquet_output_path} onChange={(e) => setPipelineForm((p) => ({ ...p, parquet_output_path: e.target.value }))} />
+              <button type="button" onClick={async () => { const folder = await pickSystemFolder(); if (folder) setPipelineForm((p) => ({ ...p, parquet_output_path: folder })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Folder...</button>
+            </div>
+          </Field>
+          <Field label="DuckDB file path" help="Target .duckdb file. Example: G:/MASTER/uppcl_latest.duckdb">
+            <div className="flex gap-2">
+              <input className="w-full rounded border p-2" value={pipelineForm.db_path} onChange={(e) => setPipelineForm((p) => ({ ...p, db_path: e.target.value }))} />
+              <button type="button" onClick={async () => { const path = await pickSystemSavePath("monthly.duckdb", ".duckdb"); if (path) setPipelineForm((p) => ({ ...p, db_path: path })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Browse...</button>
+            </div>
+          </Field>
+          <Field label="Object name" help="DuckDB table/view name. Example: MASTER_MAR_2026">
+            <input className="w-full rounded border p-2" value={pipelineForm.object_name} onChange={(e) => setPipelineForm((p) => ({ ...p, object_name: e.target.value }))} />
+          </Field>
+          <Field label="Object type" help="TABLE or VIEW">
+            <select className="w-full rounded border p-2" value={pipelineForm.object_type} onChange={(e) => setPipelineForm((p) => ({ ...p, object_type: e.target.value as "TABLE" | "VIEW" }))}>
+              <option value="TABLE">TABLE</option>
+              <option value="VIEW">VIEW</option>
+            </select>
+          </Field>
+          <Field label="Month label" help="Used for naming. Example: MAR_2026">
+            <input className="w-full rounded border p-2" value={pipelineForm.month_label} onChange={(e) => setPipelineForm((p) => ({ ...p, month_label: e.target.value }))} />
+          </Field>
+          <Field label="Compression" help="Parquet compression codec">
+            <input className="w-full rounded border p-2" value={pipelineForm.compression} onChange={(e) => setPipelineForm((p) => ({ ...p, compression: e.target.value }))} />
+          </Field>
+          <Field label="Replace existing" help="Drop existing table/view before creating">
+            <label className="flex items-center gap-2 rounded border p-2 text-sm">
+              <input type="checkbox" checked={pipelineForm.replace} onChange={(e) => setPipelineForm((p) => ({ ...p, replace: e.target.checked }))} />
+              Replace existing
+            </label>
+          </Field>
+          <Field label="HIR file (optional)" help="For enrichment join">
+            <div className="flex gap-2">
+              <input className="w-full rounded border p-2" value={pipelineForm.hir_file} onChange={(e) => setPipelineForm((p) => ({ ...p, hir_file: e.target.value }))} />
+              <button type="button" onClick={async () => { const path = await pickSystemFile("data"); if (path) setPipelineForm((p) => ({ ...p, hir_file: path })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">File...</button>
+            </div>
+          </Field>
+          <Field label="suppMapper file (optional)" help="For enrichment join">
+            <div className="flex gap-2">
+              <input className="w-full rounded border p-2" value={pipelineForm.supp_mapper_file} onChange={(e) => setPipelineForm((p) => ({ ...p, supp_mapper_file: e.target.value }))} />
+              <button type="button" onClick={async () => { const path = await pickSystemFile("data"); if (path) setPipelineForm((p) => ({ ...p, supp_mapper_file: path })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">File...</button>
+            </div>
+          </Field>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button onClick={runPipeline} disabled={isPipelineRunning} className="rounded bg-violet-700 px-5 py-2 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60">
+            {isPipelineRunning ? "Running pipeline..." : "⚡ Run Full Pipeline"}
+          </button>
+          {isPipelineRunning && (
+            <button onClick={stopPipelineFn} disabled={pipelineStatus?.status === "cancelling"} className="rounded border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60">
+              {pipelineStatus?.status === "cancelling" ? "Stopping..." : "Stop pipeline"}
+            </button>
+          )}
+        </div>
+        {pipelineStatus && (
+          <div className="mt-3 rounded-xl border border-violet-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-base font-semibold text-slate-900">Pipeline status</p>
+                <p className="text-xs text-slate-500">{pipelineStatus.message}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                  pipelineStatus.current_phase === "csv_to_parquet" ? "bg-amber-100 text-amber-700"
+                  : pipelineStatus.current_phase === "build_duckdb" ? "bg-blue-100 text-blue-700"
+                  : pipelineStatus.current_phase === "completed" ? "bg-emerald-100 text-emerald-700"
+                  : "bg-slate-100 text-slate-600"
+                }`}>
+                  {pipelineStatus.current_phase === "csv_to_parquet" ? "Phase 1: CSV→Parquet"
+                    : pipelineStatus.current_phase === "build_duckdb" ? "Phase 2: Build DuckDB"
+                    : pipelineStatus.current_phase === "completed" ? "Done"
+                    : pipelineStatus.current_phase}
+                </span>
+                <span className="rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-700">{pipelineStatus.status}</span>
+              </div>
+            </div>
+            <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-100">
+              <div className="h-full bg-violet-600 transition-all" style={{ width: `${pipelineStatus.overall_progress_percent ?? 0}%` }} />
+            </div>
+            <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-4">
+              <div><span className="font-semibold text-slate-800">Overall:</span> {pipelineStatus.overall_progress_percent ?? 0}%</div>
+              <div><span className="font-semibold text-slate-800">Parquet files:</span> {pipelineStatus.parquet_processed_files}/{pipelineStatus.parquet_total_files}</div>
+              <div><span className="font-semibold text-slate-800">Skipped:</span> {pipelineStatus.parquet_skipped_files}</div>
+              <div><span className="font-semibold text-slate-800">Build:</span> {pipelineStatus.build_progress_percent}%</div>
+            </div>
+            {pipelineRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(pipelineRunSeconds)}</p>}
+            {pipelineStatus.parquet_current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {pipelineStatus.parquet_current_file}</p>}
+          </div>
+        )}
+        {pipelineMessage && !isPipelineRunning && <p className="mt-2 text-sm text-slate-700">{pipelineMessage}</p>}
       </div>
 
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">

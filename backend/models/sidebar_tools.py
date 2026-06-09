@@ -106,3 +106,85 @@ class BuildDuckDbJobResponse(BaseModel):
     progress_percent: int = 0
     started_at: str | None = None
     finished_at: str | None = None
+
+
+# ─────────────────── Full Pipeline (CSV→Parquet + Build DuckDB) ──────────────
+
+
+class FullPipelineRequest(BaseModel):
+    """Combined request for running CSV→Parquet then Build DuckDB in one shot."""
+
+    # CSV→Parquet fields
+    input_path: str = Field(..., description="Input CSV/GZ path or glob pattern.")
+    parquet_output_path: str = Field(..., description="Output folder for parquet files.")
+    compression: str = Field(default="snappy", description="Parquet compression codec.")
+    hir_file: str | None = Field(default=None, description="Optional HIR Excel file path.")
+    supp_mapper_file: str | None = Field(default=None, description="Optional suppMapper Excel file path.")
+
+    # Build DuckDB fields
+    db_path: str = Field(..., description="Target DuckDB file path.")
+    object_name: str = Field(..., description="DuckDB table/view name.")
+    object_type: str = Field(default="TABLE", description="TABLE or VIEW.")
+    replace: bool = Field(default=True, description="Replace object if exists.")
+    month_label: str | None = Field(default=None, description="Optional month label.")
+
+    @field_validator("input_path", "parquet_output_path", "db_path", "hir_file", "supp_mapper_file")
+    @classmethod
+    def validate_paths(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return sanitize_local_path_input(value, "path")
+
+    @field_validator("object_type")
+    @classmethod
+    def validate_object_type(cls, value: str) -> str:
+        normalized = (value or "").strip().upper()
+        if normalized not in {"TABLE", "VIEW"}:
+            raise ValueError("object_type must be TABLE or VIEW.")
+        return normalized
+
+    @field_validator("object_name")
+    @classmethod
+    def validate_object_name(cls, value: str) -> str:
+        normalized = (value or "").strip()
+        if not normalized:
+            raise ValueError("object_name cannot be empty.")
+        return normalized
+
+    @field_validator("compression")
+    @classmethod
+    def validate_compression(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        allowed = {"uncompressed", "snappy", "gzip", "zstd", "lz4", "brotli"}
+        if normalized not in allowed:
+            raise ValueError(
+                "compression must be one of: uncompressed, snappy, gzip, zstd, lz4, brotli."
+            )
+        return normalized
+
+
+class FullPipelineStartResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+
+
+class FullPipelineStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    current_phase: str = "queued"
+    # CSV→Parquet progress
+    parquet_processed_files: int = 0
+    parquet_total_files: int = 0
+    parquet_skipped_files: int = 0
+    parquet_current_file: str | None = None
+    parquet_output_path: str | None = None
+    # Build DuckDB progress
+    build_progress_percent: int = 0
+    build_output_path: str | None = None
+    # Overall
+    overall_progress_percent: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+

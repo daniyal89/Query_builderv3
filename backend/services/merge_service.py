@@ -144,8 +144,18 @@ class MergeService:
         source_folder: str,
         output_path: str,
         include_subfolders: bool = True,
+        on_progress: Any | None = None,
     ) -> dict[str, Any]:
-        """Recursively merge supported files from a local folder and save the result."""
+        """Recursively merge supported files from a local folder and save the result.
+
+        Args:
+            on_progress: Optional callback ``(stage, detail, current, total) -> None``
+                         invoked at key points so callers can relay live progress.
+        """
+        def _emit(stage: str, detail: str = "", current: int = 0, total: int = 0) -> None:
+            if on_progress is not None:
+                on_progress(stage=stage, detail=detail, current=current, total=total)
+
         source_dir = Path(source_folder).expanduser()
         save_path = Path(output_path).expanduser()
 
@@ -156,16 +166,21 @@ class MergeService:
         if output_format not in {".csv", ".xlsx"}:
             raise ValueError("Output file must end with .csv or .xlsx")
 
+        _emit("discovery", "Scanning folder for supported files…")
         source_files = MergeService._discover_supported_files(source_dir, include_subfolders)
         if not source_files:
             raise ValueError(
                 "No supported files found. Supported types: .csv, .xlsx, .xls, .xlsb, .gz, .zip"
             )
 
+        total_files = len(source_files)
+        _emit("discovery", f"Found {total_files} file(s)", current=0, total=total_files)
+
         merged_parts: list[pd.DataFrame] = []
         merged_items = 0
 
-        for file_path in source_files:
+        for file_index, file_path in enumerate(source_files, start=1):
+            _emit("processing", f"Reading {file_path.name}", current=file_index, total=total_files)
             for dataframe, source_name, sheet_name in MergeService._load_supported_file(file_path):
                 prepared = MergeService._prepare_dataframe(dataframe, source_name, sheet_name)
                 if prepared is None:
@@ -176,14 +191,19 @@ class MergeService:
         if not merged_parts:
             raise ValueError("No readable data was found in the selected folder.")
 
+        _emit("concatenating", f"Concatenating {merged_items} dataset(s)…")
         merged_df = pd.concat(merged_parts, ignore_index=True, sort=False)
+
+        _emit("writing", f"Writing {len(merged_df)} rows to {save_path.name}…")
         save_path.parent.mkdir(parents=True, exist_ok=True)
         MergeService._write_output(merged_df, save_path)
+
+        _emit("done", "Merge complete")
 
         return {
             "output_path": str(save_path),
             "output_format": output_format.lstrip("."),
-            "total_files": len(source_files),
+            "total_files": total_files,
             "merged_items": merged_items,
             "total_rows": int(len(merged_df)),
             "total_columns": int(len(merged_df.columns)),
@@ -277,7 +297,6 @@ class MergeService:
                 return pd.read_csv(
                     buffer,
                     dtype=str,
-                    low_memory=False,
                     encoding_errors="replace",
                     sep=None,
                     engine="python",

@@ -106,23 +106,60 @@ async def upload_sheets(
 
 @router.post(
     "/merge-folder",
-    response_model=FolderMergeResponse,
-    summary="Merge all supported files from a local folder and save the result",
+    summary="Merge all supported files from a local folder (SSE progress stream)",
 )
-def merge_folder(payload: FolderMergeRequest) -> FolderMergeResponse:
-    try:
-        result = MergeService.merge_folder(
-            source_folder=payload.source_folder,
-            output_path=payload.output_path,
-            include_subfolders=payload.include_subfolders,
-        )
-        return FolderMergeResponse(**result)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {exc}") from exc
+def merge_folder(payload: FolderMergeRequest) -> StreamingResponse:
+    import queue
+    import threading
+
+    progress_queue: queue.Queue = queue.Queue()
+
+    def _on_progress(*, stage: str, detail: str, current: int, total: int) -> None:
+        progress_queue.put({"event": "progress", "stage": stage, "detail": detail, "current": current, "total": total})
+
+    def _run_merge() -> None:
+        try:
+            result = MergeService.merge_folder(
+                source_folder=payload.source_folder,
+                output_path=payload.output_path,
+                include_subfolders=payload.include_subfolders,
+                on_progress=_on_progress,
+            )
+            progress_queue.put({"event": "result", "data": result})
+        except ValueError as exc:
+            progress_queue.put({"event": "error", "detail": str(exc)})
+        except Exception as exc:
+            progress_queue.put({"event": "error", "detail": f"Internal Server Error: {exc}"})
+
+    def _event_generator():
+        worker = threading.Thread(target=_run_merge, daemon=True)
+        worker.start()
+
+        while True:
+            try:
+                msg = progress_queue.get(timeout=120)
+            except queue.Empty:
+                # Send a keep-alive comment every 120s to prevent proxy timeouts
+                yield ": keepalive\n\n"
+                continue
+
+            event_type = msg.get("event", "progress")
+            payload_json = json.dumps(msg)
+            yield f"event: {event_type}\ndata: {payload_json}\n\n"
+
+            if event_type in ("result", "error"):
+                break
+
+        worker.join(timeout=5)
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(

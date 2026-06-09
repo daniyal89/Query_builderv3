@@ -27,11 +27,84 @@ export async function uploadSheets(files: File[]): Promise<UploadSheetsResponse>
   return response.data;
 }
 
-export async function mergeFolder(payload: FolderMergeRequest): Promise<FolderMergeResponse> {
-  const response = await apiClient.post<FolderMergeResponse>("/merge-folder", payload, {
-    timeout: LONG_RUNNING_TIMEOUT_MS,
+export interface MergeProgressEvent {
+  event: "progress";
+  stage: string;
+  detail: string;
+  current: number;
+  total: number;
+}
+
+export async function mergeFolderWithProgress(
+  payload: FolderMergeRequest,
+  onProgress?: (event: MergeProgressEvent) => void,
+): Promise<FolderMergeResponse> {
+  const response = await fetch("/api/merge-folder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
-  return response.data;
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({ detail: "Merge failed" }));
+    throw new Error(errorBody.detail || `Merge failed with status ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("No response stream available");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult: FolderMergeResponse | null = null;
+  let errorMsg: string | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Parse SSE messages from buffer
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || ""; // Keep incomplete last line in buffer
+
+    let currentEventType = "";
+    let currentData = "";
+
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEventType = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        currentData = line.slice(6);
+      } else if (line === "" && currentData) {
+        // End of an SSE message
+        try {
+          const parsed = JSON.parse(currentData);
+          if (currentEventType === "progress" && onProgress) {
+            onProgress(parsed as MergeProgressEvent);
+          } else if (currentEventType === "result") {
+            finalResult = parsed.data as FolderMergeResponse;
+          } else if (currentEventType === "error") {
+            errorMsg = parsed.detail || "Merge failed";
+          }
+        } catch {
+          // Ignore malformed JSON
+        }
+        currentEventType = "";
+        currentData = "";
+      }
+    }
+  }
+
+  if (errorMsg) throw new Error(errorMsg);
+  if (!finalResult) throw new Error("Merge completed but no result was received");
+
+  return finalResult;
+}
+
+/** Backward-compatible wrapper (no progress). */
+export async function mergeFolder(payload: FolderMergeRequest): Promise<FolderMergeResponse> {
+  return mergeFolderWithProgress(payload);
 }
 
 export async function enrichData(
