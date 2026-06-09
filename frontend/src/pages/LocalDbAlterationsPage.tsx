@@ -11,9 +11,11 @@ import {
   startAlterDbJoin,
   startAlterDbDrop,
   stopAlterDbJob,
+  getAlterDbTables,
+  getAlterDbColumns,
 } from "../api/alterDbApi";
 
-const ALTER_DB_STORAGE_KEY = "alter_db_page_state_v2";
+const ALTER_DB_STORAGE_KEY = "alter_db_page_state_v3";
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -55,12 +57,54 @@ function readInitialState() {
   };
 }
 
+const SavedFormulasLoader: React.FC<{ onSelect: (formula: string) => void }> = ({ onSelect }) => {
+  const [formulas, setFormulas] = useState<{ name: string; formula: string }[]>([]);
+
+  const load = () => {
+    try {
+      const existing = window.localStorage.getItem("alter_db_saved_formulas");
+      if (existing) setFormulas(JSON.parse(existing));
+    } catch {}
+  };
+
+  useEffect(() => {
+    load();
+    const handleUpdate = () => load();
+    window.addEventListener("saved_formulas_updated", handleUpdate);
+    return () => window.removeEventListener("saved_formulas_updated", handleUpdate);
+  }, []);
+
+  if (formulas.length === 0) return null;
+
+  return (
+    <div className="mt-2 text-sm">
+      <span className="font-semibold text-slate-700 block mb-1">Load Saved Formula:</span>
+      <div className="flex flex-wrap gap-2">
+        {formulas.map((f) => (
+          <button
+            key={f.name}
+            type="button"
+            onClick={() => onSelect(f.formula)}
+            className="rounded border border-indigo-200 bg-white px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50"
+            title={f.formula}
+          >
+            {f.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export const LocalDbAlterationsPage: React.FC = () => {
   const [form, setForm] = useState(readInitialState());
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<AlterDbJobStatusResponse | null>(null);
   const [message, setMessage] = useState("");
   const [nowMs, setNowMs] = useState<number>(Date.now());
+
+  const [availableTables, setAvailableTables] = useState<string[]>([]);
+  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
 
   const isRunning = status?.status === "queued" || status?.status === "running" || status?.status === "cancelling";
   const showSuccess = status?.status === "completed" && Boolean(message.trim());
@@ -72,6 +116,40 @@ export const LocalDbAlterationsPage: React.FC = () => {
   useEffect(() => {
     window.localStorage.setItem(ALTER_DB_STORAGE_KEY, JSON.stringify(form));
   }, [form]);
+
+  // Fetch Tables when db_path changes
+  useEffect(() => {
+    if (!form.db_path) {
+      setAvailableTables([]);
+      return;
+    }
+    const fetchTables = async () => {
+      try {
+        const tables = await getAlterDbTables(form.db_path);
+        setAvailableTables(tables);
+      } catch (err) {
+        setAvailableTables([]);
+      }
+    };
+    fetchTables();
+  }, [form.db_path]);
+
+  // Fetch Columns when db_path and table_name change
+  useEffect(() => {
+    if (!form.db_path || !form.table_name) {
+      setAvailableColumns([]);
+      return;
+    }
+    const fetchColumns = async () => {
+      try {
+        const cols = await getAlterDbColumns(form.db_path, form.table_name);
+        setAvailableColumns(cols);
+      } catch (err) {
+        setAvailableColumns([]);
+      }
+    };
+    fetchColumns();
+  }, [form.db_path, form.table_name]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -99,6 +177,10 @@ export const LocalDbAlterationsPage: React.FC = () => {
   }, [jobId]);
 
   const updateForm = (updates: Partial<typeof form>) => setForm((prev: any) => ({ ...prev, ...updates }));
+
+  const insertIntoFormula = (text: string) => {
+    updateForm({ sql_formula: form.sql_formula + (form.sql_formula && !form.sql_formula.endsWith(" ") ? " " : "") + text });
+  };
 
   const runDerived = async () => {
     if (!form.db_path.trim() || !form.table_name.trim() || !form.new_column_name.trim() || !form.sql_formula.trim()) {
@@ -200,6 +282,18 @@ export const LocalDbAlterationsPage: React.FC = () => {
         </StatusAlert>
       )}
 
+      <datalist id="db-tables-list">
+        {availableTables.map((t) => (
+          <option key={t} value={t} />
+        ))}
+      </datalist>
+
+      <datalist id="db-columns-list">
+        {availableColumns.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
+
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Modify Local Master Table</h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -213,11 +307,11 @@ export const LocalDbAlterationsPage: React.FC = () => {
               <button type="button" onClick={async () => { const path = await pickSystemSavePath("monthly.duckdb", ".duckdb"); if (path) updateForm({ db_path: path }); }} className="rounded border border-slate-300 bg-slate-50 px-3 text-sm font-medium hover:bg-slate-100">Browse...</button>
             </div>
           </Field>
-          <Field label="Table Name" help="Example: MASTER_MAR_2026">
-            <input className="w-full rounded border p-2" value={form.table_name} onChange={(e) => updateForm({ table_name: e.target.value })} />
+          <Field label="Table Name" help="Type or select a table from the chosen DuckDB.">
+            <input className="w-full rounded border p-2" list="db-tables-list" value={form.table_name} onChange={(e) => updateForm({ table_name: e.target.value })} />
           </Field>
           <Field label={form.mode === "drop" ? "Column Name to Drop" : "New Column Name"} help="The name of the column.">
-            <input className="w-full rounded border p-2" value={form.new_column_name} onChange={(e) => updateForm({ new_column_name: e.target.value })} />
+            <input className="w-full rounded border p-2" list={form.mode === "drop" ? "db-columns-list" : undefined} value={form.new_column_name} onChange={(e) => updateForm({ new_column_name: e.target.value })} />
           </Field>
           {form.mode !== "drop" && (
             <Field label="Data Type" help="The SQL data type for the new column.">
@@ -257,15 +351,62 @@ export const LocalDbAlterationsPage: React.FC = () => {
         <div className="mt-6">
           {form.mode === "derived" && (
             <div className="space-y-4 rounded bg-slate-50 p-4 border border-slate-100">
-              <Field label="SQL Formula" help="e.g. 1 + 1, or CONCAT(col1, '_', col2), or CASE WHEN col > 10 THEN 'High' ELSE 'Low' END">
-                <textarea
-                  rows={4}
-                  className="w-full rounded border p-2 font-mono text-sm"
-                  value={form.sql_formula}
-                  onChange={(e) => updateForm({ sql_formula: e.target.value })}
-                  placeholder="Enter standard DuckDB SQL..."
-                />
+              <Field label="SQL Formula" help="Construct a standard DuckDB SQL formula to populate the column.">
+                
+                {availableColumns.length > 0 && (
+                  <div className="mb-2">
+                    <span className="text-xs font-semibold text-slate-500 block mb-1">Available Columns (Click to insert)</span>
+                    <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto p-1 border border-slate-200 bg-white rounded">
+                      {availableColumns.map(col => (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => insertIntoFormula(col)}
+                          className="px-2 py-0.5 bg-slate-100 hover:bg-indigo-100 text-slate-700 hover:text-indigo-800 rounded text-xs border border-slate-200 transition-colors"
+                        >
+                          {col}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                <div className="mb-2 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => insertIntoFormula("CASE WHEN condition THEN 'A' ELSE 'B' END")} className="text-xs bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-slate-700">CASE Statement</button>
+                  <button type="button" onClick={() => insertIntoFormula("CONCAT(col1, '_', col2)")} className="text-xs bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-slate-700">CONCAT()</button>
+                  <button type="button" onClick={() => insertIntoFormula("COALESCE(col1, 0)")} className="text-xs bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded text-slate-700">COALESCE()</button>
+                </div>
+
+                <div className="relative">
+                  <textarea
+                    rows={4}
+                    className="w-full rounded border p-2 font-mono text-sm shadow-inner"
+                    value={form.sql_formula}
+                    onChange={(e) => updateForm({ sql_formula: e.target.value })}
+                    placeholder="e.g. BILLED_AMT + ENERGY_CHARGE"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const name = window.prompt("Enter a name to save this formula:");
+                      if (name && form.sql_formula.trim()) {
+                        const existing = window.localStorage.getItem("alter_db_saved_formulas");
+                        let parsed = [];
+                        try { if (existing) parsed = JSON.parse(existing); } catch {}
+                        parsed = parsed.filter((f: any) => f.name !== name);
+                        parsed.push({ name, formula: form.sql_formula.trim() });
+                        window.localStorage.setItem("alter_db_saved_formulas", JSON.stringify(parsed));
+                        window.dispatchEvent(new Event("saved_formulas_updated"));
+                      }
+                    }}
+                    className="absolute bottom-2 right-2 rounded bg-indigo-100 px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-200"
+                  >
+                    Save Formula
+                  </button>
+                </div>
               </Field>
+
+              <SavedFormulasLoader onSelect={(formula) => updateForm({ sql_formula: formula })} />
             </div>
           )}
 
@@ -279,7 +420,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
               </Field>
               <div className="grid gap-4 md:grid-cols-3">
                 <Field label="Master Table Key" help="Column in DuckDB to match on.">
-                  <input className="w-full rounded border p-2" value={form.join_master_col} onChange={(e) => updateForm({ join_master_col: e.target.value })} />
+                  <input className="w-full rounded border p-2" list="db-columns-list" value={form.join_master_col} onChange={(e) => updateForm({ join_master_col: e.target.value })} />
                 </Field>
                 <Field label="File Key" help="Column in the File to match on.">
                   <input className="w-full rounded border p-2" value={form.join_file_col} onChange={(e) => updateForm({ join_file_col: e.target.value })} />
@@ -302,7 +443,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
           <button
             onClick={form.mode === "derived" ? runDerived : form.mode === "join" ? runJoin : runDrop}
             disabled={isRunning}
-            className={`rounded px-5 py-2 text-sm font-semibold text-white disabled:opacity-60 ${form.mode === "drop" ? "bg-red-600 hover:bg-red-700" : "bg-indigo-600 hover:bg-indigo-700"}`}
+            className={`rounded px-5 py-2 text-sm font-semibold text-white transition-opacity disabled:opacity-60 ${form.mode === "drop" ? "bg-red-600 hover:bg-red-700 shadow-sm" : "bg-indigo-600 hover:bg-indigo-700 shadow-sm"}`}
           >
             {isRunning ? "Executing..." : form.mode === "drop" ? "Drop Column" : `Run ${form.mode === "derived" ? "Derived Column" : "Join"}`}
           </button>
@@ -318,7 +459,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
         </div>
 
         {status && (
-          <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-4">
+          <div className="mt-4 rounded border border-slate-200 bg-slate-50 p-4 shadow-inner">
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-semibold text-slate-800">Job Progress</span>
               <span className="rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 uppercase">
@@ -327,7 +468,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
             </div>
             <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200">
               <div
-                className={`h-full transition-all ${showError ? "bg-red-500" : "bg-indigo-600"}`}
+                className={`h-full transition-all duration-300 ${showError ? "bg-red-500" : "bg-indigo-600"}`}
                 style={{ width: `${status.progress_percent ?? 0}%` }}
               />
             </div>
@@ -339,7 +480,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
         )}
 
         {message && !isRunning && !showSuccess && !showError && (
-          <p className="mt-4 text-sm text-slate-700">{message}</p>
+          <p className="mt-4 text-sm text-slate-700 font-medium">{message}</p>
         )}
       </div>
     </div>

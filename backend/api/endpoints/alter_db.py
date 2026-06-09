@@ -154,3 +154,49 @@ def stop_alter_db_job(job_id: str):
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     return AlterDbJobStatusResponse(**job)
+
+
+@router.get("/alter-db/metadata/tables")
+def get_alter_db_tables(db_path: str) -> list[str]:
+    sanitized_db = sanitize_local_path_input(db_path, "db_path")
+    if not Path(sanitized_db).exists():
+        return []
+        
+    try:
+        from backend.services.duckdb_service import get_db_service
+        svc = get_db_service()
+        
+        # If already connected to this DB, reuse connection
+        if svc.is_connected and svc._db_path and Path(svc._db_path).resolve() == Path(sanitized_db).resolve():
+            tables = svc._conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
+            return [t[0] for t in tables]
+            
+        # Otherwise open read-only
+        with duckdb.connect(database=sanitized_db, read_only=True) as conn:
+            tables = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
+            return [t[0] for t in tables]
+    except Exception as e:
+        print(f"Error fetching tables: {e}")
+        return []
+
+@router.get("/alter-db/metadata/columns")
+def get_alter_db_columns(db_path: str, table_name: str) -> list[str]:
+    sanitized_db = sanitize_local_path_input(db_path, "db_path")
+    if not Path(sanitized_db).exists() or not table_name:
+        return []
+        
+    try:
+        from backend.services.duckdb_service import get_db_service
+        svc = get_db_service()
+        
+        # If already connected to this DB, reuse connection
+        if svc.is_connected and svc._db_path and Path(svc._db_path).resolve() == Path(sanitized_db).resolve():
+            columns = svc._conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ?", [table_name]).fetchall()
+            return [c[0] for c in columns]
+            
+        with duckdb.connect(database=sanitized_db, read_only=True) as conn:
+            columns = conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ?", [table_name]).fetchall()
+            return [c[0] for c in columns]
+    except Exception as e:
+        print(f"Error fetching columns: {e}")
+        return []

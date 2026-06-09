@@ -58,3 +58,17 @@ export async function stopAlterDbJob(jobId: string): Promise<AlterDbJobStatusRes
   const { data } = await apiClient.post<AlterDbJobStatusResponse>(`/alter-db/stop/${jobId}`);
   return data;
 }
+
+export async function getAlterDbTables(dbPath: string): Promise<string[]> {
+  const { data } = await apiClient.get<string[]>("/alter-db/metadata/tables", {
+    params: { db_path: dbPath },
+  });
+  return data;
+}
+
+export async function getAlterDbColumns(dbPath: string, tableName: string): Promise<string[]> {
+  const { data } = await apiClient.get<string[]>("/alter-db/metadata/columns", {
+    params: { db_path: dbPath, table_name: tableName },
+  });
+  return data;
+}
