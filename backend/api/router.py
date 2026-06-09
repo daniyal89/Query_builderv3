@@ -19,6 +19,7 @@ from backend.api.endpoints import (
     schema,
     sidebar_tools,
     system,
+    alter_db,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -34,3 +35,4 @@ api_router.include_router(system.router, tags=["System"])
 api_router.include_router(ftp_download.router, tags=["FTP Download"])
 api_router.include_router(google_drive.router, tags=["Google Drive"])
 api_router.include_router(sidebar_tools.router, tags=["Sidebar Tools"])
+api_router.include_router(alter_db.router, tags=["Alter DB"])

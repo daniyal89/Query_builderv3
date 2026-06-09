@@ -47,3 +47,7 @@ export const DriveDownloadPage = createLazyPage("/drive-download", () =>
 export const SidebarToolsPage = createLazyPage("/sidebar-6-tools", () =>
   import("../pages/SidebarToolsPage").then((module) => ({ default: module.SidebarToolsPage })),
 );
+
+export const LocalDbAlterationsPage = createLazyPage("/alter-local-db", () =>
+  import("../pages/LocalDbAlterationsPage").then((module) => ({ default: module.LocalDbAlterationsPage })),
+);

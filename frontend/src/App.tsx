@@ -14,6 +14,7 @@ import {
   QueryBuilderPage,
   SidebarToolsPage,
   UploadMasterDrivePage,
+  LocalDbAlterationsPage,
 } from "./app/lazyPages";
 import PageShell from "./components/layout/PageShell";
 
@@ -43,6 +44,7 @@ function App() {
           <Route path="/drive-upload-master" element={<UploadMasterDrivePage />} />
           <Route path="/drive-download" element={<DriveDownloadPage />} />
           <Route path="/sidebar-6-tools" element={<SidebarToolsPage />} />
+          <Route path="/alter-local-db" element={<LocalDbAlterationsPage />} />
         </Routes>
       </Suspense>
     </PageShell>
