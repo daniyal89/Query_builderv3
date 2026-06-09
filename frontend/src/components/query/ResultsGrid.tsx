@@ -7,6 +7,7 @@ import type { QueryResult } from "../../types/query.types";
 interface ResultsGridProps {
   result: QueryResult | null;
   isLoading: boolean;
+  onExportAll?: () => Promise<QueryResult | undefined>;
 }
 
 const VIRTUALIZATION_THRESHOLD = 120;
@@ -14,18 +15,20 @@ const VIRTUAL_ROW_HEIGHT = 40;
 const VIRTUAL_VIEWPORT_HEIGHT = 600;
 const VIRTUAL_OVERSCAN = 8;
 
-async function downloadCSV(result: QueryResult) {
+function buildCSVBlob(result: QueryResult): Blob {
   const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
   const header = result.columns.join(",");
   const rows = result.rows.map((row) => row.map(escape).join(","));
   const csv = [header, ...rows].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  return new Blob([csv], { type: "text/csv;charset=utf-8;" });
+}
 
+async function saveBlob(blob: Blob, suggestedName: string) {
   try {
     if ("showSaveFilePicker" in window) {
       // @ts-expect-error showSaveFilePicker is not typed in libdom for all targets
       const handle = await window.showSaveFilePicker({
-        suggestedName: "query_results.csv",
+        suggestedName,
         types: [{ description: "CSV File", accept: { "text/csv": [".csv"] } }],
       });
       const writable = await handle.createWritable();
@@ -43,13 +46,14 @@ async function downloadCSV(result: QueryResult) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = "query_results.csv";
+  anchor.download = suggestedName;
   anchor.click();
   URL.revokeObjectURL(url);
 }
 
-export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading }) => {
+export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onExportAll }) => {
   const [scrollTop, setScrollTop] = useState(0);
+  const [isExporting, setIsExporting] = useState(false);
 
   useEffect(() => {
     setScrollTop(0);
@@ -84,6 +88,29 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading }) =
     [endIndex, result, startIndex],
   );
 
+  const handleExportCSV = async () => {
+    if (!result) return;
+
+    // If total rows > displayed rows AND we have an export function, fetch all rows
+    if (onExportAll && result.total > result.rows.length) {
+      setIsExporting(true);
+      try {
+        const fullResult = await onExportAll();
+        if (fullResult) {
+          const blob = buildCSVBlob(fullResult);
+          await saveBlob(blob, "query_results_full.csv");
+        }
+      } finally {
+        setIsExporting(false);
+      }
+      return;
+    }
+
+    // Otherwise export the rows we already have
+    const blob = buildCSVBlob(result);
+    await saveBlob(blob, "query_results.csv");
+  };
+
   if (isLoading) {
     return (
       <div className="mt-8 flex h-48 items-center justify-center rounded-lg border border-gray-200 bg-white">
@@ -117,7 +144,7 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading }) =
             {result.rows.length} of {result.total} rows
             {result.truncated && (
               <span className="ml-1 font-medium text-amber-600">
-                (limited - increase limit to see more)
+                (limited - CSV export will fetch all {result.total.toLocaleString()} rows)
               </span>
             )}
           </p>
@@ -129,10 +156,23 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading }) =
             </span>
           )}
           <button
-            onClick={() => void downloadCSV(result)}
-            className="inline-flex items-center gap-1 rounded bg-green-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-green-700"
+            onClick={() => void handleExportCSV()}
+            disabled={isExporting}
+            className="inline-flex items-center gap-1 rounded bg-green-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-green-700 disabled:opacity-50 disabled:cursor-wait"
           >
-            CSV
+            {isExporting ? (
+              <>
+                <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                Exporting...
+              </>
+            ) : (
+              <>
+                CSV
+                {result.truncated && result.total > result.rows.length && (
+                  <span className="text-[10px] opacity-80">(All {result.total.toLocaleString()})</span>
+                )}
+              </>
+            )}
           </button>
         </div>
       </div>

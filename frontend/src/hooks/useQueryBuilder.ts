@@ -226,6 +226,7 @@ export interface UseQueryBuilderReturn {
   resetSqlToBuilder: () => void;
   applyState: (nextState: Partial<QueryState>) => void;
   executeQuery: () => Promise<QueryResult | undefined>;
+  executeExportQuery: () => Promise<QueryResult | undefined>;
   reset: () => void;
 }
 
@@ -239,7 +240,7 @@ const initialState: QueryBuilderState = {
   aggregates: [],
   caseExpressions: [],
   functionColumns: [],
-  limitRows: 1000,
+  limitRows: 0,
   offset: 0,
   mode: "LIST",
   pivotConfig: { rows: [], columns: [], values: "", func: "SUM" },
@@ -1041,8 +1042,11 @@ export function useQueryBuilder(
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
     try {
+      // When limit is 0 (unlimited), cap UI display at 1000 rows
+      const uiLimit = state.limitRows === 0 ? 1000 : state.limitRows;
+
       const payload: QueryPayload = isBuilderMode
-        ? buildBuilderPayload(state, engine, metadataTables)
+        ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: uiLimit }
         : {
           execution_mode: "sql",
           engine,
@@ -1051,7 +1055,7 @@ export function useQueryBuilder(
           filters: [],
           sort: [],
           joins: [],
-          limit_rows: state.limitRows,
+          limit_rows: uiLimit,
           offset: state.offset,
           mode: state.mode,
           marcadose_union: state.marcadoseUnion,
@@ -1080,6 +1084,43 @@ export function useQueryBuilder(
       return undefined;
     }
   }, [engine, state]);
+
+  // Export fetches ALL rows only when limitRows is 0 (unlimited).
+  // When limitRows > 0, the result already has the correct data.
+  const executeExportQuery = useCallback(async () => {
+    // If limit > 0, we already have the exact rows in state — no extra fetch
+    if (state.limitRows > 0) return state.result ?? undefined;
+
+    const isBuilderMode = state.sourceMode === "builder";
+    try {
+      const payload: QueryPayload = isBuilderMode
+        ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: 0 }
+        : {
+          execution_mode: "sql",
+          engine,
+          table: state.table,
+          select: [],
+          filters: [],
+          sort: [],
+          joins: [],
+          limit_rows: 0,
+          offset: state.offset,
+          mode: state.mode,
+          marcadose_union: state.marcadoseUnion,
+          group_by: [],
+          aggregates: [],
+          sql: state.sqlText,
+        };
+
+      return await executeQueryApi(payload);
+    } catch (err: any) {
+      setState((prev) => ({
+        ...prev,
+        error: getErrorMessage(err, "Export query failed"),
+      }));
+      return undefined;
+    }
+  }, [engine, state, metadataTables]);
 
   const reset = useCallback(() => {
     setState({ ...initialState, marcadoseUnion: createDefaultMarcadoseUnion() });
@@ -1120,6 +1161,7 @@ export function useQueryBuilder(
     resetSqlToBuilder,
     applyState,
     executeQuery,
+    executeExportQuery,
     reset,
   };
 }
