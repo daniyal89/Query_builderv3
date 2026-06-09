@@ -2,6 +2,7 @@
  * queryApi.ts — API calls for query execution.
  */
 
+import type { AxiosProgressEvent } from "axios";
 import apiClient from "./client";
 import type { QueryPayload, QueryPreview, QueryResult } from "../types/query.types";
 
@@ -14,9 +15,13 @@ export async function previewQuery(payload: QueryPayload): Promise<QueryPreview>
   return response.data;
 }
 
-export async function executeQuery(payload: QueryPayload): Promise<QueryResult> {
+export async function executeQuery(
+  payload: QueryPayload,
+  onDownloadProgress?: (progressEvent: AxiosProgressEvent) => void
+): Promise<QueryResult> {
   const response = await apiClient.post<QueryResult>("/query", payload, {
     timeout: payload.engine === "oracle" ? ORACLE_QUERY_TIMEOUT_MS : undefined,
+    onDownloadProgress,
   });
   return response.data;
 }

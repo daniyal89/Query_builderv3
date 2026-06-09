@@ -7,7 +7,7 @@ import type { QueryResult } from "../../types/query.types";
 interface ResultsGridProps {
   result: QueryResult | null;
   isLoading: boolean;
-  onExportAll?: () => Promise<QueryResult | undefined>;
+  onExportAll?: (onProgress?: (progressEvent: any) => void) => Promise<QueryResult | undefined>;
 }
 
 const VIRTUALIZATION_THRESHOLD = 120;
@@ -54,6 +54,7 @@ async function saveBlob(blob: Blob, suggestedName: string) {
 export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onExportAll }) => {
   const [scrollTop, setScrollTop] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState("");
 
   useEffect(() => {
     setScrollTop(0);
@@ -94,21 +95,38 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
     // If total rows > displayed rows AND we have an export function, fetch all rows
     if (onExportAll && result.total > result.rows.length) {
       setIsExporting(true);
+      setExportProgress("Fetching...");
       try {
-        const fullResult = await onExportAll();
+        const fullResult = await onExportAll((progressEvent) => {
+          if (progressEvent.loaded) {
+            const mb = (progressEvent.loaded / 1024 / 1024).toFixed(1);
+            setExportProgress(`${mb} MB`);
+          }
+        });
         if (fullResult) {
+          setExportProgress("Building CSV...");
+          await new Promise((resolve) => setTimeout(resolve, 50));
           const blob = buildCSVBlob(fullResult);
           await saveBlob(blob, "query_results_full.csv");
         }
       } finally {
         setIsExporting(false);
+        setExportProgress("");
       }
       return;
     }
 
     // Otherwise export the rows we already have
-    const blob = buildCSVBlob(result);
-    await saveBlob(blob, "query_results.csv");
+    setIsExporting(true);
+    setExportProgress("Building CSV...");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      const blob = buildCSVBlob(result);
+      await saveBlob(blob, "query_results.csv");
+    } finally {
+      setIsExporting(false);
+      setExportProgress("");
+    }
   };
 
   if (isLoading) {
@@ -163,7 +181,7 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
             {isExporting ? (
               <>
                 <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                Exporting...
+                {exportProgress || "Exporting..."}
               </>
             ) : (
               <>

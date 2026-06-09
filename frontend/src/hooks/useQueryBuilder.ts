@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { executeQuery as executeQueryApi, previewQuery as previewQueryApi } from "../api/queryApi";
+import type { AxiosProgressEvent } from "axios";
 import type { QueryEngine } from "../types/connection.types";
 import type { TableMetadata } from "../types/schema.types";
 import type {
@@ -226,7 +227,7 @@ export interface UseQueryBuilderReturn {
   resetSqlToBuilder: () => void;
   applyState: (nextState: Partial<QueryState>) => void;
   executeQuery: () => Promise<QueryResult | undefined>;
-  executeExportQuery: () => Promise<QueryResult | undefined>;
+  executeExportQuery: (onProgress?: (progressEvent: AxiosProgressEvent) => void) => Promise<QueryResult | undefined>;
   reset: () => void;
 }
 
@@ -1087,7 +1088,7 @@ export function useQueryBuilder(
 
   // Export fetches ALL rows only when limitRows is 0 (unlimited).
   // When limitRows > 0, the result already has the correct data.
-  const executeExportQuery = useCallback(async () => {
+  const executeExportQuery = useCallback(async (onProgress?: (progressEvent: AxiosProgressEvent) => void) => {
     // If limit > 0, we already have the exact rows in state — no extra fetch
     if (state.limitRows > 0) return state.result ?? undefined;
 
@@ -1112,7 +1113,7 @@ export function useQueryBuilder(
           sql: state.sqlText,
         };
 
-      return await executeQueryApi(payload);
+      return await executeQueryApi(payload, onProgress);
     } catch (err: any) {
       setState((prev) => ({
         ...prev,
