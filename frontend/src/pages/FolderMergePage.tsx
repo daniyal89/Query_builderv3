@@ -1,9 +1,6 @@
-/**
- * FolderMergePage.tsx — Local folder merge page.
- */
-
 import React, { useMemo, useState } from "react";
-import { mergeFolder } from "../api/mergeApi";
+import { mergeFolderWithProgress } from "../api/mergeApi";
+import type { MergeProgressEvent } from "../api/mergeApi";
 import { pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 import type { FolderMergeResponse } from "../types/merge.types";
 import { StatusAlert } from "../components/common/StatusAlert";
@@ -25,6 +22,13 @@ function getErrorMessage(error: unknown): string {
   return "Merge failed.";
 }
 
+interface ProgressState {
+  stage: string;
+  detail: string;
+  current: number;
+  total: number;
+}
+
 export const FolderMergePage: React.FC = () => {
   const [sourceFolder, setSourceFolder] = useState("");
   const [outputPath, setOutputPath] = useState("");
@@ -32,6 +36,7 @@ export const FolderMergePage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<FolderMergeResponse | null>(null);
+  const [progress, setProgress] = useState<ProgressState | null>(null);
 
   const canSubmit = useMemo(() => {
     return sourceFolder.trim() !== "" && outputPath.trim() !== "" && !isLoading;
@@ -43,18 +48,30 @@ export const FolderMergePage: React.FC = () => {
     setIsLoading(true);
     setError(null);
     setResult(null);
+    setProgress(null);
 
     try {
-      const response = await mergeFolder({
-        source_folder: sourceFolder,
-        output_path: outputPath,
-        include_subfolders: includeSubfolders,
-      });
+      const response = await mergeFolderWithProgress(
+        {
+          source_folder: sourceFolder,
+          output_path: outputPath,
+          include_subfolders: includeSubfolders,
+        },
+        (event: MergeProgressEvent) => {
+          setProgress({
+            stage: event.stage,
+            detail: event.detail,
+            current: event.current,
+            total: event.total,
+          });
+        },
+      );
       setResult(response);
     } catch (err: unknown) {
       setError(getErrorMessage(err));
     } finally {
       setIsLoading(false);
+      setProgress(null);
     }
   };
 
@@ -165,6 +182,45 @@ export const FolderMergePage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {isLoading && progress && (
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-6 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-wide text-indigo-700">
+                {progress.stage === "discovery" && "Discovering files"}
+                {progress.stage === "processing" && "Processing files"}
+                {progress.stage === "concatenating" && "Concatenating data"}
+                {progress.stage === "writing" && "Writing output"}
+                {progress.stage === "done" && "Finishing up"}
+              </p>
+              <p className="mt-1 text-sm text-indigo-600">{progress.detail}</p>
+            </div>
+            {progress.total > 0 && (
+              <p className="text-lg font-bold text-indigo-700">
+                {progress.current} / {progress.total}
+              </p>
+            )}
+          </div>
+          <div className="mt-4 h-3 w-full overflow-hidden rounded-full bg-indigo-100">
+            <div
+              className="h-full rounded-full bg-indigo-600"
+              style={{
+                width: progress.total > 0
+                  ? `${Math.round((progress.current / progress.total) * 100)}%`
+                  : "100%",
+                transition: "width 0.3s ease-in-out",
+                animation: progress.total === 0 ? "pulse 2s ease-in-out infinite" : undefined,
+              }}
+            />
+          </div>
+          {progress.total > 0 && (
+            <p className="mt-2 text-right text-xs text-indigo-500">
+              {Math.round((progress.current / progress.total) * 100)}%
+            </p>
+          )}
+        </div>
+      )}
 
       {error && (
         <StatusAlert tone="error" title="Error">
