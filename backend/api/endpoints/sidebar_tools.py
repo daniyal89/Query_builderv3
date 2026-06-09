@@ -28,6 +28,9 @@ from backend.models.sidebar_tools import (
     CsvToParquetJobResponse,
     CsvToParquetJobStartResponse,
     CsvToParquetRequest,
+    FullPipelineRequest,
+    FullPipelineStartResponse,
+    FullPipelineStatusResponse,
     SidebarToolResponse,
 )
 from backend.utils.path_safety import sanitize_local_path_input
@@ -41,6 +44,8 @@ CSV_TO_PARQUET_JOB_TYPE = "sidebar.csv_to_parquet"
 BUILD_DUCKDB_JOB_TYPE = "sidebar.build_duckdb"
 CSV_TO_PARQUET_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_seconds=1)
 BUILD_DUCKDB_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_seconds=1)
+FULL_PIPELINE_JOB_TYPE = "sidebar.full_pipeline"
+FULL_PIPELINE_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_seconds=1)
 
 
 def _read_lookup_file(file_path: str) -> pd.DataFrame:
@@ -924,3 +929,294 @@ async def csv_to_parquet_stop(job_id: str) -> CsvToParquetJobResponse:
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CSV to Parquet job not found.")
     return CsvToParquetJobResponse(**job)
+
+
+# ──────────────── Full Pipeline (CSV→Parquet + Build DuckDB) ─────────────────
+
+
+def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
+    """Worker that chains CSV→Parquet then Build DuckDB as a single job."""
+
+    def _update(**updates) -> None:
+        job_runtime.update_job(job_id, **updates)
+
+    try:
+        # ── Phase 1: CSV → Parquet ──
+        _update(
+            current_phase="csv_to_parquet",
+            message="Phase 1: Preparing CSV to Parquet conversion…",
+            overall_progress_percent=2,
+        )
+
+        parquet_payload = CsvToParquetRequest(
+            input_path=payload.input_path,
+            output_path=payload.parquet_output_path,
+            compression=payload.compression,
+            hir_file=payload.hir_file,
+            supp_mapper_file=payload.supp_mapper_file,
+        )
+
+        files, output_root, input_root, single_target = _build_csv_to_parquet_targets(parquet_payload)
+        valid_files, invalid_files, warning_files = _partition_valid_csv_sources(files)
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        if not valid_files:
+            invalid_summary = "; ".join(f"{item['file']} ({item['reason']})" for item in invalid_files[:5])
+            raise ValueError(f"No valid input files after gzip pre-validation. Invalid files: {invalid_summary}")
+
+        compression_sql = _sql_string_literal(payload.compression)
+        lookup_mode = bool(payload.hir_file and payload.supp_mapper_file)
+        if lookup_mode:
+            hir_div, hir_sdo, supp = _load_lookup_tables(payload.hir_file or "", payload.supp_mapper_file or "")
+
+        reported_parquet_output = str(single_target if single_target is not None else output_root)
+        total_valid = len(valid_files)
+        skipped_files = len(invalid_files)
+
+        _update(
+            current_phase="csv_to_parquet",
+            parquet_total_files=total_valid,
+            parquet_skipped_files=skipped_files,
+            parquet_output_path=reported_parquet_output,
+            message=f"Phase 1: Converting {total_valid} file(s) to Parquet…",
+            overall_progress_percent=5,
+        )
+
+        with duckdb.connect() as conn:
+            for index, source_file in enumerate(valid_files, start=1):
+                if job_runtime.is_cancelled(job_id):
+                    _update(
+                        status="cancelled",
+                        current_phase="csv_to_parquet",
+                        message="Pipeline stopped by user during Parquet conversion.",
+                        finished_at=datetime.now().isoformat(timespec="seconds"),
+                    )
+                    return
+
+                target_file = single_target if single_target is not None else _parquet_target_for_input(
+                    output_root, input_root, source_file
+                )
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+
+                if target_file.exists():
+                    skipped_files += 1
+                    parquet_pct = int((index / total_valid) * 70)
+                    _update(
+                        parquet_processed_files=index,
+                        parquet_skipped_files=skipped_files,
+                        parquet_current_file=str(source_file),
+                        message=f"Phase 1: Skipping existing file ({index}/{total_valid}).",
+                        overall_progress_percent=min(70, parquet_pct),
+                    )
+                    continue
+
+                parquet_pct = int(((index - 1) / total_valid) * 70)
+                _update(
+                    parquet_processed_files=index - 1,
+                    parquet_skipped_files=skipped_files,
+                    parquet_current_file=str(source_file),
+                    message=f"Phase 1: Processing file {index}/{total_valid}…",
+                    overall_progress_percent=min(70, parquet_pct),
+                )
+
+                if lookup_mode:
+                    if not _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp):
+                        skipped_files += 1
+                        _update(
+                            parquet_processed_files=index,
+                            parquet_skipped_files=skipped_files,
+                            message=f"Phase 1: Skipping empty file ({index}/{total_valid}).",
+                        )
+                        continue
+                else:
+                    relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
+                    target_sql = _sql_string_literal(str(target_file))
+
+                    columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
+                    col_names = [row[0] for row in columns_info]
+
+                    if "DIV_CODE" in col_names:
+                        discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        select_sql = f"""SELECT *{discom_exclude}
+                            CASE
+                                WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV3') THEN 'MVVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
+                                WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
+                                ELSE NULL
+                            END AS DISCOM
+                            FROM {relation_sql}"""
+                    else:
+                        select_sql = f"SELECT * FROM {relation_sql}"
+
+                    conn.execute(
+                        f"COPY ({select_sql}) TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
+                    )
+
+                parquet_pct = int((index / total_valid) * 70)
+                _update(
+                    parquet_processed_files=index,
+                    parquet_skipped_files=skipped_files,
+                    overall_progress_percent=min(70, parquet_pct),
+                )
+
+        parquet_summary = (
+            f"Parquet done: {total_valid} file(s), {skipped_files} skipped."
+            + (" Enrichment applied." if lookup_mode else "")
+        )
+
+        _update(
+            current_phase="csv_to_parquet",
+            parquet_processed_files=total_valid,
+            parquet_current_file=None,
+            message=f"Phase 1 complete. {parquet_summary} Starting Phase 2…",
+            overall_progress_percent=70,
+        )
+
+        # ── Phase 2: Build DuckDB ──
+        if job_runtime.is_cancelled(job_id):
+            _update(
+                status="cancelled",
+                message="Pipeline stopped by user after Parquet phase.",
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            return
+
+        # Auto-derive the build input path from the parquet output
+        parquet_out_path = Path(payload.parquet_output_path).expanduser().resolve()
+        if parquet_out_path.is_dir() or not parquet_out_path.suffix:
+            build_input_glob = str((parquet_out_path / "**/*.parquet").as_posix())
+        else:
+            build_input_glob = str(parquet_out_path)
+
+        build_payload = BuildDuckDbRequest(
+            db_path=payload.db_path,
+            input_path=build_input_glob,
+            object_name=payload.object_name,
+            object_type=payload.object_type,
+            replace=payload.replace,
+            month_label=payload.month_label,
+        )
+
+        _update(
+            current_phase="build_duckdb",
+            build_progress_percent=0,
+            message="Phase 2: Building DuckDB table…",
+            overall_progress_percent=72,
+        )
+
+        try:
+            build_output_path, build_message = _execute_build_duckdb(build_payload)
+        except Exception as build_exc:
+            _update(
+                status="failed",
+                current_phase="build_duckdb",
+                message=f"Phase 2 failed: {build_exc}. {parquet_summary}",
+                build_progress_percent=100,
+                overall_progress_percent=100,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            raise
+
+        if job_runtime.is_cancelled(job_id):
+            _update(
+                status="cancelled",
+                current_phase="build_duckdb",
+                message=f"Pipeline stopped. Build ran but marked cancelled. {parquet_summary}",
+                build_output_path=build_output_path,
+                build_progress_percent=100,
+                overall_progress_percent=100,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            return
+
+        _update(
+            status="completed",
+            current_phase="completed",
+            message=f"Pipeline complete. {parquet_summary} {build_message}",
+            build_output_path=build_output_path,
+            build_progress_percent=100,
+            overall_progress_percent=100,
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+
+    except BackgroundJobCancelled:
+        _update(
+            status="cancelled",
+            message="Pipeline cancelled.",
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        ErrorLogService.append(
+            {
+                "endpoint": "/api/sidebar-tools/full-pipeline/start",
+                "method": "POST",
+                "status_code": 500,
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "job_id": job_id,
+                "payload": payload.model_dump(),
+                "stage": "background_worker",
+            }
+        )
+        if job_runtime.is_cancelled(job_id):
+            _update(
+                status="cancelled",
+                message="Pipeline cancelled.",
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+            return
+        _update(
+            status="failed",
+            message=str(exc),
+            overall_progress_percent=100,
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        raise
+
+
+@router.post("/sidebar-tools/full-pipeline/start", response_model=FullPipelineStartResponse)
+async def full_pipeline_start(request: Request, payload: FullPipelineRequest) -> FullPipelineStartResponse:
+    enforce_rate_limit(request, "sidebar_full_pipeline")
+    job_id = uuid.uuid4().hex
+    job_runtime.start_job(
+        job_type=FULL_PIPELINE_JOB_TYPE,
+        job_id=job_id,
+        initial_snapshot={
+            "job_id": job_id,
+            "status": "queued",
+            "message": "Full pipeline queued.",
+            "current_phase": "queued",
+            "parquet_processed_files": 0,
+            "parquet_total_files": 0,
+            "parquet_skipped_files": 0,
+            "parquet_current_file": None,
+            "parquet_output_path": None,
+            "build_progress_percent": 0,
+            "build_output_path": None,
+            "overall_progress_percent": 0,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "finished_at": None,
+        },
+        payload=payload.model_dump(mode="json"),
+        policy=FULL_PIPELINE_POLICY,
+        worker=lambda running_job_id: _run_full_pipeline_job(running_job_id, payload),
+    )
+    return FullPipelineStartResponse(job_id=job_id, status="queued", message="Full pipeline job started.")
+
+
+@router.get("/sidebar-tools/full-pipeline/status/{job_id}", response_model=FullPipelineStatusResponse)
+async def full_pipeline_status(job_id: str) -> FullPipelineStatusResponse:
+    job = job_runtime.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Full pipeline job not found.")
+    return FullPipelineStatusResponse(**job)
+
+
+@router.post("/sidebar-tools/full-pipeline/stop/{job_id}", response_model=FullPipelineStatusResponse)
+async def full_pipeline_stop(job_id: str) -> FullPipelineStatusResponse:
+    job = job_runtime.stop_job(job_id, "Stop requested. Waiting for current operation to finish…")
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Full pipeline job not found.")
+    return FullPipelineStatusResponse(**job)
