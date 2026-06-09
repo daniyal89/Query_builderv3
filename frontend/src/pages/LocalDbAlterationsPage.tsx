@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { pickSystemFile, pickSystemSavePath } from "../api/systemApi";
+import { pickSystemFile } from "../api/systemApi";
 import { StatusAlert } from "../components/common/StatusAlert";
 import {
   AlterDbDerivedPayload,
@@ -13,6 +13,7 @@ import {
   stopAlterDbJob,
   getAlterDbTables,
   getAlterDbColumns,
+  getAlterDbFileColumns,
 } from "../api/alterDbApi";
 
 const ALTER_DB_STORAGE_KEY = "alter_db_page_state_v3";
@@ -105,6 +106,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
 
   const [availableTables, setAvailableTables] = useState<string[]>([]);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
+  const [availableFileColumns, setAvailableFileColumns] = useState<string[]>([]);
 
   const isRunning = status?.status === "queued" || status?.status === "running" || status?.status === "cancelling";
   const showSuccess = status?.status === "completed" && Boolean(message.trim());
@@ -150,6 +152,23 @@ export const LocalDbAlterationsPage: React.FC = () => {
     };
     fetchColumns();
   }, [form.db_path, form.table_name]);
+
+  // Fetch File Columns when file_path changes
+  useEffect(() => {
+    if (!form.file_path) {
+      setAvailableFileColumns([]);
+      return;
+    }
+    const fetchFileColumns = async () => {
+      try {
+        const cols = await getAlterDbFileColumns(form.file_path);
+        setAvailableFileColumns(cols);
+      } catch (err) {
+        setAvailableFileColumns([]);
+      }
+    };
+    fetchFileColumns();
+  }, [form.file_path]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -294,6 +313,12 @@ export const LocalDbAlterationsPage: React.FC = () => {
         ))}
       </datalist>
 
+      <datalist id="file-columns-list">
+        {availableFileColumns.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
+
       <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Modify Local Master Table</h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -304,7 +329,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
           <Field label="Target DuckDB file path" help="Example: G:/MASTER/uppcl_latest.duckdb">
             <div className="flex gap-2">
               <input className="w-full rounded border p-2" value={form.db_path} onChange={(e) => updateForm({ db_path: e.target.value })} />
-              <button type="button" onClick={async () => { const path = await pickSystemSavePath("monthly.duckdb", ".duckdb"); if (path) updateForm({ db_path: path }); }} className="rounded border border-slate-300 bg-slate-50 px-3 text-sm font-medium hover:bg-slate-100">Browse...</button>
+              <button type="button" onClick={async () => { const path = await pickSystemFile("duckdb"); if (path) updateForm({ db_path: path }); }} className="rounded border border-slate-300 bg-slate-50 px-3 text-sm font-medium hover:bg-slate-100">Browse...</button>
             </div>
           </Field>
           <Field label="Table Name" help="Type or select a table from the chosen DuckDB.">
@@ -415,7 +440,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
               <Field label="Source File (CSV/Excel)" help="The file containing the new data to pull in.">
                 <div className="flex gap-2">
                   <input className="w-full rounded border p-2" value={form.file_path} onChange={(e) => updateForm({ file_path: e.target.value })} />
-                  <button type="button" onClick={async () => { const path = await pickSystemFile(); if (path) updateForm({ file_path: path }); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-100">Browse...</button>
+                  <button type="button" onClick={async () => { const path = await pickSystemFile("data"); if (path) updateForm({ file_path: path }); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-100">Browse...</button>
                 </div>
               </Field>
               <div className="grid gap-4 md:grid-cols-3">
@@ -423,10 +448,10 @@ export const LocalDbAlterationsPage: React.FC = () => {
                   <input className="w-full rounded border p-2" list="db-columns-list" value={form.join_master_col} onChange={(e) => updateForm({ join_master_col: e.target.value })} />
                 </Field>
                 <Field label="File Key" help="Column in the File to match on.">
-                  <input className="w-full rounded border p-2" value={form.join_file_col} onChange={(e) => updateForm({ join_file_col: e.target.value })} />
+                  <input className="w-full rounded border p-2" list="file-columns-list" value={form.join_file_col} onChange={(e) => updateForm({ join_file_col: e.target.value })} />
                 </Field>
                 <Field label="Value Column" help="Column in the File to pull data from.">
-                  <input className="w-full rounded border p-2" value={form.value_file_col} onChange={(e) => updateForm({ value_file_col: e.target.value })} />
+                  <input className="w-full rounded border p-2" list="file-columns-list" value={form.value_file_col} onChange={(e) => updateForm({ value_file_col: e.target.value })} />
                 </Field>
               </div>
             </div>

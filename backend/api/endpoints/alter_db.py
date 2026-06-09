@@ -32,6 +32,12 @@ ALTER_DB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=1)
 def _update_job(job_id: str, **updates) -> None:
     job_runtime.update_job(job_id, **updates)
 
+def _qi(name: str) -> str:
+    """Quote a SQL identifier (table/column name) to handle spaces and reserved words."""
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
+
+
 def _run_alter_db_job(job_id: str, request: AlterDbDerivedRequest | AlterDbJoinRequest | AlterDbDropRequest) -> None:
     _update_job(job_id, progress_percent=0, message="Initializing database connection...")
     
@@ -46,15 +52,19 @@ def _run_alter_db_job(job_id: str, request: AlterDbDerivedRequest | AlterDbJoinR
         with duckdb.connect(database=sanitized_db, read_only=False) as conn:
             job_runtime.raise_if_cancelled(job_id)
 
+            tbl = _qi(request.table_name)
+
             if isinstance(request, AlterDbDropRequest):
+                col = _qi(request.column_name)
                 _update_job(job_id, progress_percent=50, message=f"Dropping column {request.column_name}...")
-                conn.execute(f"ALTER TABLE {request.table_name} DROP COLUMN {request.column_name}")
+                conn.execute(f"ALTER TABLE {tbl} DROP COLUMN {col}")
                 _update_job(job_id, progress_percent=90, message="Column dropped.")
             else:
+                col = _qi(request.new_column_name)
                 # Step 1: Add the column
                 _update_job(job_id, progress_percent=20, message=f"Adding column {request.new_column_name}...")
                 try:
-                    conn.execute(f"ALTER TABLE {request.table_name} ADD COLUMN {request.new_column_name} {request.column_type}")
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {request.column_type}")
                 except duckdb.CatalogException as e:
                     if "already exists" not in str(e).lower():
                         raise
@@ -65,7 +75,7 @@ def _run_alter_db_job(job_id: str, request: AlterDbDerivedRequest | AlterDbJoinR
                 # Step 2: Update the column
                 if isinstance(request, AlterDbDerivedRequest):
                     _update_job(job_id, progress_percent=50, message="Executing SQL formula update...")
-                    update_sql = f"UPDATE {request.table_name} SET {request.new_column_name} = {request.sql_formula}"
+                    update_sql = f"UPDATE {tbl} SET {col} = {request.sql_formula}"
                     conn.execute(update_sql)
                     
                 elif isinstance(request, AlterDbJoinRequest):
@@ -83,12 +93,16 @@ def _run_alter_db_job(job_id: str, request: AlterDbDerivedRequest | AlterDbJoinR
                     _update_job(job_id, progress_percent=60, message="Registering file in memory...")
                     conn.register("incoming_data", df)
                     
+                    master_key = _qi(request.join_master_col)
+                    file_key = _qi(request.join_file_col)
+                    value_col = _qi(request.value_file_col)
+                    
                     _update_job(job_id, progress_percent=70, message="Executing JOIN update...")
                     update_sql = f"""
-                        UPDATE {request.table_name}
-                        SET {request.new_column_name} = incoming_data.{request.value_file_col}
+                        UPDATE {tbl}
+                        SET {col} = incoming_data.{value_col}
                         FROM incoming_data
-                        WHERE {request.table_name}.{request.join_master_col} = incoming_data.{request.join_file_col}
+                        WHERE {tbl}.{master_key} = incoming_data.{file_key}
                     """
                     conn.execute(update_sql)
                 
@@ -163,8 +177,8 @@ def get_alter_db_tables(db_path: str) -> list[str]:
         return []
         
     try:
-        from backend.api.deps import get_duckdb
-        svc = get_duckdb()
+        from backend.api.deps import get_db_service
+        svc = get_db_service()
         
         # If already connected to this DB, reuse connection
         if svc.is_connected and svc._db_path and Path(svc._db_path).resolve() == Path(sanitized_db).resolve():
@@ -186,8 +200,8 @@ def get_alter_db_columns(db_path: str, table_name: str) -> list[str]:
         return []
         
     try:
-        from backend.api.deps import get_duckdb
-        svc = get_duckdb()
+        from backend.api.deps import get_db_service
+        svc = get_db_service()
         
         # If already connected to this DB, reuse connection
         if svc.is_connected and svc._db_path and Path(svc._db_path).resolve() == Path(sanitized_db).resolve():
@@ -199,4 +213,25 @@ def get_alter_db_columns(db_path: str, table_name: str) -> list[str]:
             return [c[0] for c in columns]
     except Exception as e:
         print(f"Error fetching columns: {e}")
+        return []
+
+@router.get("/alter-db/metadata/file-columns")
+def get_alter_db_file_columns(file_path: str) -> list[str]:
+    sanitized_file = sanitize_local_path_input(file_path, "file_path")
+    path_obj = Path(sanitized_file)
+    if not path_obj.exists() or not path_obj.is_file():
+        return []
+    
+    try:
+        if path_obj.suffix.lower() == ".csv":
+            import pandas as pd
+            df = pd.read_csv(sanitized_file, nrows=0)
+            return list(df.columns)
+        elif path_obj.suffix.lower() in [".xlsx", ".xls"]:
+            import pandas as pd
+            df = pd.read_excel(sanitized_file, nrows=0)
+            return list(df.columns)
+        return []
+    except Exception as e:
+        print(f"Error fetching file columns: {e}")
         return []

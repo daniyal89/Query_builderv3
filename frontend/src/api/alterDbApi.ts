@@ -72,3 +72,10 @@ export async function getAlterDbColumns(dbPath: string, tableName: string): Prom
   });
   return data;
 }
+
+export async function getAlterDbFileColumns(filePath: string): Promise<string[]> {
+  const { data } = await apiClient.get<string[]>("/alter-db/metadata/file-columns", {
+    params: { file_path: filePath },
+  });
+  return data;
+}
