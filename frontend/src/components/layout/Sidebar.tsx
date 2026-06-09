@@ -32,6 +32,7 @@ const navigationSections = [
     links: [
       { to: "/ftp-download", label: "FTP Download" },
       { to: "/sidebar-6-tools", label: "Data Tools" },
+      { to: "/alter-local-db", label: "LOCAL DB Alterations" },
       { to: "/drive-upload-master", label: "Upload master in Drive" },
       { to: "/drive-download", label: "Drive Download" },
     ],
