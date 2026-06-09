@@ -290,6 +290,7 @@ class MergeService:
                 dtype=str,
                 low_memory=False,
                 encoding_errors="replace",
+                on_bad_lines="skip",
             )
         except Exception:
             buffer.seek(0)
@@ -300,9 +301,23 @@ class MergeService:
                     encoding_errors="replace",
                     sep=None,
                     engine="python",
+                    on_bad_lines="skip",
                 )
-            except Exception as exc:
-                raise ValueError(f"Failed to read CSV data from {source_name}: {exc}") from exc
+            except Exception as sniffing_exc:
+                if "Could not determine delimiter" in str(sniffing_exc):
+                    buffer.seek(0)
+                    try:
+                        return pd.read_csv(
+                            buffer,
+                            dtype=str,
+                            encoding_errors="replace",
+                            sep=",",
+                            engine="python",
+                            on_bad_lines="skip",
+                        )
+                    except Exception as fallback_exc:
+                        raise ValueError(f"Failed to read CSV data from {source_name}: {fallback_exc}") from fallback_exc
+                raise ValueError(f"Failed to read CSV data from {source_name}: {sniffing_exc}") from sniffing_exc
 
     @staticmethod
     def _read_excel(buffer: io.BytesIO, source_name: str) -> list[tuple[pd.DataFrame, str, str]]:
