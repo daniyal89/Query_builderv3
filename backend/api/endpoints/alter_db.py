@@ -163,8 +163,8 @@ def get_alter_db_tables(db_path: str) -> list[str]:
         return []
         
     try:
-        from backend.services.duckdb_service import get_db_service
-        svc = get_db_service()
+        from backend.api.deps import get_duckdb
+        svc = get_duckdb()
         
         # If already connected to this DB, reuse connection
         if svc.is_connected and svc._db_path and Path(svc._db_path).resolve() == Path(sanitized_db).resolve():
@@ -186,8 +186,8 @@ def get_alter_db_columns(db_path: str, table_name: str) -> list[str]:
         return []
         
     try:
-        from backend.services.duckdb_service import get_db_service
-        svc = get_db_service()
+        from backend.api.deps import get_duckdb
+        svc = get_duckdb()
         
         # If already connected to this DB, reuse connection
         if svc.is_connected and svc._db_path and Path(svc._db_path).resolve() == Path(sanitized_db).resolve():
