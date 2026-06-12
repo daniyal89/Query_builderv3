@@ -181,6 +181,9 @@ async def enrich_data(
     join_keys: str = Form(
         ..., description="JSON encoded array of join key mapping objects"
     ),
+    output_format: str = Form(
+        "xlsx", description="Output format: 'xlsx' or 'csv'"
+    ),
     db: DuckDBService = Depends(get_connected_db),
 ) -> StreamingResponse:
     try:
@@ -219,17 +222,24 @@ async def enrich_data(
 
         output = io.BytesIO()
         try:
-            result_df.to_excel(
-                output, index=False, sheet_name="EnrichedData", engine="openpyxl"
-            )
+            if output_format == "csv":
+                result_df.to_csv(output, index=False, encoding="utf-8-sig")
+                filename_ext = "csv"
+                media_type = "text/csv"
+            else:
+                result_df.to_excel(
+                    output, index=False, sheet_name="EnrichedData", engine="openpyxl"
+                )
+                filename_ext = "xlsx"
+                media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         except Exception as write_exc:
             raise ValueError(
-                f"Failed to generate Excel output: {write_exc}"
+                f"Failed to generate {output_format.upper()} output: {write_exc}"
             ) from write_exc
         output.seek(0)
 
         headers = {
-            "Content-Disposition": 'attachment; filename="enriched_data.xlsx"',
+            "Content-Disposition": f'attachment; filename="enriched_data.{filename_ext}"',
             "X-Matched-Rows": str(stats.get("matched_rows", 0)),
             "X-Unmatched-Rows": str(stats.get("unmatched_rows", 0)),
             "X-Total-Rows": str(stats.get("total_rows", 0)),
@@ -240,7 +250,7 @@ async def enrich_data(
 
         return StreamingResponse(
             output,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            media_type=media_type,
             headers=headers,
         )
     except ValueError as exc:

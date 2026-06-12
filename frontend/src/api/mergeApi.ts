@@ -9,8 +9,7 @@ import type {
   JoinKeyMapping,
   UploadSheetsResponse,
 } from "../types/merge.types";
-
-const LONG_RUNNING_TIMEOUT_MS = 10 * 60_000;
+const LONG_RUNNING_TIMEOUT_MS = 0; // No timeout
 
 export async function uploadSheets(files: File[]): Promise<UploadSheetsResponse> {
   const formData = new FormData();
@@ -112,6 +111,7 @@ export async function enrichData(
   masterTable: string,
   fetchColumns: string[],
   joinKeys: JoinKeyMapping[],
+  outputFormat: "xlsx" | "csv",
   file: File,
   signal?: AbortSignal
 ): Promise<{ blob: Blob; headers: Record<string, string> }> {
@@ -121,6 +121,7 @@ export async function enrichData(
   formData.append("master_table", masterTable);
   formData.append("fetch_columns", JSON.stringify(fetchColumns));
   formData.append("join_keys", JSON.stringify(joinKeys));
+  formData.append("output_format", outputFormat);
 
   const response = await apiClient.post("/enrich-data", formData, {
     headers: { "Content-Type": "multipart/form-data" },

@@ -178,6 +178,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     resetSqlToBuilder,
     applyState,
     executeQuery,
+    executeExportQuery,
   } = useQueryBuilder(engine, metadataTables);
 
   useEffect(() => {
@@ -828,11 +829,13 @@ WHERE 1 = 1`;
                   <label className="mb-1 block text-sm font-semibold text-gray-700">
                     Limit Rows
                   </label>
-                  <p className="mb-2 text-xs text-gray-400">Set to 0 for No Limit</p>
+                  <p className="mb-2 text-xs text-gray-400">
+                    0 = No limit (UI shows max 1000, CSV downloads all)
+                  </p>
                   <input
                     type="number"
                     value={state.limitRows}
-                    onChange={(event) => setLimitRows(Number(event.target.value))}
+                    onChange={(event) => setLimitRows(Math.max(0, Number(event.target.value)))}
                     className="w-full rounded border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     min="0"
                   />
@@ -989,7 +992,7 @@ WHERE 1 = 1`;
               </div>
             )}
 
-            <ResultsGrid result={state.result} isLoading={state.isLoading} />
+            <ResultsGrid result={state.result} isLoading={state.isLoading} onExportAll={executeExportQuery} />
           </div>
         </div>
       </div>
