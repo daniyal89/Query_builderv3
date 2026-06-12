@@ -38,7 +38,7 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
     connect,
   } = useConnection();
   const [masterTable, setMasterTable] = useState<string>("master");
-  const outputFormat: OutputFormat = "xlsx";
+  const [outputFormat, setOutputFormat] = useState<OutputFormat>("xlsx");
   const [joinKeys, setJoinKeys] = useState<JoinKeyMapping[]>([{ fileColumn: "", tableColumn: "" }]);
   const [columnsToFetch, setColumnsToFetch] = useState<string[]>([]);
   const [didAutoLoadOnMount, setDidAutoLoadOnMount] = useState(false);
@@ -239,6 +239,34 @@ export const EnrichmentConfig: React.FC<EnrichmentConfigProps> = ({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="mb-6">
+            <label className="mb-1 block text-sm font-medium text-gray-700">Output Format *</label>
+            <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="radio"
+                  name="outputFormat"
+                  value="xlsx"
+                  checked={outputFormat === "xlsx"}
+                  onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
+                  className="text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                <span>Excel (.xlsx) <span className="text-gray-500 text-xs">- Best for small to medium files</span></span>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="radio"
+                  name="outputFormat"
+                  value="csv"
+                  checked={outputFormat === "csv"}
+                  onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
+                  className="text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                <span className="font-semibold text-indigo-700">CSV (.csv) <span className="font-normal text-gray-500 text-xs">- Recommended for large datasets (extremely fast)</span></span>
+              </label>
+            </div>
           </div>
 
           <div className="mb-3 flex items-center justify-between">
