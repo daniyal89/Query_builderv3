@@ -30,7 +30,7 @@ class QueryBuilderService:
         if isinstance(value, (list, tuple, set)):
             return [item for item in value if item not in (None, "")]
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            return [item.strip().strip("'\"") for item in value.split(",") if item.strip()]
         if value in (None, ""):
             return []
         return [value]

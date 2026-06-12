@@ -109,6 +109,7 @@ export function useMergeWizard() {
         masterTable,
         fetchColumns,
         joinKeys,
+        outputFormat,
         mergedFile,
         abortController.signal
       );
