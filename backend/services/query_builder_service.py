@@ -379,6 +379,12 @@ class QueryBuilderService:
             default_table,
         )
         operator = filter_condition.operator
+
+        if operator in ("=", "!=") and isinstance(filter_condition.value, str) and "," in filter_condition.value:
+            test_values = QueryBuilderService._normalize_list_value(filter_condition.value)
+            if len(test_values) > 1:
+                operator = "IN" if operator == "=" else "NOT IN"
+
         use_date_literals = QueryBuilderService._is_date_like_column(column_name)
         numeric_value = QueryBuilderService._to_float_if_numeric(filter_condition.value)
         should_use_numeric_cast = (
