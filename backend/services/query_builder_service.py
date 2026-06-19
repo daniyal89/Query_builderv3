@@ -394,7 +394,7 @@ class QueryBuilderService:
             and numeric_value is not None
         )
         filter_column_expr = (
-            f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_numeric_cast else column_expr
+            f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_numeric_cast else f"TRIM({column_expr})"
         )
         date_filter_expr = (
             QueryBuilderService._duckdb_date_expression(column_expr)
@@ -413,11 +413,18 @@ class QueryBuilderService:
                 literals = ", ".join(QueryBuilderService._date_literal(value) for value in values)
                 return f"{date_filter_expr} {operator} ({literals})", []
             else:
+                # Wrap column with UPPER(TRIM(CAST(... AS VARCHAR))) and uppercase
+                # the values for robust case-insensitive matching.
+                normalized_col = f"UPPER(TRIM(CAST({column_expr} AS VARCHAR)))"
+                upper_values = [
+                    str(v).strip().upper() if isinstance(v, str) else v
+                    for v in values
+                ]
                 placeholders = ", ".join(
-                    QueryBuilderService._build_placeholders(engine, len(values), start_param_index)
+                    QueryBuilderService._build_placeholders(engine, len(upper_values), start_param_index)
                 )
-                params.extend(values)
-                return f"{column_expr} {operator} ({placeholders})", params
+                params.extend(upper_values)
+                return f"{normalized_col} {operator} ({placeholders})", params
 
         if operator in QueryBuilderService.RANGE_OPERATORS:
             start, end = QueryBuilderService._normalize_range_value(filter_condition.value)
@@ -435,7 +442,7 @@ class QueryBuilderService:
                     and end_numeric is not None
                 )
                 range_column_expr = (
-                    f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_range_numeric_cast else column_expr
+                    f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_range_numeric_cast else f"TRIM({column_expr})"
                 )
                 left_placeholder = QueryBuilderService._placeholder(engine, start_param_index)
                 right_placeholder = QueryBuilderService._placeholder(engine, start_param_index + 1)
@@ -451,7 +458,7 @@ class QueryBuilderService:
             sql_operator, pattern = QueryBuilderService._build_text_pattern(operator, filter_condition.value)
             placeholder = QueryBuilderService._placeholder(engine, start_param_index)
             params.append(pattern)
-            return f"{column_expr} {sql_operator} {placeholder} ESCAPE '\\'", params
+            return f"TRIM({column_expr}) {sql_operator} {placeholder} ESCAPE '\\'", params
 
         if use_date_literals:
             return (
