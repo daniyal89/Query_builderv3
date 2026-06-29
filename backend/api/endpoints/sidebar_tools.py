@@ -540,26 +540,18 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     col_names = [row[0] for row in columns_info]
     select_sql = _build_select_sql_for_schema(relation_sql, col_names)
 
-    max_attempts = 3
     try:
-        for attempt in range(1, max_attempts + 1):
-            try:
-                with duckdb.connect(str(db_path)) as conn:
-                    thread_count = max(1, os.cpu_count() or 1)
-                    conn.execute(f"PRAGMA threads={thread_count}")
-                    conn.execute("PRAGMA preserve_insertion_order=false")
-                    if payload.replace:
-                        _drop_existing_duckdb_object(conn, normalized_object_name)
-                    conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
-                break  # success
-            except duckdb.TransactionException:
-                if attempt < max_attempts:
-                    # Another connection may have briefly opened; retry after a pause
-                    if svc.is_connected:
-                        svc.disconnect()
-                    time.sleep(1)
-                else:
-                    raise
+        with duckdb.connect(str(db_path)) as conn:
+            thread_count = max(1, os.cpu_count() or 1)
+            conn.execute(f"PRAGMA threads={thread_count}")
+            conn.execute("PRAGMA preserve_insertion_order=false")
+            if payload.replace:
+                # Use DROP IF EXISTS instead of querying information_schema
+                # (the information_schema SELECT opens a read transaction that
+                # conflicts with the subsequent CREATE write transaction).
+                conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
+                conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+            conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
     finally:
         # Reconnect the dashboard so the user can immediately see the new table.
         if dashboard_was_connected:
