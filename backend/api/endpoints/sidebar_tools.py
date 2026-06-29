@@ -767,13 +767,13 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     total_output_rows=total_output_rows
                 )
 
+        skipped_str = f" Skipped: {skipped_files}" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else ".")
         _update_csv_job(
             job_id,
             status="completed",
             current_file=None,
             message=(
-                f"Parquet conversion completed successfully for {len(valid_files)} file(s). "
-                f"Skipped existing: {skipped_files}."
+                f"Parquet conversion completed successfully for {len(valid_files)} file(s).{skipped_str}"
                 + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
                 + (f" Invalid gzip files: {len(invalid_files)}." if invalid_files else "")
                 + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else "")
@@ -971,11 +971,12 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     )
                 converted_count += 1
 
+        skipped_str = f" Skipped existing/invalid: {skipped_count}" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else ".")
         return SidebarToolResponse(
-            message=f"Parquet conversion completed successfully for {converted_count} file(s). Skipped existing/invalid: {skipped_count}."
+            message=f"Parquet conversion completed successfully for {converted_count} file(s).{skipped_str}"
             + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
             + (f" Invalid gzip files: {len(invalid_files)}." if invalid_files else "")
-                + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else ""),
+            + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else ""),
             output_path=str(output_root),
         )
     except HTTPException:
@@ -1163,8 +1164,9 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                     overall_progress_percent=min(70, parquet_pct),
                 )
 
+        skipped_str = f" {skipped_files} skipped" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else "")
         parquet_summary = (
-            f"Parquet done: {total_valid} file(s), {skipped_files} skipped."
+            f"Parquet done: {total_valid} file(s),{skipped_str}."
             + (" Enrichment applied." if lookup_mode else "")
         )
 
