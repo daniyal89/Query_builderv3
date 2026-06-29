@@ -526,6 +526,13 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     if dashboard_was_connected:
         svc.disconnect()
 
+    # Get column names via in-memory connection (reads parquet schema only,
+    # avoids write-write transaction conflict on the target database).
+    with duckdb.connect() as mem_conn:
+        columns_info = mem_conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
+    col_names = [row[0] for row in columns_info]
+    select_sql = _build_select_sql_for_schema(relation_sql, col_names)
+
     try:
         with duckdb.connect(str(db_path)) as conn:
             thread_count = max(1, os.cpu_count() or 1)
@@ -533,10 +540,6 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
             conn.execute("PRAGMA preserve_insertion_order=false")
             if payload.replace:
                 _drop_existing_duckdb_object(conn, normalized_object_name)
-            # Apply schema-based casting to strip .0 from VARCHAR columns (MOBILE_NO etc.)
-            columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
-            col_names = [row[0] for row in columns_info]
-            select_sql = _build_select_sql_for_schema(relation_sql, col_names)
             conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
     finally:
         # Reconnect the dashboard so the user can immediately see the new table.
