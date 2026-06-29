@@ -152,15 +152,13 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
             if dtype == "NUMBER":
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             elif dtype == "VARCHAR2" or dtype == "CHAR":
-                df[col] = df[col].astype(str).str.rstrip()
+                df[col] = _normalize_identifier_like_series(df[col])
             elif dtype == "DATE":
                 pass
             else:
-                if df[col].dtype == "object":
-                    df[col] = df[col].astype(str).str.rstrip()
+                df[col] = _normalize_identifier_like_series(df[col])
         else:
-            if df[col].dtype == "object":
-                df[col] = df[col].astype(str).str.rstrip()
+            df[col] = _normalize_identifier_like_series(df[col])
             
     rows = len(df)
     if rows == 0:
@@ -535,7 +533,11 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
             conn.execute("PRAGMA preserve_insertion_order=false")
             if payload.replace:
                 _drop_existing_duckdb_object(conn, normalized_object_name)
-            conn.execute(f"CREATE {payload.object_type} {object_sql} AS SELECT * FROM {relation_sql}")
+            # Apply schema-based casting to strip .0 from VARCHAR columns (MOBILE_NO etc.)
+            columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
+            col_names = [row[0] for row in columns_info]
+            select_sql = _build_select_sql_for_schema(relation_sql, col_names)
+            conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
     finally:
         # Reconnect the dashboard so the user can immediately see the new table.
         if dashboard_was_connected:
@@ -604,6 +606,17 @@ def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
         raise
 
 
+def _sql_varchar_normalize_expr(col: str) -> str:
+    """DuckDB SQL expression: cast to VARCHAR and strip trailing .0 from integer-like values.
+
+    Turns 9411240068.0 → '9411240068' while leaving normal strings untouched.
+    """
+    return (
+        f"REGEXP_REPLACE(RTRIM(CAST(\"{col}\" AS VARCHAR)), "
+        f"'^(-?\\d+)\\.0+$', '\\1')"
+    )
+
+
 def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str:
     select_exprs = []
     for col in col_names:
@@ -615,13 +628,13 @@ def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str
             if dtype == "NUMBER":
                 expr = f'CAST("{col}" AS DOUBLE)'
             elif dtype == "VARCHAR2" or dtype == "CHAR":
-                expr = f'RTRIM(CAST("{col}" AS VARCHAR))'
+                expr = _sql_varchar_normalize_expr(col)
             elif dtype == "DATE":
                 pass
             else:
-                expr = f'RTRIM(CAST("{col}" AS VARCHAR))'
+                expr = _sql_varchar_normalize_expr(col)
         else:
-            expr = f'RTRIM(CAST("{col}" AS VARCHAR))'
+            expr = _sql_varchar_normalize_expr(col)
         select_exprs.append(f'{expr} AS "{col}"')
 
     if "DIV_CODE" in col_names:
