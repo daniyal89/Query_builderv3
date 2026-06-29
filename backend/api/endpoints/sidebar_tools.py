@@ -6,6 +6,7 @@ import re
 import glob
 import gzip
 import os
+import time
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -522,9 +523,15 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     # Temporarily release the dashboard's singleton connection to avoid
     # DuckDB write-write conflicts (DuckDB allows only one writer at a time).
     svc = get_db_service()
-    dashboard_was_connected = svc.is_connected and svc._db_path == db_path
-    if dashboard_was_connected:
-        svc.disconnect()
+    dashboard_was_connected = False
+    if svc.is_connected and svc._db_path is not None:
+        try:
+            same_db = svc._db_path.resolve() == db_path.resolve()
+        except Exception:
+            same_db = str(svc._db_path) == str(db_path)
+        if same_db:
+            dashboard_was_connected = True
+            svc.disconnect()
 
     # Get column names via in-memory connection (reads parquet schema only,
     # avoids write-write transaction conflict on the target database).
@@ -533,14 +540,26 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     col_names = [row[0] for row in columns_info]
     select_sql = _build_select_sql_for_schema(relation_sql, col_names)
 
+    max_attempts = 3
     try:
-        with duckdb.connect(str(db_path)) as conn:
-            thread_count = max(1, os.cpu_count() or 1)
-            conn.execute(f"PRAGMA threads={thread_count}")
-            conn.execute("PRAGMA preserve_insertion_order=false")
-            if payload.replace:
-                _drop_existing_duckdb_object(conn, normalized_object_name)
-            conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with duckdb.connect(str(db_path)) as conn:
+                    thread_count = max(1, os.cpu_count() or 1)
+                    conn.execute(f"PRAGMA threads={thread_count}")
+                    conn.execute("PRAGMA preserve_insertion_order=false")
+                    if payload.replace:
+                        _drop_existing_duckdb_object(conn, normalized_object_name)
+                    conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
+                break  # success
+            except duckdb.TransactionException:
+                if attempt < max_attempts:
+                    # Another connection may have briefly opened; retry after a pause
+                    if svc.is_connected:
+                        svc.disconnect()
+                    time.sleep(1)
+                else:
+                    raise
     finally:
         # Reconnect the dashboard so the user can immediately see the new table.
         if dashboard_was_connected:
