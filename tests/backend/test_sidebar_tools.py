@@ -8,17 +8,17 @@ from backend.api.endpoints.sidebar_tools import _drop_existing_duckdb_object
 from backend.app import app
 
 
-def test_sidebar_build_duckdb_creates_object_from_csv(tmp_path: Path) -> None:
+def test_sidebar_build_duckdb_creates_object_from_parquet(tmp_path: Path) -> None:
     db_path = tmp_path / "tools.duckdb"
-    csv_path = tmp_path / "input.csv"
-    csv_path.write_text("id,name\n1,Alice\n2,Bob\n", encoding="utf-8")
+    parquet_path = tmp_path / "input.parquet"
+    duckdb.connect().execute("COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)])
 
     client = TestClient(app)
     response = client.post(
         "/api/sidebar-tools/build-duckdb",
         json={
             "db_path": str(db_path),
-            "input_path": str(csv_path),
+            "input_path": str(parquet_path),
             "object_name": "MASTER_FEB_2026",
             "object_type": "TABLE",
             "replace": True,
@@ -264,31 +264,6 @@ def test_sidebar_build_duckdb_supports_trailing_star_pattern_for_nested_parquet(
     assert response.status_code == 200, response.text
 
 
-def test_sidebar_build_duckdb_detects_gz_csv_from_wildcard_without_extension(tmp_path: Path) -> None:
-    db_path = tmp_path / "tools_gz.duckdb"
-    csv_dir = tmp_path / "csv"
-    csv_dir.mkdir(parents=True, exist_ok=True)
-    gz_path = csv_dir / "data.gz"
-
-    with gzip.open(gz_path, "wt", encoding="utf-8") as handle:
-        handle.write("id,name\n1,Alice\n")
-
-    client = TestClient(app)
-    response = client.post(
-        "/api/sidebar-tools/build-duckdb",
-        json={
-            "db_path": str(db_path),
-            "input_path": str(csv_dir / "*"),
-            "object_name": "GZ_IMPORT_VIEW",
-            "object_type": "VIEW",
-            "replace": True,
-            "month_label": "",
-        },
-    )
-
-    assert response.status_code == 200, response.text
-
-
 def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> None:
     db_path = tmp_path / "tools_missing.duckdb"
 
@@ -306,7 +281,7 @@ def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> N
     )
 
     assert response.status_code == 400, response.text
-    assert "No files found that match the pattern" in response.json()["detail"]
+    assert "Build step could not find parquet outputs" in response.json()["detail"]
 
 
 def test_sidebar_build_duckdb_replace_can_switch_table_to_view() -> None:

@@ -92,14 +92,20 @@ def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFr
     return hir_div, hir_sdo, supp
 
 
-def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> bool:
-    """Enrich a CSV and write to parquet. Returns False if the file was empty/unreadable."""
+def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> tuple[bool, int, str]:
+    """Enrich a CSV and write to parquet. Returns (success, rows_written, skip_reason)."""
     try:
         df = pd.read_csv(source_file, encoding="utf-8", encoding_errors="replace")
     except pd.errors.EmptyDataError:
-        return False
+        try:
+            df = pd.read_csv(source_file, encoding="latin-1")
+        except Exception:
+            return False, 0, "EMPTY_DATA_ERROR"
+    except Exception as exc:
+        return False, 0, f"READ_ERROR:{exc}"
+        
     if df.empty or len(df.columns) == 0:
-        return False
+        return False, 0, "EMPTY_DATAFRAME"
     if "BILLED_AMOUNT" in df.columns and "TOTAL_AMT" not in df.columns:
         df["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
     if "SDO_CODE" in df.columns and "SUB_DIV_CODE" not in df.columns:
@@ -142,8 +148,13 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     for col in df.columns:
         if df[col].dtype == "object":
             df[col] = df[col].astype(str)
+            
+    rows = len(df)
+    if rows == 0:
+        return False, 0, "NO_ROWS_AFTER_FILTERING"
+        
     df.to_parquet(target_file, compression=compression, index=False)
-    return True
+    return True, rows, ""
 
 
 def _previous_month_label(month_label: str) -> str | None:
@@ -298,6 +309,12 @@ def _validate_gzip_file(path: Path) -> tuple[bool, str | None]:
                 pass
         return True, None
     except EOFError:
+        try:
+            test_df = pd.read_csv(path, nrows=5, encoding="utf-8", encoding_errors="replace", on_bad_lines="skip")
+            if not test_df.empty and len(test_df.columns) > 0:
+                return True, "TRUNCATED_GZ_PARTIAL_RECOVERY"
+        except Exception:
+            pass
         return False, "TRUNCATED_EOF"
     except OSError as exc:
         return False, f"GZIP_OSERROR:{exc}"
@@ -604,6 +621,8 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
             message=precheck_message,
         )
         skipped_files = len(invalid_files)
+        parquet_skipped_details = [f"{item['file']} ({item['reason']})" for item in invalid_files]
+        total_output_rows = 0
 
         with duckdb.connect() as conn:
             for index, source_file in enumerate(valid_files, start=1):
@@ -619,15 +638,20 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                 target_file = single_target if single_target is not None else _parquet_target_for_input(output_root, input_root, source_file)
                 target_file.parent.mkdir(parents=True, exist_ok=True)
                 if target_file.exists():
-                    skipped_files += 1
-                    _update_csv_job(
-                        job_id,
-                        processed_files=index,
-                        skipped_files=skipped_files,
-                        current_file=str(source_file),
-                        message=f"Skipping existing parquet file ({index}/{len(valid_files)}).",
-                    )
-                    continue
+                    if payload.overwrite_parquet:
+                        target_file.unlink()
+                    else:
+                        skipped_files += 1
+                        parquet_skipped_details.append(f"{source_file} (ALREADY_EXISTS)")
+                        _update_csv_job(
+                            job_id,
+                            processed_files=index,
+                            skipped_files=skipped_files,
+                            parquet_skipped_details=parquet_skipped_details,
+                            current_file=str(source_file),
+                            message=f"Skipping existing parquet file ({index}/{len(valid_files)}).",
+                        )
+                        continue
                 _update_csv_job(
                     job_id,
                     processed_files=index - 1,
@@ -636,10 +660,19 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     message=f"Processing file {index}/{len(valid_files)}...",
                 )
                 if lookup_mode:
-                    if not _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp):
+                    success, rows_written, skip_reason = _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp)
+                    if not success:
                         skipped_files += 1
-                        _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files, message=f"Skipping empty file ({index}/{len(valid_files)}).")
+                        parquet_skipped_details.append(f"{source_file} ({skip_reason})")
+                        _update_csv_job(
+                            job_id, 
+                            processed_files=index, 
+                            skipped_files=skipped_files, 
+                            parquet_skipped_details=parquet_skipped_details,
+                            message=f"Skipping file ({index}/{len(valid_files)}) - {skip_reason}."
+                        )
                         continue
+                    total_output_rows += rows_written
                 else:
                     relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                     target_sql = _sql_string_literal(str(target_file))
@@ -662,10 +695,18 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     else:
                         select_sql = f"SELECT * FROM {relation_sql}"
                         
-                    conn.execute(
+                    res = conn.execute(
                         f"COPY ({select_sql}) TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
-                    )
-                _update_csv_job(job_id, processed_files=index, skipped_files=skipped_files)
+                    ).fetchone()
+                    if res:
+                        total_output_rows += int(res[0])
+                _update_csv_job(
+                    job_id, 
+                    processed_files=index, 
+                    skipped_files=skipped_files,
+                    parquet_skipped_details=parquet_skipped_details,
+                    total_output_rows=total_output_rows
+                )
 
         _update_csv_job(
             job_id,
@@ -954,6 +995,7 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
             compression=payload.compression,
             hir_file=payload.hir_file,
             supp_mapper_file=payload.supp_mapper_file,
+            overwrite_parquet=payload.overwrite_parquet,
         )
 
         files, output_root, input_root, single_target = _build_csv_to_parquet_targets(parquet_payload)
@@ -981,6 +1023,8 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
             message=f"Phase 1: Converting {total_valid} file(s) to Parquet…",
             overall_progress_percent=5,
         )
+        parquet_skipped_details = [f"{item['file']} ({item['reason']})" for item in invalid_files]
+        total_output_rows = 0
 
         with duckdb.connect() as conn:
             for index, source_file in enumerate(valid_files, start=1):
@@ -999,16 +1043,21 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                 target_file.parent.mkdir(parents=True, exist_ok=True)
 
                 if target_file.exists():
-                    skipped_files += 1
-                    parquet_pct = int((index / total_valid) * 70)
-                    _update(
-                        parquet_processed_files=index,
-                        parquet_skipped_files=skipped_files,
-                        parquet_current_file=str(source_file),
-                        message=f"Phase 1: Skipping existing file ({index}/{total_valid}).",
-                        overall_progress_percent=min(70, parquet_pct),
-                    )
-                    continue
+                    if payload.overwrite_parquet:
+                        target_file.unlink()
+                    else:
+                        skipped_files += 1
+                        parquet_skipped_details.append(f"{source_file} (ALREADY_EXISTS)")
+                        parquet_pct = int((index / total_valid) * 70)
+                        _update(
+                            parquet_processed_files=index,
+                            parquet_skipped_files=skipped_files,
+                            parquet_skipped_details=parquet_skipped_details,
+                            parquet_current_file=str(source_file),
+                            message=f"Phase 1: Skipping existing file ({index}/{total_valid}).",
+                            overall_progress_percent=min(70, parquet_pct),
+                        )
+                        continue
 
                 parquet_pct = int(((index - 1) / total_valid) * 70)
                 _update(
@@ -1020,14 +1069,18 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                 )
 
                 if lookup_mode:
-                    if not _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp):
+                    success, rows_written, skip_reason = _apply_csv_enrichment(source_file, target_file, payload.compression, hir_div, hir_sdo, supp)
+                    if not success:
                         skipped_files += 1
+                        parquet_skipped_details.append(f"{source_file} ({skip_reason})")
                         _update(
                             parquet_processed_files=index,
                             parquet_skipped_files=skipped_files,
-                            message=f"Phase 1: Skipping empty file ({index}/{total_valid}).",
+                            parquet_skipped_details=parquet_skipped_details,
+                            message=f"Phase 1: Skipping file ({index}/{total_valid}) - {skip_reason}.",
                         )
                         continue
+                    total_output_rows += rows_written
                 else:
                     relation_sql = _resolve_csv_parquet_read_sql(str(source_file))
                     target_sql = _sql_string_literal(str(target_file))
@@ -1050,14 +1103,18 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                     else:
                         select_sql = f"SELECT * FROM {relation_sql}"
 
-                    conn.execute(
+                    res = conn.execute(
                         f"COPY ({select_sql}) TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
-                    )
+                    ).fetchone()
+                    if res:
+                        total_output_rows += int(res[0])
 
                 parquet_pct = int((index / total_valid) * 70)
                 _update(
                     parquet_processed_files=index,
                     parquet_skipped_files=skipped_files,
+                    parquet_skipped_details=parquet_skipped_details,
+                    total_output_rows=total_output_rows,
                     overall_progress_percent=min(70, parquet_pct),
                 )
 
