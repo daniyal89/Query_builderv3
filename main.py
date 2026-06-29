@@ -12,7 +12,6 @@ import threading
 import webbrowser
 
 import uvicorn
-
 from backend.config import settings
 
 
@@ -20,7 +19,7 @@ def open_browser(url: str, delay: float = 1.5) -> None:
     """Open the given URL in the default browser after a short delay.
 
     The delay allows Uvicorn to finish binding to the port before the
-    browser attempts to connect.
+    browser attempts to connect
 
     Args:
         url: The full URL to open (e.g., http://127.0.0.1:8741).
