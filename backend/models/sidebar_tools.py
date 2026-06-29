@@ -47,6 +47,7 @@ class CsvToParquetRequest(BaseModel):
     compression: str = Field(default="zstd", description="Parquet compression codec.")
     hir_file: str | None = Field(default=None, description="Optional HIR Excel file path for enrichment join.")
     supp_mapper_file: str | None = Field(default=None, description="Optional suppMapper Excel file path for enrichment join.")
+    overwrite_parquet: bool = Field(default=False, description="Overwrite existing parquet files.")
 
     @field_validator("input_path", "output_path", "hir_file", "supp_mapper_file")
     @classmethod
@@ -86,6 +87,9 @@ class CsvToParquetJobResponse(BaseModel):
     processed_files: int = 0
     total_files: int = 0
     skipped_files: int = 0
+    parquet_skipped_details: list[str] = []
+    total_input_rows: int = 0
+    total_output_rows: int = 0
     current_file: str | None = None
     output_path: str | None = None
     started_at: str | None = None
@@ -120,6 +124,7 @@ class FullPipelineRequest(BaseModel):
     compression: str = Field(default="snappy", description="Parquet compression codec.")
     hir_file: str | None = Field(default=None, description="Optional HIR Excel file path.")
     supp_mapper_file: str | None = Field(default=None, description="Optional suppMapper Excel file path.")
+    overwrite_parquet: bool = Field(default=False, description="Overwrite existing parquet files.")
 
     # Build DuckDB fields
     db_path: str = Field(..., description="Target DuckDB file path.")
@@ -178,8 +183,11 @@ class FullPipelineStatusResponse(BaseModel):
     parquet_processed_files: int = 0
     parquet_total_files: int = 0
     parquet_skipped_files: int = 0
+    parquet_skipped_details: list[str] = []
     parquet_current_file: str | None = None
     parquet_output_path: str | None = None
+    total_input_rows: int = 0
+    total_output_rows: int = 0
     # Build DuckDB progress
     build_progress_percent: int = 0
     build_output_path: str | None = None

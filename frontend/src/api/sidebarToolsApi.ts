@@ -15,6 +15,7 @@ export interface CsvToParquetPayload {
   compression: string;
   hir_file?: string;
   supp_mapper_file?: string;
+  overwrite_parquet?: boolean;
 }
 
 export interface SidebarToolResponse {
@@ -52,6 +53,9 @@ export interface CsvParquetJobStatusResponse {
   processed_files: number;
   total_files: number;
   skipped_files: number;
+  parquet_skipped_details?: string[];
+  total_input_rows?: number;
+  total_output_rows?: number;
   current_file?: string | null;
   output_path?: string | null;
   started_at?: string | null;
@@ -115,6 +119,7 @@ export interface FullPipelinePayload {
   object_type: "TABLE" | "VIEW";
   replace: boolean;
   month_label?: string;
+  overwrite_parquet?: boolean;
 }
 
 export interface FullPipelineStartResponse {
@@ -131,8 +136,11 @@ export interface FullPipelineStatusResponse {
   parquet_processed_files: number;
   parquet_total_files: number;
   parquet_skipped_files: number;
+  parquet_skipped_details?: string[];
   parquet_current_file?: string | null;
   parquet_output_path?: string | null;
+  total_input_rows?: number;
+  total_output_rows?: number;
   build_progress_percent: number;
   build_output_path?: string | null;
   overall_progress_percent: number;

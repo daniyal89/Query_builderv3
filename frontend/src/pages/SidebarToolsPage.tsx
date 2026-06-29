@@ -108,6 +108,7 @@ function readInitialParquetForm() {
     compression: "zstd",
     hir_file: "",
     supp_mapper_file: "",
+    overwrite_parquet: false,
   };
   try {
     const raw = window.localStorage.getItem(PARQUET_FORM_STORAGE_KEY);
@@ -119,6 +120,7 @@ function readInitialParquetForm() {
       compression: typeof parsed.compression === "string" ? parsed.compression : fallback.compression,
       hir_file: typeof parsed.hir_file === "string" ? parsed.hir_file : fallback.hir_file,
       supp_mapper_file: typeof parsed.supp_mapper_file === "string" ? parsed.supp_mapper_file : fallback.supp_mapper_file,
+      overwrite_parquet: typeof parsed.overwrite_parquet === "boolean" ? parsed.overwrite_parquet : fallback.overwrite_parquet,
     };
   } catch {
     return fallback;
@@ -297,6 +299,7 @@ export const SidebarToolsPage: React.FC = () => {
     compression: initialParquetForm.compression,
     hir_file: initialParquetForm.hir_file,
     supp_mapper_file: initialParquetForm.supp_mapper_file,
+    overwrite_parquet: initialParquetForm.overwrite_parquet,
   });
   const [pipelineForm, setPipelineForm] = useState({
     input_path: initialParquetForm.input_path,
@@ -304,6 +307,7 @@ export const SidebarToolsPage: React.FC = () => {
     compression: initialParquetForm.compression,
     hir_file: initialParquetForm.hir_file,
     supp_mapper_file: initialParquetForm.supp_mapper_file,
+    overwrite_parquet: initialParquetForm.overwrite_parquet,
     db_path: initialBuildForm.db_path,
     object_name: initialBuildForm.object_name,
     object_type: initialBuildForm.object_type as "TABLE" | "VIEW",
@@ -521,6 +525,7 @@ export const SidebarToolsPage: React.FC = () => {
       compression: "snappy",
       hir_file: "",
       supp_mapper_file: "",
+      overwrite_parquet: false,
     });
     // Also populate the pipeline form
     setPipelineForm({
@@ -529,6 +534,7 @@ export const SidebarToolsPage: React.FC = () => {
       compression: "snappy",
       hir_file: "",
       supp_mapper_file: "",
+      overwrite_parquet: false,
       db_path: uppclPresetPaths.build_db_path,
       object_name: `MASTER_${normalizeMonthSuffix(monthLabel)}`,
       object_type: "TABLE",
@@ -793,10 +799,16 @@ export const SidebarToolsPage: React.FC = () => {
           <Field label="Compression" help="Parquet compression codec">
             <input className="w-full rounded border p-2" value={pipelineForm.compression} onChange={(e) => setPipelineForm((p) => ({ ...p, compression: e.target.value }))} />
           </Field>
-          <Field label="Replace existing" help="Drop existing table/view before creating">
+          <Field label="Replace existing object" help="Drop existing table/view before creating">
             <label className="flex items-center gap-2 rounded border p-2 text-sm">
               <input type="checkbox" checked={pipelineForm.replace} onChange={(e) => setPipelineForm((p) => ({ ...p, replace: e.target.checked }))} />
-              Replace existing
+              Replace existing DuckDB object
+            </label>
+          </Field>
+          <Field label="Overwrite Parquet" help="Delete existing parquet files instead of skipping them">
+            <label className="flex items-center gap-2 rounded border p-2 text-sm">
+              <input type="checkbox" checked={pipelineForm.overwrite_parquet} onChange={(e) => setPipelineForm((p) => ({ ...p, overwrite_parquet: e.target.checked }))} />
+              Overwrite existing parquet files
             </label>
           </Field>
           <Field label="HIR file (optional)" help="For enrichment join">
@@ -853,6 +865,9 @@ export const SidebarToolsPage: React.FC = () => {
               <div><span className="font-semibold text-slate-800">Skipped:</span> {pipelineStatus.parquet_skipped_files}</div>
               <div><span className="font-semibold text-slate-800">Build:</span> {pipelineStatus.build_progress_percent}%</div>
             </div>
+            {pipelineStatus.total_output_rows !== undefined && pipelineStatus.total_output_rows > 0 && (
+              <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {pipelineStatus.total_output_rows.toLocaleString()}</p>
+            )}
             {pipelineRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(pipelineRunSeconds)}</p>}
             {pipelineStatus.parquet_current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {pipelineStatus.parquet_current_file}</p>}
           </div>
@@ -1027,6 +1042,12 @@ export const SidebarToolsPage: React.FC = () => {
           <Field label="Compression codec" help="Recommended: snappy or zstd">
             <input className="w-full rounded border p-2" value={parquetForm.compression} onChange={(e) => setParquetForm((p) => ({ ...p, compression: e.target.value }))} />
           </Field>
+          <Field label="Overwrite Parquet" help="Delete existing parquet files instead of skipping them">
+            <label className="flex items-center gap-2 rounded border p-2 text-sm">
+              <input type="checkbox" checked={parquetForm.overwrite_parquet} onChange={(e) => setParquetForm((p) => ({ ...p, overwrite_parquet: e.target.checked }))} />
+              Overwrite existing parquet files
+            </label>
+          </Field>
           <Field label="HIR lookup Excel (optional)" help="When provided with suppMapper, conversion enriches rows and adds LOAD_KW.">
             <div className="flex gap-2">
               <input className="w-full rounded border p-2" value={parquetForm.hir_file} onChange={(e) => setParquetForm((p) => ({ ...p, hir_file: e.target.value }))} />
@@ -1087,6 +1108,9 @@ export const SidebarToolsPage: React.FC = () => {
               <div><span className="font-semibold text-slate-800">Skipped:</span> {parquetStatus.skipped_files}</div>
               <div><span className="font-semibold text-slate-800">Progress:</span> {parquetProgress}%</div>
             </div>
+            {parquetStatus.total_output_rows !== undefined && parquetStatus.total_output_rows > 0 && (
+              <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {parquetStatus.total_output_rows.toLocaleString()}</p>
+            )}
             {parquetRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(parquetRunSeconds)}</p>}
             {parquetStatus.current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {parquetStatus.current_file}</p>}
           </div>
