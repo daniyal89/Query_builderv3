@@ -14,6 +14,7 @@ from typing import Any
 import duckdb
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Request, status
+from backend.api.endpoints.mercados_schema import MERCADOS_SCHEMA
 from backend.services.error_log_service import ErrorLogService
 from backend.services.job_runtime import (
     BackgroundJobCancelled,
@@ -91,7 +92,6 @@ def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFr
     supp = supp.drop_duplicates("SUPPLY_TYPE")
     return hir_div, hir_sdo, supp
 
-
 def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> tuple[bool, int, str]:
     """Enrich a CSV and write to parquet. Returns (success, rows_written, skip_reason)."""
     try:
@@ -144,10 +144,23 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     load_kw = load_kw.mask(unit.isin(["HP", "BHP"]), load.round(0) * 0.746)
     df["LOAD_KW"] = load_kw
     df["MONTH"] = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%b_%Y").upper()
-    # Convert mixed-type object columns to string to prevent ArrowInvalid errors
+    
+    # Cast based on schema, else stringify object columns
     for col in df.columns:
-        if df[col].dtype == "object":
-            df[col] = df[col].astype(str)
+        if col in MERCADOS_SCHEMA:
+            dtype = str(MERCADOS_SCHEMA[col]).upper()
+            if dtype == "NUMBER":
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            elif dtype == "VARCHAR2" or dtype == "CHAR":
+                df[col] = df[col].astype(str).str.rstrip()
+            elif dtype == "DATE":
+                pass
+            else:
+                if df[col].dtype == "object":
+                    df[col] = df[col].astype(str).str.rstrip()
+        else:
+            if df[col].dtype == "object":
+                df[col] = df[col].astype(str).str.rstrip()
             
     rows = len(df)
     if rows == 0:
@@ -591,6 +604,39 @@ def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
         raise
 
 
+def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str:
+    select_exprs = []
+    for col in col_names:
+        if col == "DISCOM": 
+            continue
+        expr = f'"{col}"'
+        if col in MERCADOS_SCHEMA:
+            dtype = str(MERCADOS_SCHEMA[col]).upper()
+            if dtype == "NUMBER":
+                expr = f'CAST("{col}" AS DOUBLE)'
+            elif dtype == "VARCHAR2" or dtype == "CHAR":
+                expr = f'RTRIM(CAST("{col}" AS VARCHAR))'
+            elif dtype == "DATE":
+                pass
+            else:
+                expr = f'RTRIM(CAST("{col}" AS VARCHAR))'
+        else:
+            expr = f'RTRIM(CAST("{col}" AS VARCHAR))'
+        select_exprs.append(f'{expr} AS "{col}"')
+
+    if "DIV_CODE" in col_names:
+        select_exprs.append("""CASE 
+            WHEN starts_with("DIV_CODE", 'DIV1') THEN 'PVVNL'
+            WHEN starts_with("DIV_CODE", 'DIV2') THEN 'DVVNL'
+            WHEN starts_with("DIV_CODE", 'DIV3') THEN 'MVVNL'
+            WHEN starts_with("DIV_CODE", 'DIV4') THEN 'PuVNL'
+            WHEN starts_with("DIV_CODE", 'DIV5') THEN 'KESCO'
+            ELSE NULL
+        END AS DISCOM""")
+        
+    return f"SELECT {', '.join(select_exprs)} FROM {relation_sql}"
+
+
 def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
     try:
         files, output_root, input_root, single_target = _build_csv_to_parquet_targets(payload)
@@ -679,21 +725,7 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     
                     columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
                     col_names = [row[0] for row in columns_info]
-                    
-                    if "DIV_CODE" in col_names:
-                        discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
-                        select_sql = f"""SELECT *{discom_exclude} 
-                            CASE 
-                                WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV3') THEN 'MVVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
-                                ELSE NULL
-                            END AS DISCOM
-                            FROM {relation_sql}"""
-                    else:
-                        select_sql = f"SELECT * FROM {relation_sql}"
+                    select_sql = _build_select_sql_for_schema(relation_sql, col_names)
                         
                     res = conn.execute(
                         f"COPY ({select_sql}) TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
@@ -1087,21 +1119,7 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
 
                     columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
                     col_names = [row[0] for row in columns_info]
-
-                    if "DIV_CODE" in col_names:
-                        discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
-                        select_sql = f"""SELECT *{discom_exclude}
-                            CASE
-                                WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV2') THEN 'DVVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV3') THEN 'MVVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
-                                WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
-                                ELSE NULL
-                            END AS DISCOM
-                            FROM {relation_sql}"""
-                    else:
-                        select_sql = f"SELECT * FROM {relation_sql}"
+                    select_sql = _build_select_sql_for_schema(relation_sql, col_names)
 
                     res = conn.execute(
                         f"COPY ({select_sql}) TO {target_sql} (FORMAT PARQUET, COMPRESSION {compression_sql})"
