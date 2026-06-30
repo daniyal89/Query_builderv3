@@ -93,6 +93,65 @@ def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFr
     supp = supp.drop_duplicates("SUPPLY_TYPE")
     return hir_div, hir_sdo, supp
 
+
+def _derive_category_from_supply_type(series: pd.Series) -> pd.Series:
+    """Derive CATEGORY from SUPPLY_TYPE using the same CASE logic as the Oracle SQL.
+
+    Rules:
+      - H-prefixed codes  -> 'HV-' + first digit after 'H'
+      - 100-107           -> 'LMV-10'
+      - 11 + letter(s)    -> 'LMV-11'  (bare '11' stays 'LMV-1')
+      - other numeric     -> 'LMV-' + first digit
+      - everything else   -> 'UNMAPPED'
+    """
+    trimmed = series.astype(str).str.strip()
+    result = pd.Series("UNMAPPED", index=series.index)
+
+    # HV codes: starts with 'H', digit immediately after 'H'
+    hv_mask = trimmed.str.match(r'^H', na=False)
+    hv_digit = trimmed.str.extract(r'^H(\d)', expand=False)
+    result = result.mask(hv_mask & hv_digit.notna(), 'HV-' + hv_digit)
+
+    # Extract leading digit run
+    leading_digits = trimmed.str.extract(r'^(\d+)', expand=False)
+    has_leading = leading_digits.notna() & ~hv_mask
+
+    # Exception 1: 100-107 -> LMV-10  (3-digit starting with '10')
+    exc1_mask = has_leading & (leading_digits.str.len() == 3) & leading_digits.str.startswith('10')
+    result = result.mask(exc1_mask, 'LMV-10')
+
+    # Exception 2: leading digits == '11' AND there are trailing letters -> LMV-11
+    trailing_letters = trimmed.str.extract(r'([A-Z]+)$', expand=False)
+    exc2_mask = has_leading & (leading_digits == '11') & trailing_letters.notna()
+    result = result.mask(exc2_mask, 'LMV-11')
+
+    # Default rule: first digit of the leading digit run (skip exc1/exc2)
+    default_mask = has_leading & ~exc1_mask & ~exc2_mask
+    first_digit = leading_digits.str[:1]
+    result = result.mask(default_mask, 'LMV-' + first_digit)
+
+    return result
+
+
+def _category_case_sql() -> str:
+    """Return a DuckDB CASE expression that derives CATEGORY from SUPPLY_TYPE."""
+    return r"""CASE
+        WHEN TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)) LIKE 'H%' THEN
+            'HV-' || REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^H(\d)', 1)
+        WHEN LENGTH(REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+')) = 3
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') LIKE '10%'
+            THEN 'LMV-10'
+        WHEN REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') = '11'
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '[A-Z]+$') IS NOT NULL
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '[A-Z]+$') != ''
+            THEN 'LMV-11'
+        WHEN REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') IS NOT NULL
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') != ''
+            THEN 'LMV-' || SUBSTR(REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+'), 1, 1)
+        ELSE 'UNMAPPED'
+    END AS CATEGORY"""
+
+
 def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> tuple[bool, int, str]:
     """Enrich a CSV and write to parquet. Returns (success, rows_written, skip_reason)."""
     try:
@@ -136,6 +195,7 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     if "SUPPLY_TYPE" in df.columns:
         df["SUPPLY_TYPE"] = _normalize_identifier_like_series(df["SUPPLY_TYPE"])
         df = df.merge(supp, on="SUPPLY_TYPE", how="left")
+        df["CATEGORY"] = _derive_category_from_supply_type(df["SUPPLY_TYPE"])
 
     unit = df.get("LOAD_UNIT", "").astype(str).str.upper().str.strip()
     load = pd.to_numeric(df.get("LOAD", 0), errors="coerce").fillna(0.0)
@@ -540,26 +600,18 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     col_names = [row[0] for row in columns_info]
     select_sql = _build_select_sql_for_schema(relation_sql, col_names)
 
-    max_attempts = 3
     try:
-        for attempt in range(1, max_attempts + 1):
-            try:
-                with duckdb.connect(str(db_path)) as conn:
-                    thread_count = max(1, os.cpu_count() or 1)
-                    conn.execute(f"PRAGMA threads={thread_count}")
-                    conn.execute("PRAGMA preserve_insertion_order=false")
-                    if payload.replace:
-                        _drop_existing_duckdb_object(conn, normalized_object_name)
-                    conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
-                break  # success
-            except duckdb.TransactionException:
-                if attempt < max_attempts:
-                    # Another connection may have briefly opened; retry after a pause
-                    if svc.is_connected:
-                        svc.disconnect()
-                    time.sleep(1)
-                else:
-                    raise
+        with duckdb.connect(str(db_path)) as conn:
+            thread_count = max(1, os.cpu_count() or 1)
+            conn.execute(f"PRAGMA threads={thread_count}")
+            conn.execute("PRAGMA preserve_insertion_order=false")
+            if payload.replace:
+                # Use DROP IF EXISTS instead of querying information_schema
+                # (the information_schema SELECT opens a read transaction that
+                # conflicts with the subsequent CREATE write transaction).
+                conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
+                conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+            conn.execute(f"CREATE {payload.object_type} {object_sql} AS {select_sql}")
     finally:
         # Reconnect the dashboard so the user can immediately see the new table.
         if dashboard_was_connected:
@@ -668,7 +720,10 @@ def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str
             WHEN starts_with("DIV_CODE", 'DIV5') THEN 'KESCO'
             ELSE NULL
         END AS DISCOM""")
-        
+
+    if "SUPPLY_TYPE" in col_names:
+        select_exprs.append(_category_case_sql())
+
     return f"SELECT {', '.join(select_exprs)} FROM {relation_sql}"
 
 
@@ -775,13 +830,13 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     total_output_rows=total_output_rows
                 )
 
+        skipped_str = f" Skipped: {skipped_files}" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else ".")
         _update_csv_job(
             job_id,
             status="completed",
             current_file=None,
             message=(
-                f"Parquet conversion completed successfully for {len(valid_files)} file(s). "
-                f"Skipped existing: {skipped_files}."
+                f"Parquet conversion completed successfully for {len(valid_files)} file(s).{skipped_str}"
                 + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
                 + (f" Invalid gzip files: {len(invalid_files)}." if invalid_files else "")
                 + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else "")
@@ -911,6 +966,7 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     
                     if "DIV_CODE" in col_names:
                         discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        category_expr = f", {_category_case_sql()}" if "SUPPLY_TYPE" in col_names else ""
                         select_sql = f"""SELECT *{discom_exclude} 
                             CASE 
                                 WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
@@ -919,8 +975,10 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                                 WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
                                 WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
                                 ELSE NULL
-                            END AS DISCOM
+                            END AS DISCOM{category_expr}
                             FROM {relation_sql}"""
+                    elif "SUPPLY_TYPE" in col_names:
+                        select_sql = f"SELECT *, {_category_case_sql()} FROM {relation_sql}"
                     else:
                         select_sql = f"SELECT * FROM {relation_sql}"
                         
@@ -961,6 +1019,7 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     
                     if "DIV_CODE" in col_names:
                         discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        category_expr = f", {_category_case_sql()}" if "SUPPLY_TYPE" in col_names else ""
                         select_sql = f"""SELECT *{discom_exclude} 
                             CASE 
                                 WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
@@ -969,8 +1028,10 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                                 WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
                                 WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
                                 ELSE NULL
-                            END AS DISCOM
+                            END AS DISCOM{category_expr}
                             FROM {relation_sql}"""
+                    elif "SUPPLY_TYPE" in col_names:
+                        select_sql = f"SELECT *, {_category_case_sql()} FROM {relation_sql}"
                     else:
                         select_sql = f"SELECT * FROM {relation_sql}"
                         
@@ -979,11 +1040,12 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     )
                 converted_count += 1
 
+        skipped_str = f" Skipped existing/invalid: {skipped_count}" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else ".")
         return SidebarToolResponse(
-            message=f"Parquet conversion completed successfully for {converted_count} file(s). Skipped existing/invalid: {skipped_count}."
+            message=f"Parquet conversion completed successfully for {converted_count} file(s).{skipped_str}"
             + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
             + (f" Invalid gzip files: {len(invalid_files)}." if invalid_files else "")
-                + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else ""),
+            + (f" Plain-text .gz fallback files: {len(warning_files)}." if warning_files else ""),
             output_path=str(output_root),
         )
     except HTTPException:
@@ -1171,8 +1233,9 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                     overall_progress_percent=min(70, parquet_pct),
                 )
 
+        skipped_str = f" {skipped_files} skipped" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else "")
         parquet_summary = (
-            f"Parquet done: {total_valid} file(s), {skipped_files} skipped."
+            f"Parquet done: {total_valid} file(s),{skipped_str}."
             + (" Enrichment applied." if lookup_mode else "")
         )
 
