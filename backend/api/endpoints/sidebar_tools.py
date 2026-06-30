@@ -93,6 +93,65 @@ def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFr
     supp = supp.drop_duplicates("SUPPLY_TYPE")
     return hir_div, hir_sdo, supp
 
+
+def _derive_category_from_supply_type(series: pd.Series) -> pd.Series:
+    """Derive CATEGORY from SUPPLY_TYPE using the same CASE logic as the Oracle SQL.
+
+    Rules:
+      - H-prefixed codes  -> 'HV-' + first digit after 'H'
+      - 100-107           -> 'LMV-10'
+      - 11 + letter(s)    -> 'LMV-11'  (bare '11' stays 'LMV-1')
+      - other numeric     -> 'LMV-' + first digit
+      - everything else   -> 'UNMAPPED'
+    """
+    trimmed = series.astype(str).str.strip()
+    result = pd.Series("UNMAPPED", index=series.index)
+
+    # HV codes: starts with 'H', digit immediately after 'H'
+    hv_mask = trimmed.str.match(r'^H', na=False)
+    hv_digit = trimmed.str.extract(r'^H(\d)', expand=False)
+    result = result.mask(hv_mask & hv_digit.notna(), 'HV-' + hv_digit)
+
+    # Extract leading digit run
+    leading_digits = trimmed.str.extract(r'^(\d+)', expand=False)
+    has_leading = leading_digits.notna() & ~hv_mask
+
+    # Exception 1: 100-107 -> LMV-10  (3-digit starting with '10')
+    exc1_mask = has_leading & (leading_digits.str.len() == 3) & leading_digits.str.startswith('10')
+    result = result.mask(exc1_mask, 'LMV-10')
+
+    # Exception 2: leading digits == '11' AND there are trailing letters -> LMV-11
+    trailing_letters = trimmed.str.extract(r'([A-Z]+)$', expand=False)
+    exc2_mask = has_leading & (leading_digits == '11') & trailing_letters.notna()
+    result = result.mask(exc2_mask, 'LMV-11')
+
+    # Default rule: first digit of the leading digit run (skip exc1/exc2)
+    default_mask = has_leading & ~exc1_mask & ~exc2_mask
+    first_digit = leading_digits.str[:1]
+    result = result.mask(default_mask, 'LMV-' + first_digit)
+
+    return result
+
+
+def _category_case_sql() -> str:
+    """Return a DuckDB CASE expression that derives CATEGORY from SUPPLY_TYPE."""
+    return r"""CASE
+        WHEN TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)) LIKE 'H%' THEN
+            'HV-' || REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^H(\d)', 1)
+        WHEN LENGTH(REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+')) = 3
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') LIKE '10%'
+            THEN 'LMV-10'
+        WHEN REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') = '11'
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '[A-Z]+$') IS NOT NULL
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '[A-Z]+$') != ''
+            THEN 'LMV-11'
+        WHEN REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') IS NOT NULL
+             AND REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+') != ''
+            THEN 'LMV-' || SUBSTR(REGEXP_EXTRACT(TRIM(CAST("SUPPLY_TYPE" AS VARCHAR)), '^[0-9]+'), 1, 1)
+        ELSE 'UNMAPPED'
+    END AS CATEGORY"""
+
+
 def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str, hir_div: pd.DataFrame, hir_sdo: pd.DataFrame, supp: pd.DataFrame) -> tuple[bool, int, str]:
     """Enrich a CSV and write to parquet. Returns (success, rows_written, skip_reason)."""
     try:
@@ -136,6 +195,7 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     if "SUPPLY_TYPE" in df.columns:
         df["SUPPLY_TYPE"] = _normalize_identifier_like_series(df["SUPPLY_TYPE"])
         df = df.merge(supp, on="SUPPLY_TYPE", how="left")
+        df["CATEGORY"] = _derive_category_from_supply_type(df["SUPPLY_TYPE"])
 
     unit = df.get("LOAD_UNIT", "").astype(str).str.upper().str.strip()
     load = pd.to_numeric(df.get("LOAD", 0), errors="coerce").fillna(0.0)
@@ -660,7 +720,10 @@ def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str
             WHEN starts_with("DIV_CODE", 'DIV5') THEN 'KESCO'
             ELSE NULL
         END AS DISCOM""")
-        
+
+    if "SUPPLY_TYPE" in col_names:
+        select_exprs.append(_category_case_sql())
+
     return f"SELECT {', '.join(select_exprs)} FROM {relation_sql}"
 
 
@@ -903,6 +966,7 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     
                     if "DIV_CODE" in col_names:
                         discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        category_expr = f", {_category_case_sql()}" if "SUPPLY_TYPE" in col_names else ""
                         select_sql = f"""SELECT *{discom_exclude} 
                             CASE 
                                 WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
@@ -911,8 +975,10 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                                 WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
                                 WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
                                 ELSE NULL
-                            END AS DISCOM
+                            END AS DISCOM{category_expr}
                             FROM {relation_sql}"""
+                    elif "SUPPLY_TYPE" in col_names:
+                        select_sql = f"SELECT *, {_category_case_sql()} FROM {relation_sql}"
                     else:
                         select_sql = f"SELECT * FROM {relation_sql}"
                         
@@ -953,6 +1019,7 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     
                     if "DIV_CODE" in col_names:
                         discom_exclude = " EXCLUDE (DISCOM)," if "DISCOM" in col_names else ","
+                        category_expr = f", {_category_case_sql()}" if "SUPPLY_TYPE" in col_names else ""
                         select_sql = f"""SELECT *{discom_exclude} 
                             CASE 
                                 WHEN starts_with(DIV_CODE, 'DIV1') THEN 'PVVNL'
@@ -961,8 +1028,10 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                                 WHEN starts_with(DIV_CODE, 'DIV4') THEN 'PuVNL'
                                 WHEN starts_with(DIV_CODE, 'DIV5') THEN 'KESCO'
                                 ELSE NULL
-                            END AS DISCOM
+                            END AS DISCOM{category_expr}
                             FROM {relation_sql}"""
+                    elif "SUPPLY_TYPE" in col_names:
+                        select_sql = f"SELECT *, {_category_case_sql()} FROM {relation_sql}"
                     else:
                         select_sql = f"SELECT * FROM {relation_sql}"
                         
