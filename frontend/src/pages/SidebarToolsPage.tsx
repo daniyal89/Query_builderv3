@@ -29,6 +29,7 @@ const BUILD_STATUS_STORAGE_KEY = "sidebar_tools_build_status_v1";
 const UPPCL_PRESET_STORAGE_KEY = "sidebar_tools_uppcl_preset_paths_v1";
 const DATA_TOOLS_HISTORY_STORAGE_KEY = "sidebar_tools_job_history_v1";
 const PIPELINE_JOB_STORAGE_KEY = "sidebar_tools_pipeline_job_v1";
+const PIPELINE_FORM_STORAGE_KEY = "sidebar_tools_pipeline_form_v1";
 
 type UppclPresetPaths = {
   build_db_path: string;
@@ -83,6 +84,42 @@ function readInitialPipelineJobState(): { jobId: string | null; status: FullPipe
     };
   } catch {
     return { jobId: null, status: null, message: "" };
+  }
+}
+
+function readInitialPipelineForm(fallbackParquet: any, fallbackBuild: any) {
+  const fallback = {
+    input_path: fallbackParquet.input_path,
+    parquet_output_path: fallbackParquet.output_path,
+    compression: fallbackParquet.compression,
+    hir_file: fallbackParquet.hir_file,
+    supp_mapper_file: fallbackParquet.supp_mapper_file,
+    overwrite_parquet: fallbackParquet.overwrite_parquet,
+    db_path: fallbackBuild.db_path,
+    object_name: fallbackBuild.object_name,
+    object_type: fallbackBuild.object_type,
+    replace: fallbackBuild.replace,
+    month_label: fallbackBuild.month_label,
+  };
+  try {
+    const raw = window.localStorage.getItem(PIPELINE_FORM_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return {
+      input_path: typeof parsed.input_path === "string" ? parsed.input_path : fallback.input_path,
+      parquet_output_path: typeof parsed.parquet_output_path === "string" ? parsed.parquet_output_path : fallback.parquet_output_path,
+      compression: typeof parsed.compression === "string" ? parsed.compression : fallback.compression,
+      hir_file: typeof parsed.hir_file === "string" ? parsed.hir_file : fallback.hir_file,
+      supp_mapper_file: typeof parsed.supp_mapper_file === "string" ? parsed.supp_mapper_file : fallback.supp_mapper_file,
+      overwrite_parquet: typeof parsed.overwrite_parquet === "boolean" ? parsed.overwrite_parquet : fallback.overwrite_parquet,
+      db_path: typeof parsed.db_path === "string" ? parsed.db_path : fallback.db_path,
+      object_name: typeof parsed.object_name === "string" ? parsed.object_name : fallback.object_name,
+      object_type: typeof parsed.object_type === "string" ? parsed.object_type : fallback.object_type,
+      replace: typeof parsed.replace === "boolean" ? parsed.replace : fallback.replace,
+      month_label: typeof parsed.month_label === "string" ? parsed.month_label : fallback.month_label,
+    };
+  } catch {
+    return fallback;
   }
 }
 
@@ -301,19 +338,8 @@ export const SidebarToolsPage: React.FC = () => {
     supp_mapper_file: initialParquetForm.supp_mapper_file,
     overwrite_parquet: initialParquetForm.overwrite_parquet,
   });
-  const [pipelineForm, setPipelineForm] = useState({
-    input_path: initialParquetForm.input_path,
-    parquet_output_path: initialParquetForm.output_path,
-    compression: initialParquetForm.compression,
-    hir_file: initialParquetForm.hir_file,
-    supp_mapper_file: initialParquetForm.supp_mapper_file,
-    overwrite_parquet: initialParquetForm.overwrite_parquet,
-    db_path: initialBuildForm.db_path,
-    object_name: initialBuildForm.object_name,
-    object_type: initialBuildForm.object_type as "TABLE" | "VIEW",
-    replace: initialBuildForm.replace,
-    month_label: initialBuildForm.month_label,
-  });
+  const initialPipelineForm = useMemo(() => readInitialPipelineForm(initialParquetForm, initialBuildForm), [initialParquetForm, initialBuildForm]);
+  const [pipelineForm, setPipelineForm] = useState(initialPipelineForm);
   const [buildMessage, setBuildMessage] = useState(initialBuildStatus.message);
   const [buildJobId, setBuildJobId] = useState<string | null>(initialBuildStatus.jobId);
   const [buildStatus, setBuildStatus] = useState<BuildDuckDbJobStatusResponse | null>(initialBuildStatus.status);
@@ -377,6 +403,10 @@ export const SidebarToolsPage: React.FC = () => {
   }, [isBuildRunning, isParquetRunning, isPipelineRunning]);
 
   // Pipeline persistence
+  useEffect(() => {
+    window.localStorage.setItem(PIPELINE_FORM_STORAGE_KEY, JSON.stringify(pipelineForm));
+  }, [pipelineForm]);
+
   useEffect(() => {
     if (!pipelineJobId && !pipelineStatus && !pipelineMessage.trim()) {
       window.localStorage.removeItem(PIPELINE_JOB_STORAGE_KEY);
