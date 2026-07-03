@@ -1188,7 +1188,7 @@ export const SidebarToolsPage: React.FC = () => {
           <div className="mt-3 space-y-2">
             {toolHistory.map((item) => (
               <div key={item.id} className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700">
-                <span className="font-semibold uppercase">{item.tool}</span> • {item.status} • {new Date(item.timestamp).toLocaleString()}{typeof item.run_seconds === "number" ? ` • Runtime: ${formatDuration(item.run_seconds)}` : ""}
+                <span className="font-semibold uppercase">{item.tool}</span> • {item.status} • {new Date(item.timestamp).toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}{typeof item.run_seconds === "number" ? ` • Runtime: ${formatDuration(item.run_seconds)}` : ""}
                 <p className="mt-1 break-all">{item.message}</p>
               </div>
             ))}
