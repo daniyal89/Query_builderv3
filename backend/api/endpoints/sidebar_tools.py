@@ -73,7 +73,17 @@ def _normalize_identifier_like_value(value: Any) -> str:
 
 
 def _normalize_identifier_like_series(series: pd.Series | Any) -> pd.Series:
-    return pd.Series(series).map(_normalize_identifier_like_value)
+    """Vectorized: strip whitespace, blank out NAs, truncate '.0' floats."""
+    s = pd.Series(series)
+    na_mask = s.isna()
+    s = s.astype(str).str.strip()
+    # Restore original NAs as empty string
+    s = s.mask(na_mask, "")
+    # Fix float-like integers: "123.0", "-45.000" -> "123", "-45"
+    float_mask = s.str.fullmatch(r"-?\d+\.0+", na=False)
+    if float_mask.any():
+        s = s.where(~float_mask, s.str.split(".", n=1).str[0])
+    return s
 
 
 def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -166,10 +176,14 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
         
     if df.empty or len(df.columns) == 0:
         return False, 0, "EMPTY_DATAFRAME"
+    # Batch-add derived columns to avoid fragmented inserts
+    _pre = {}
     if "BILLED_AMOUNT" in df.columns and "TOTAL_AMT" not in df.columns:
-        df["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
+        _pre["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
     if "SDO_CODE" in df.columns and "SUB_DIV_CODE" not in df.columns:
-        df["SUB_DIV_CODE"] = _normalize_identifier_like_series(df["SDO_CODE"])
+        _pre["SUB_DIV_CODE"] = _normalize_identifier_like_series(df["SDO_CODE"])
+    if _pre:
+        df = pd.concat([df, pd.DataFrame(_pre, index=df.index)], axis=1)
     df["ACCT_ID"] = _normalize_identifier_like_series(df.get("ACCT_ID", ""))
     df = df[df["ACCT_ID"].str.fullmatch(r"\d+", na=False)]
     if "DIV_CODE" in df.columns:
@@ -203,28 +217,35 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     load_kw = load_kw.mask(unit.eq("KW"), load.round(0))
     load_kw = load_kw.mask(unit.eq("KVA"), load.round(0) * 0.9)
     load_kw = load_kw.mask(unit.isin(["HP", "BHP"]), load.round(0) * 0.746)
-    df["LOAD_KW"] = load_kw
-    df["MONTH"] = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%b_%Y").upper()
-    
-    # Cast based on schema, else stringify object columns
-    for col in df.columns:
+    # --- Bulk schema cast: build all columns into a dict, then reconstruct ---
+    # Include computed columns that were not yet added to df
+    month_val = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%b_%Y").upper()
+    _extra = {"LOAD_KW": load_kw, "MONTH": pd.Series(month_val, index=df.index)}
+    all_col_names = list(df.columns) + [c for c in _extra if c not in df.columns]
+
+    casted = {}
+    for col in all_col_names:
+        src = _extra[col] if col in _extra else df[col]
         if col in MERCADOS_SCHEMA:
             dtype = str(MERCADOS_SCHEMA[col]).upper()
             if dtype == "NUMBER":
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            elif dtype == "VARCHAR2" or dtype == "CHAR":
-                df[col] = _normalize_identifier_like_series(df[col])
+                casted[col] = pd.to_numeric(src, errors="coerce")
+            elif dtype in ("VARCHAR2", "CHAR"):
+                casted[col] = _normalize_identifier_like_series(src)
             elif dtype == "DATE":
-                pass
+                casted[col] = src
             else:
-                df[col] = _normalize_identifier_like_series(df[col])
+                casted[col] = _normalize_identifier_like_series(src)
         else:
-            df[col] = _normalize_identifier_like_series(df[col])
-            
+            casted[col] = _normalize_identifier_like_series(src)
+
+    # Single DataFrame construction — no fragmentation, no per-column inserts
+    df = pd.DataFrame(casted, index=df.index)
+
     rows = len(df)
     if rows == 0:
         return False, 0, "NO_ROWS_AFTER_FILTERING"
-        
+
     df.to_parquet(target_file, compression=compression, index=False)
     return True, rows, ""
 
@@ -332,23 +353,34 @@ def _is_readable_input_file(path_str: str) -> bool:
         return False
 
 
-def _resolve_relation_sql(input_path: str) -> str:
+def _resolve_relation_sql(input_path: str, *, _cached_files: list[str] | None = None) -> str:
+    """Build a DuckDB relation SQL from an input path.
+
+    If *_cached_files* is given it is used directly, skipping a redundant
+    ``glob.glob`` (the caller already resolved the file list).
+    """
     lowered = input_path.lower()
     input_path_sql = _sql_string_literal(input_path)
 
     if ".parquet" in lowered:
-        matches = [item for item in glob.glob(input_path, recursive=True) if _is_readable_input_file(item)]
+        matches = _cached_files or [
+            item for item in glob.glob(input_path, recursive=True)
+            if _is_readable_input_file(item)
+        ]
         if matches:
-            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
-        return f"read_parquet({input_path_sql}, union_by_name = true)"
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true, hive_partitioning = false)"
+        return f"read_parquet({input_path_sql}, union_by_name = true, hive_partitioning = false)"
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
         return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
-    matches = [item for item in glob.glob(input_path, recursive=True) if _is_readable_input_file(item)]
+    matches = _cached_files or [
+        item for item in glob.glob(input_path, recursive=True)
+        if _is_readable_input_file(item)
+    ]
     if matches:
         sample = matches[0].lower()
         if sample.endswith(".parquet"):
-            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true, hive_partitioning = false)"
         if (
             sample.endswith(".csv")
             or sample.endswith(".csv.gz")
@@ -578,7 +610,13 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     object_sql = f'"{ normalized_object_name.replace(chr(34), chr(34) * 2)}"'
     resolved_input = _resolve_parquet_only_glob(payload.input_path)
-    relation_sql = _resolve_relation_sql(resolved_input)
+
+    # Cache the file list once so _resolve_relation_sql doesn't re-glob
+    cached_files = [
+        item for item in glob.glob(resolved_input, recursive=True)
+        if _is_readable_input_file(item)
+    ]
+    relation_sql = _resolve_relation_sql(resolved_input, _cached_files=cached_files)
 
     # Temporarily release the dashboard's singleton connection to avoid
     # DuckDB write-write conflicts (DuckDB allows only one writer at a time).
@@ -692,23 +730,31 @@ def _sql_varchar_normalize_expr(col: str) -> str:
 
 
 def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str:
+    """Build a SELECT with per-column casts.
+
+    When the source is Parquet the CSV→Parquet step already stripped '.0'
+    suffixes and normalised strings, so we use a cheap CAST instead of
+    REGEXP_REPLACE (which runs a regex per-cell and is the main bottleneck).
+    """
+    from_parquet = "read_parquet" in relation_sql
     select_exprs = []
     for col in col_names:
         if col == "DISCOM": 
             continue
-        expr = f'"{col}"'
+        expr = f'"{ col}"'
         if col in MERCADOS_SCHEMA:
             dtype = str(MERCADOS_SCHEMA[col]).upper()
             if dtype == "NUMBER":
                 expr = f'CAST("{col}" AS DOUBLE)'
-            elif dtype == "VARCHAR2" or dtype == "CHAR":
-                expr = _sql_varchar_normalize_expr(col)
+            elif dtype in ("VARCHAR2", "CHAR"):
+                # Parquet data is already normalised; skip expensive regex
+                expr = f'CAST("{col}" AS VARCHAR)' if from_parquet else _sql_varchar_normalize_expr(col)
             elif dtype == "DATE":
                 pass
             else:
-                expr = _sql_varchar_normalize_expr(col)
+                expr = f'CAST("{col}" AS VARCHAR)' if from_parquet else _sql_varchar_normalize_expr(col)
         else:
-            expr = _sql_varchar_normalize_expr(col)
+            expr = f'CAST("{col}" AS VARCHAR)' if from_parquet else _sql_varchar_normalize_expr(col)
         select_exprs.append(f'{expr} AS "{col}"')
 
     if "DIV_CODE" in col_names:
