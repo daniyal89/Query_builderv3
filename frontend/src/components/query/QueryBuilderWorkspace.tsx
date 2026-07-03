@@ -11,6 +11,7 @@ import type { TableMetadata } from "../../types/schema.types";
 import { buildColumnOptionsForQuery, getJoinReferenceName } from "../../utils/queryBuilderColumns";
 import { ColumnPicker } from "./ColumnPicker";
 import { CaseExpressionBuilder } from "./CaseExpressionBuilder";
+import { BinColumnBuilder } from "./BinColumnBuilder";
 import { FunctionColumnBuilder } from "./FunctionColumnBuilder";
 import { FilterPanel } from "./FilterPanel";
 import { JoinComposer } from "./JoinComposer";
@@ -154,6 +155,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     updateFilter,
     removeFilter,
     addCaseExpression,
+    addCaseExpressionDirect,
     updateCaseExpression,
     removeCaseExpression,
     addCaseBranch,
@@ -269,10 +271,22 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
 
   const reportColumns = availableColumns;
 
-  const availableColumnNames = useMemo(
-    () => reportColumns.map((column) => column.key),
-    [reportColumns]
-  );
+  const availableColumnNames = useMemo(() => {
+    const names = reportColumns.map((column) => column.key);
+    // Append CASE expression aliases so they appear in pivot/report dropdowns
+    for (const expr of state.caseExpressions) {
+      if (expr.alias.trim() && !names.includes(expr.alias.trim())) {
+        names.push(expr.alias.trim());
+      }
+    }
+    // Append Function Column aliases
+    for (const fc of state.functionColumns) {
+      if (fc.alias.trim() && !names.includes(fc.alias.trim())) {
+        names.push(fc.alias.trim());
+      }
+    }
+    return names;
+  }, [reportColumns, state.caseExpressions, state.functionColumns]);
 
   const manualSqlSuggestions = useMemo(() => {
     const suggestions = new Map<string, SqlSuggestionItem>();
@@ -805,6 +819,11 @@ WHERE 1 = 1`;
                   onAddFunctionColumn={addFunctionColumn}
                   onUpdateFunctionColumn={updateFunctionColumn}
                   onRemoveFunctionColumn={removeFunctionColumn}
+                />
+                <BinColumnBuilder
+                  columns={availableColumns}
+                  engine={engine}
+                  onApplyBin={addCaseExpressionDirect}
                 />
                 <CaseExpressionBuilder
                   caseExpressions={state.caseExpressions}

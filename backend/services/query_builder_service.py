@@ -263,18 +263,51 @@ class QueryBuilderService:
 
     @staticmethod
     def _resolve_column_expression(
-        column_ref: str,
-        alias_by_table: dict[str, str],
-        default_table: str,
+        column: str, alias_by_table: dict[str, str], base_table: str, payload: QueryPayload | None = None
     ) -> tuple[str, str, str]:
+        """Resolve a column reference to its (table_alias, bare_column, sql_expression).
+        
+        If a payload is provided, it first checks if the column matches a computed column alias
+        (CASE or Function Column) and returns its inline SQL expression instead.
+        """
+        if column == "*":
+            return "", "*", "*"
+            
+        if payload:
+            # Check CASE expressions
+            for case_expr in payload.case_expressions:
+                if case_expr.alias.strip() == column.strip():
+                    case_sqls, _ = QueryBuilderService._build_case_expressions(
+                        QueryPayload.model_construct(**payload.model_dump(), case_expressions=[case_expr]),
+                        payload.engine,
+                        alias_by_table,
+                        0 # Params will be out of sync if this had params, but reports don't currently use params here
+                    )
+                    if case_sqls:
+                        # Return the case expression WITHOUT the ' AS ALIAS' suffix
+                        expr = case_sqls[0].split(" AS ")[0].strip()
+                        return "", column, expr
+                        
+            # Check Function columns
+            for fcol in payload.function_columns:
+                if fcol.alias.strip() == column.strip():
+                    func_sqls = QueryBuilderService._build_function_columns(
+                        QueryPayload.model_construct(**payload.model_dump(), function_columns=[fcol]),
+                        alias_by_table
+                    )
+                    if func_sqls:
+                        # Return the function expression WITHOUT the ' AS ALIAS' suffix
+                        expr = func_sqls[0].split(" AS ")[0].strip()
+                        return "", column, expr
+
         table_name, column_name = QueryBuilderService._split_column_ref(
-            column_ref,
-            default_table,
+            column,
+            base_table,
             list(alias_by_table.keys()),
         )
         alias = alias_by_table.get(table_name)
         if alias is None:
-            raise ValueError(f"Unknown table reference '{table_name}' in column '{column_ref}'.")
+            raise ValueError(f"Unknown table reference '{table_name}' in column '{column}'.")
         return table_name, column_name, f"{alias}.{QueryBuilderService._quote_identifier(column_name)}"
 
     @staticmethod
@@ -656,18 +689,18 @@ class QueryBuilderService:
         group_expressions: list[str] = []
 
         for index, field in enumerate(row_fields, start=1):
-            _, _, expression = QueryBuilderService._resolve_column_expression(field, alias_by_table, payload.table)
+            _, _, expression = QueryBuilderService._resolve_column_expression(field, alias_by_table, payload.table, payload)
             select_expressions.append(f'{expression} AS {QueryBuilderService._quote_identifier(f"__REPORT_ROW_{index}__")}')
             group_expressions.append(expression)
 
         for index, field in enumerate(column_fields, start=1):
-            _, _, expression = QueryBuilderService._resolve_column_expression(field, alias_by_table, payload.table)
+            _, _, expression = QueryBuilderService._resolve_column_expression(field, alias_by_table, payload.table, payload)
             select_expressions.append(
                 f'{expression} AS {QueryBuilderService._quote_identifier(f"__REPORT_COLUMN_{index}__")}'
             )
             group_expressions.append(expression)
 
-        _, _, value_expression = QueryBuilderService._resolve_column_expression(value_field, alias_by_table, payload.table)
+        _, _, value_expression = QueryBuilderService._resolve_column_expression(value_field, alias_by_table, payload.table, payload)
         aggregate_expression = f"{payload.pivot.func}({value_expression})"
         select_expressions.append(
             f"{aggregate_expression} AS {QueryBuilderService._quote_identifier(QueryBuilderService.REPORT_VALUE_ALIAS)}"
