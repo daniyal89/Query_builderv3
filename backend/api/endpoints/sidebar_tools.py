@@ -73,7 +73,17 @@ def _normalize_identifier_like_value(value: Any) -> str:
 
 
 def _normalize_identifier_like_series(series: pd.Series | Any) -> pd.Series:
-    return pd.Series(series).map(_normalize_identifier_like_value)
+    """Vectorized: strip whitespace, blank out NAs, truncate '.0' floats."""
+    s = pd.Series(series)
+    na_mask = s.isna()
+    s = s.astype(str).str.strip()
+    # Restore original NAs as empty string
+    s = s.mask(na_mask, "")
+    # Fix float-like integers: "123.0", "-45.000" -> "123", "-45"
+    float_mask = s.str.fullmatch(r"-?\d+\.0+", na=False)
+    if float_mask.any():
+        s = s.where(~float_mask, s.str.split(".", n=1).str[0])
+    return s
 
 
 def _load_lookup_tables(hir_file: str, supp_mapper_file: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -166,10 +176,14 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
         
     if df.empty or len(df.columns) == 0:
         return False, 0, "EMPTY_DATAFRAME"
+    # Batch-add derived columns to avoid fragmented inserts
+    _pre = {}
     if "BILLED_AMOUNT" in df.columns and "TOTAL_AMT" not in df.columns:
-        df["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
+        _pre["TOTAL_AMT"] = pd.to_numeric(df["BILLED_AMOUNT"], errors="coerce")
     if "SDO_CODE" in df.columns and "SUB_DIV_CODE" not in df.columns:
-        df["SUB_DIV_CODE"] = _normalize_identifier_like_series(df["SDO_CODE"])
+        _pre["SUB_DIV_CODE"] = _normalize_identifier_like_series(df["SDO_CODE"])
+    if _pre:
+        df = pd.concat([df, pd.DataFrame(_pre, index=df.index)], axis=1)
     df["ACCT_ID"] = _normalize_identifier_like_series(df.get("ACCT_ID", ""))
     df = df[df["ACCT_ID"].str.fullmatch(r"\d+", na=False)]
     if "DIV_CODE" in df.columns:
@@ -203,28 +217,35 @@ def _apply_csv_enrichment(source_file: Path, target_file: Path, compression: str
     load_kw = load_kw.mask(unit.eq("KW"), load.round(0))
     load_kw = load_kw.mask(unit.eq("KVA"), load.round(0) * 0.9)
     load_kw = load_kw.mask(unit.isin(["HP", "BHP"]), load.round(0) * 0.746)
-    df["LOAD_KW"] = load_kw
-    df["MONTH"] = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%b_%Y").upper()
-    
-    # Cast based on schema, else stringify object columns
-    for col in df.columns:
+    # --- Bulk schema cast: build all columns into a dict, then reconstruct ---
+    # Include computed columns that were not yet added to df
+    month_val = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%b_%Y").upper()
+    _extra = {"LOAD_KW": load_kw, "MONTH": pd.Series(month_val, index=df.index)}
+    all_col_names = list(df.columns) + [c for c in _extra if c not in df.columns]
+
+    casted = {}
+    for col in all_col_names:
+        src = _extra[col] if col in _extra else df[col]
         if col in MERCADOS_SCHEMA:
             dtype = str(MERCADOS_SCHEMA[col]).upper()
             if dtype == "NUMBER":
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            elif dtype == "VARCHAR2" or dtype == "CHAR":
-                df[col] = _normalize_identifier_like_series(df[col])
+                casted[col] = pd.to_numeric(src, errors="coerce")
+            elif dtype in ("VARCHAR2", "CHAR"):
+                casted[col] = _normalize_identifier_like_series(src)
             elif dtype == "DATE":
-                pass
+                casted[col] = src
             else:
-                df[col] = _normalize_identifier_like_series(df[col])
+                casted[col] = _normalize_identifier_like_series(src)
         else:
-            df[col] = _normalize_identifier_like_series(df[col])
-            
+            casted[col] = _normalize_identifier_like_series(src)
+
+    # Single DataFrame construction — no fragmentation, no per-column inserts
+    df = pd.DataFrame(casted, index=df.index)
+
     rows = len(df)
     if rows == 0:
         return False, 0, "NO_ROWS_AFTER_FILTERING"
-        
+
     df.to_parquet(target_file, compression=compression, index=False)
     return True, rows, ""
 
