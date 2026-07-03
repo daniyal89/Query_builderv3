@@ -353,23 +353,34 @@ def _is_readable_input_file(path_str: str) -> bool:
         return False
 
 
-def _resolve_relation_sql(input_path: str) -> str:
+def _resolve_relation_sql(input_path: str, *, _cached_files: list[str] | None = None) -> str:
+    """Build a DuckDB relation SQL from an input path.
+
+    If *_cached_files* is given it is used directly, skipping a redundant
+    ``glob.glob`` (the caller already resolved the file list).
+    """
     lowered = input_path.lower()
     input_path_sql = _sql_string_literal(input_path)
 
     if ".parquet" in lowered:
-        matches = [item for item in glob.glob(input_path, recursive=True) if _is_readable_input_file(item)]
+        matches = _cached_files or [
+            item for item in glob.glob(input_path, recursive=True)
+            if _is_readable_input_file(item)
+        ]
         if matches:
-            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
-        return f"read_parquet({input_path_sql}, union_by_name = true)"
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true, hive_partitioning = false)"
+        return f"read_parquet({input_path_sql}, union_by_name = true, hive_partitioning = false)"
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
         return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
-    matches = [item for item in glob.glob(input_path, recursive=True) if _is_readable_input_file(item)]
+    matches = _cached_files or [
+        item for item in glob.glob(input_path, recursive=True)
+        if _is_readable_input_file(item)
+    ]
     if matches:
         sample = matches[0].lower()
         if sample.endswith(".parquet"):
-            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true)"
+            return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true, hive_partitioning = false)"
         if (
             sample.endswith(".csv")
             or sample.endswith(".csv.gz")
@@ -599,7 +610,13 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     object_sql = f'"{ normalized_object_name.replace(chr(34), chr(34) * 2)}"'
     resolved_input = _resolve_parquet_only_glob(payload.input_path)
-    relation_sql = _resolve_relation_sql(resolved_input)
+
+    # Cache the file list once so _resolve_relation_sql doesn't re-glob
+    cached_files = [
+        item for item in glob.glob(resolved_input, recursive=True)
+        if _is_readable_input_file(item)
+    ]
+    relation_sql = _resolve_relation_sql(resolved_input, _cached_files=cached_files)
 
     # Temporarily release the dashboard's singleton connection to avoid
     # DuckDB write-write conflicts (DuckDB allows only one writer at a time).
@@ -713,23 +730,31 @@ def _sql_varchar_normalize_expr(col: str) -> str:
 
 
 def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str:
+    """Build a SELECT with per-column casts.
+
+    When the source is Parquet the CSV→Parquet step already stripped '.0'
+    suffixes and normalised strings, so we use a cheap CAST instead of
+    REGEXP_REPLACE (which runs a regex per-cell and is the main bottleneck).
+    """
+    from_parquet = "read_parquet" in relation_sql
     select_exprs = []
     for col in col_names:
         if col == "DISCOM": 
             continue
-        expr = f'"{col}"'
+        expr = f'"{ col}"'
         if col in MERCADOS_SCHEMA:
             dtype = str(MERCADOS_SCHEMA[col]).upper()
             if dtype == "NUMBER":
                 expr = f'CAST("{col}" AS DOUBLE)'
-            elif dtype == "VARCHAR2" or dtype == "CHAR":
-                expr = _sql_varchar_normalize_expr(col)
+            elif dtype in ("VARCHAR2", "CHAR"):
+                # Parquet data is already normalised; skip expensive regex
+                expr = f'CAST("{col}" AS VARCHAR)' if from_parquet else _sql_varchar_normalize_expr(col)
             elif dtype == "DATE":
                 pass
             else:
-                expr = _sql_varchar_normalize_expr(col)
+                expr = f'CAST("{col}" AS VARCHAR)' if from_parquet else _sql_varchar_normalize_expr(col)
         else:
-            expr = _sql_varchar_normalize_expr(col)
+            expr = f'CAST("{col}" AS VARCHAR)' if from_parquet else _sql_varchar_normalize_expr(col)
         select_exprs.append(f'{expr} AS "{col}"')
 
     if "DIV_CODE" in col_names:
