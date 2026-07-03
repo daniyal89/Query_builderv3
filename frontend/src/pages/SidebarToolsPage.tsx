@@ -895,6 +895,22 @@ export const SidebarToolsPage: React.FC = () => {
               <div><span className="font-semibold text-slate-800">Skipped:</span> {pipelineStatus.parquet_skipped_files}</div>
               <div><span className="font-semibold text-slate-800">Build:</span> {pipelineStatus.build_progress_percent}%</div>
             </div>
+            {pipelineStatus.parquet_skipped_files > 0 && pipelineStatus.parquet_skipped_details && pipelineStatus.parquet_skipped_details.length > 0 && (() => {
+              const reasonCounts: Record<string, number> = {};
+              for (const detail of pipelineStatus.parquet_skipped_details!) {
+                const match = detail.match(/\(([^)]+)\)\s*$/);
+                const reason = match ? match[1] : "UNKNOWN";
+                reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+              }
+              return (
+                <p className="mt-1 text-xs text-amber-700">
+                  <span className="font-semibold">Skip reasons:</span>{" "}
+                  {Object.entries(reasonCounts).map(([reason, count], i) => (
+                    <span key={reason}>{i > 0 ? ", " : ""}{reason}: {count}</span>
+                  ))}
+                </p>
+              );
+            })()}
             {pipelineStatus.total_output_rows !== undefined && pipelineStatus.total_output_rows > 0 && (
               <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {pipelineStatus.total_output_rows.toLocaleString()}</p>
             )}
@@ -1138,6 +1154,22 @@ export const SidebarToolsPage: React.FC = () => {
               <div><span className="font-semibold text-slate-800">Skipped:</span> {parquetStatus.skipped_files}</div>
               <div><span className="font-semibold text-slate-800">Progress:</span> {parquetProgress}%</div>
             </div>
+            {parquetStatus.skipped_files > 0 && parquetStatus.parquet_skipped_details && parquetStatus.parquet_skipped_details.length > 0 && (() => {
+              const reasonCounts: Record<string, number> = {};
+              for (const detail of parquetStatus.parquet_skipped_details!) {
+                const match = detail.match(/\(([^)]+)\)\s*$/);
+                const reason = match ? match[1] : "UNKNOWN";
+                reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+              }
+              return (
+                <p className="mt-1 text-xs text-amber-700">
+                  <span className="font-semibold">Skip reasons:</span>{" "}
+                  {Object.entries(reasonCounts).map(([reason, count], i) => (
+                    <span key={reason}>{i > 0 ? ", " : ""}{reason}: {count}</span>
+                  ))}
+                </p>
+              );
+            })()}
             {parquetStatus.total_output_rows !== undefined && parquetStatus.total_output_rows > 0 && (
               <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {parquetStatus.total_output_rows.toLocaleString()}</p>
             )}
