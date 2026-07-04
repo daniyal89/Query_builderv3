@@ -210,6 +210,7 @@ export interface UseQueryBuilderReturn {
   setAggregate: (column: string, func: "SUM" | "COUNT" | "AVG" | "MIN" | "MAX") => void;
   removeAggregate: (column: string) => void;
   addCaseExpression: () => void;
+  addCaseExpressionDirect: (expr: CaseExpression) => void;
   updateCaseExpression: (id: string, updates: Partial<CaseExpression>) => void;
   removeCaseExpression: (id: string) => void;
   addCaseBranch: (caseId: string) => void;
@@ -843,6 +844,13 @@ export function useQueryBuilder(
     }));
   }, []);
 
+  const addCaseExpressionDirect = useCallback((expr: CaseExpression) => {
+    setState((prev) => ({
+      ...prev,
+      caseExpressions: [...prev.caseExpressions, expr],
+    }));
+  }, []);
+
   const updateCaseExpression = useCallback((id: string, updates: Partial<CaseExpression>) => {
     setState((prev) => ({
       ...prev,
@@ -1145,6 +1153,7 @@ export function useQueryBuilder(
     setAggregate,
     removeAggregate,
     addCaseExpression,
+    addCaseExpressionDirect,
     updateCaseExpression,
     removeCaseExpression,
     addCaseBranch,

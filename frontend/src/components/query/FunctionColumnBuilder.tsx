@@ -18,6 +18,7 @@ const SQL_FUNCTIONS: { value: SqlFunction; label: string; description: string }[
   { value: "MAX", label: "MAX", description: "Maximum value" },
   { value: "COUNT_DISTINCT", label: "COUNT DISTINCT", description: "Number of unique values" },
   { value: "COALESCE", label: "COALESCE", description: "First non-null value" },
+  { value: "MONTHS_SINCE", label: "MONTHS SINCE", description: "Months from date to today" },
 ];
 
 export const FunctionColumnBuilder: React.FC<FunctionColumnBuilderProps> = ({

@@ -11,6 +11,7 @@ import type { TableMetadata } from "../../types/schema.types";
 import { buildColumnOptionsForQuery, getJoinReferenceName } from "../../utils/queryBuilderColumns";
 import { ColumnPicker } from "./ColumnPicker";
 import { CaseExpressionBuilder } from "./CaseExpressionBuilder";
+import { BinColumnBuilder } from "./BinColumnBuilder";
 import { FunctionColumnBuilder } from "./FunctionColumnBuilder";
 import { FilterPanel } from "./FilterPanel";
 import { JoinComposer } from "./JoinComposer";
@@ -154,6 +155,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     updateFilter,
     removeFilter,
     addCaseExpression,
+    addCaseExpressionDirect,
     updateCaseExpression,
     removeCaseExpression,
     addCaseBranch,
@@ -262,17 +264,45 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     });
   }, [engine, metadataTables, state.joins, state.table]);
 
-  const availableColumns = useMemo(
-    () => buildColumnOptionsForQuery(state.table, state.joins, metadataTables),
-    [state.table, state.joins, metadataTables]
-  );
+  const availableColumns = useMemo(() => {
+    const cols = buildColumnOptionsForQuery(state.table, state.joins, metadataTables);
+    for (const expr of state.caseExpressions) {
+      if (expr.alias.trim()) {
+        cols.push({
+          key: expr.alias.trim(), label: expr.alias.trim(), dtype: "COMPUTED",
+          tableName: "", sourceTableName: "", referenceName: "", columnName: expr.alias.trim(), nullable: true
+        });
+      }
+    }
+    for (const fc of state.functionColumns) {
+      if (fc.alias.trim()) {
+        cols.push({
+          key: fc.alias.trim(), label: fc.alias.trim(), dtype: "COMPUTED",
+          tableName: "", sourceTableName: "", referenceName: "", columnName: fc.alias.trim(), nullable: true
+        });
+      }
+    }
+    return cols;
+  }, [state.table, state.joins, metadataTables, state.caseExpressions, state.functionColumns]);
 
   const reportColumns = availableColumns;
 
-  const availableColumnNames = useMemo(
-    () => reportColumns.map((column) => column.key),
-    [reportColumns]
-  );
+  const availableColumnNames = useMemo(() => {
+    const names = reportColumns.map((column) => column.key);
+    // Append CASE expression aliases so they appear in pivot/report dropdowns
+    for (const expr of state.caseExpressions) {
+      if (expr.alias.trim() && !names.includes(expr.alias.trim())) {
+        names.push(expr.alias.trim());
+      }
+    }
+    // Append Function Column aliases
+    for (const fc of state.functionColumns) {
+      if (fc.alias.trim() && !names.includes(fc.alias.trim())) {
+        names.push(fc.alias.trim());
+      }
+    }
+    return names;
+  }, [reportColumns, state.caseExpressions, state.functionColumns]);
 
   const manualSqlSuggestions = useMemo(() => {
     const suggestions = new Map<string, SqlSuggestionItem>();
@@ -793,54 +823,11 @@ WHERE 1 = 1`;
             )}
 
             {state.table && state.mode === "LIST" && (
-              <>
-                <ColumnPicker
-                  columns={availableColumns}
-                  selectedColumns={state.selectedColumns}
-                  onToggleColumn={toggleColumn}
-                />
-                <FunctionColumnBuilder
-                  functionColumns={state.functionColumns}
-                  columns={availableColumns}
-                  onAddFunctionColumn={addFunctionColumn}
-                  onUpdateFunctionColumn={updateFunctionColumn}
-                  onRemoveFunctionColumn={removeFunctionColumn}
-                />
-                <CaseExpressionBuilder
-                  caseExpressions={state.caseExpressions}
-                  columns={availableColumns}
-                  onAddCase={addCaseExpression}
-                  onUpdateCase={updateCaseExpression}
-                  onRemoveCase={removeCaseExpression}
-                  onAddBranch={addCaseBranch}
-                  onUpdateBranch={updateCaseBranch}
-                  onRemoveBranch={removeCaseBranch}
-                />
-                <FilterPanel
-                  filters={state.filters}
-                  columns={availableColumns}
-                  onAddFilter={addFilter}
-                  onUpdateFilter={updateFilter}
-                  onRemoveFilter={removeFilter}
-                />
-                <SortControl sortRules={state.sort} columns={availableColumns} onChange={setSort} />
-
-                <div className="mb-4 rounded border border-gray-200 bg-white p-4 shadow-sm">
-                  <label className="mb-1 block text-sm font-semibold text-gray-700">
-                    Limit Rows
-                  </label>
-                  <p className="mb-2 text-xs text-gray-400">
-                    0 = No limit (UI shows max 1000, CSV downloads all)
-                  </p>
-                  <input
-                    type="number"
-                    value={state.limitRows}
-                    onChange={(event) => setLimitRows(Math.max(0, Number(event.target.value)))}
-                    className="w-full rounded border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    min="0"
-                  />
-                </div>
-              </>
+              <ColumnPicker
+                columns={availableColumns}
+                selectedColumns={state.selectedColumns}
+                onToggleColumn={toggleColumn}
+              />
             )}
 
             {state.table && state.mode === "REPORT" && (
@@ -862,13 +849,61 @@ WHERE 1 = 1`;
                     Add Grand Total row
                   </label>
                 </div>
+              </>
+            )}
+
+            {state.table && (
+              <>
+                <FunctionColumnBuilder
+                  functionColumns={state.functionColumns}
+                  columns={availableColumns}
+                  onAddFunctionColumn={addFunctionColumn}
+                  onUpdateFunctionColumn={updateFunctionColumn}
+                  onRemoveFunctionColumn={removeFunctionColumn}
+                />
+                <BinColumnBuilder
+                  columns={availableColumns}
+                  onApplyBin={addCaseExpressionDirect}
+                />
+                <CaseExpressionBuilder
+                  caseExpressions={state.caseExpressions}
+                  columns={availableColumns}
+                  onAddCase={addCaseExpression}
+                  onUpdateCase={updateCaseExpression}
+                  onRemoveCase={removeCaseExpression}
+                  onAddBranch={addCaseBranch}
+                  onUpdateBranch={updateCaseBranch}
+                  onRemoveBranch={removeCaseBranch}
+                />
                 <FilterPanel
                   filters={state.filters}
-                  columns={reportColumns}
+                  columns={availableColumns}
                   onAddFilter={addFilter}
                   onUpdateFilter={updateFilter}
                   onRemoveFilter={removeFilter}
                 />
+              </>
+            )}
+
+            {state.table && state.mode === "LIST" && (
+              <>
+                <SortControl sortRules={state.sort} columns={availableColumns} onChange={setSort} />
+
+                <div className="mb-4 rounded border border-gray-200 bg-white p-4 shadow-sm">
+                  <label className="mb-1 block text-sm font-semibold text-gray-700">
+                    Limit Rows
+                  </label>
+                  <p className="mb-2 text-xs text-gray-400">
+                    0 = No limit (UI shows max 1000, CSV downloads all)
+                  </p>
+                  <input
+                    type="number"
+                    value={state.limitRows}
+                    onChange={(event) => setLimitRows(Math.max(0, Number(event.target.value)))}
+                    className="w-full rounded border border-gray-300 p-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    min="0"
+                  />
+                </div>
               </>
             )}
           </div>

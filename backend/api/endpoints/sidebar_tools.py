@@ -658,8 +658,7 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> tuple[str, str]:
             except Exception:
                 pass  # Non-fatal: user can manually reconnect from the UI.
 
-    month_text = f" for {payload.month_label}" if payload.month_label else ""
-    return str(db_path), f"Created {payload.object_type} {normalized_object_name}{month_text}."
+    return str(db_path), f"Created {payload.object_type} {normalized_object_name}."
 
 
 def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
@@ -876,7 +875,7 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                     total_output_rows=total_output_rows
                 )
 
-        skipped_str = f" Skipped: {skipped_files}" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else ".")
+        skipped_str = f" Skipped: {skipped_files}." if skipped_files > 0 else "."
         _update_csv_job(
             job_id,
             status="completed",
@@ -1086,7 +1085,7 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
                     )
                 converted_count += 1
 
-        skipped_str = f" Skipped existing/invalid: {skipped_count}" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else ".")
+        skipped_str = f" Skipped existing/invalid: {skipped_count}." if skipped_count > 0 else "."
         return SidebarToolResponse(
             message=f"Parquet conversion completed successfully for {converted_count} file(s).{skipped_str}"
             + (" Enrichment applied (HIR + suppMapper + LOAD_KW)." if lookup_mode else "")
@@ -1279,10 +1278,9 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                     overall_progress_percent=min(70, parquet_pct),
                 )
 
-        skipped_str = f" {skipped_files} skipped" + (f" ({', '.join(parquet_skipped_details)})" if parquet_skipped_details else "")
-        parquet_summary = (
-            f"Parquet done: {total_valid} file(s),{skipped_str}."
-            + (" Enrichment applied." if lookup_mode else "")
+        skipped_str = f" {skipped_files} skipped." if skipped_files > 0 else ""
+        parquet_summary = f"Parquet done: {total_valid} file(s).{skipped_str}" + (
+            " Enrichment applied." if lookup_mode else ""
         )
 
         _update(
