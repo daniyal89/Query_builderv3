@@ -6,7 +6,6 @@
  */
 import React, { useCallback, useMemo, useState } from "react";
 import type { CaseExpression, QueryColumnOption } from "../../types/query.types";
-import type { QueryEngine } from "../../types/connection.types";
 import { SearchableSelect } from "./SearchableSelect";
 
 type BinType = "numeric" | "date_months";
@@ -85,13 +84,11 @@ const DEFAULT_ROWS: Omit<BinRow, "id">[] = [
 
 interface BinColumnBuilderProps {
   columns: QueryColumnOption[];
-  engine: QueryEngine;
   onApplyBin: (expr: CaseExpression) => void;
 }
 
 export const BinColumnBuilder: React.FC<BinColumnBuilderProps> = ({
   columns,
-  engine,
   onApplyBin,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -185,16 +182,26 @@ export const BinColumnBuilder: React.FC<BinColumnBuilderProps> = ({
     const caseExpr: CaseExpression = {
       id: genId(),
       alias: alias.trim(),
-      branches: validRows.map((row) => ({
-        id: genId(),
-        column: selectedColumn,
-        operator: "BETWEEN" as const,
-        value: `${row.min.trim()}, ${row.max.trim()}`,
-        thenType: "literal" as const,
-        thenValue: row.label.trim(),
-      })),
+      branches: [
+        {
+          id: genId(),
+          column: selectedColumn,
+          operator: "IS NULL" as const,
+          value: "",
+          thenType: "literal" as const,
+          thenValue: "99. Unknown / Invalid",
+        },
+        ...validRows.map((row, index) => ({
+          id: genId(),
+          column: selectedColumn,
+          operator: "<=" as const,
+          value: row.max.trim(),
+          thenType: "literal" as const,
+          thenValue: `${String(index + 1).padStart(2, "0")}. ${row.label.trim()}`,
+        })),
+      ],
       elseType: "literal",
-      elseValue: elseLabel.trim() || "Other",
+      elseValue: `${String(validRows.length + 1).padStart(2, "0")}. ${elseLabel.trim() || "Other"}`,
     };
 
     onApplyBin(caseExpr);

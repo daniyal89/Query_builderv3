@@ -278,26 +278,26 @@ class QueryBuilderService:
             for case_expr in payload.case_expressions:
                 if case_expr.alias.strip() == column.strip():
                     case_sqls, _ = QueryBuilderService._build_case_expressions(
-                        QueryPayload.model_construct(**payload.model_dump(), case_expressions=[case_expr]),
+                        payload.model_copy(update={"case_expressions": [case_expr]}),
                         payload.engine,
                         alias_by_table,
-                        0 # Params will be out of sync if this had params, but reports don't currently use params here
+                        -1 # -1 means inline parameters
                     )
                     if case_sqls:
                         # Return the case expression WITHOUT the ' AS ALIAS' suffix
-                        expr = case_sqls[0].split(" AS ")[0].strip()
+                        expr = case_sqls[0].rsplit(" AS ", 1)[0].strip()
                         return "", column, expr
                         
             # Check Function columns
             for fcol in payload.function_columns:
                 if fcol.alias.strip() == column.strip():
                     func_sqls = QueryBuilderService._build_function_columns(
-                        QueryPayload.model_construct(**payload.model_dump(), function_columns=[fcol]),
+                        payload.model_copy(update={"function_columns": [fcol]}),
                         alias_by_table
                     )
                     if func_sqls:
                         # Return the function expression WITHOUT the ' AS ALIAS' suffix
-                        expr = func_sqls[0].split(" AS ")[0].strip()
+                        expr = func_sqls[0].rsplit(" AS ", 1)[0].strip()
                         return "", column, expr
 
         table_name, column_name = QueryBuilderService._split_column_ref(
@@ -402,6 +402,7 @@ class QueryBuilderService:
         alias_by_table: dict[str, str],
         default_table: str,
         start_param_index: int,
+        payload: QueryPayload | None = None,
     ) -> tuple[str, list[Any]]:
         """Build SQL and parameters for a single condition (FilterCondition or CaseWhenBranch)."""
         params: list[Any] = []
@@ -410,6 +411,7 @@ class QueryBuilderService:
             filter_condition.column,
             alias_by_table,
             default_table,
+            payload
         )
         operator = filter_condition.operator
 
@@ -453,10 +455,16 @@ class QueryBuilderService:
                     str(v).strip().upper() if isinstance(v, str) else v
                     for v in values
                 ]
-                placeholders = ", ".join(
-                    QueryBuilderService._build_placeholders(engine, len(upper_values), start_param_index)
-                )
-                params.extend(upper_values)
+                if start_param_index == -1:
+                    placeholders = ", ".join(
+                        f"'{str(v).replace(chr(39), chr(39)*2)}'" if isinstance(v, str) else str(v)
+                        for v in upper_values
+                    )
+                else:
+                    placeholders = ", ".join(
+                        QueryBuilderService._build_placeholders(engine, len(upper_values), start_param_index)
+                    )
+                    params.extend(upper_values)
                 return f"{normalized_col} {operator} ({placeholders})", params
 
         if operator in QueryBuilderService.RANGE_OPERATORS:
@@ -477,20 +485,27 @@ class QueryBuilderService:
                 range_column_expr = (
                     f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_range_numeric_cast else f"TRIM({column_expr})"
                 )
-                left_placeholder = QueryBuilderService._placeholder(engine, start_param_index)
-                right_placeholder = QueryBuilderService._placeholder(engine, start_param_index + 1)
-                params.extend(
-                    [
-                        start_numeric if should_use_range_numeric_cast else start,
-                        end_numeric if should_use_range_numeric_cast else end,
-                    ]
-                )
+                if start_param_index == -1:
+                    left_placeholder = str(start_numeric if should_use_range_numeric_cast else f"'{str(start).replace(chr(39), chr(39)*2)}'")
+                    right_placeholder = str(end_numeric if should_use_range_numeric_cast else f"'{str(end).replace(chr(39), chr(39)*2)}'")
+                else:
+                    left_placeholder = QueryBuilderService._placeholder(engine, start_param_index)
+                    right_placeholder = QueryBuilderService._placeholder(engine, start_param_index + 1)
+                    params.extend(
+                        [
+                            start_numeric if should_use_range_numeric_cast else start,
+                            end_numeric if should_use_range_numeric_cast else end,
+                        ]
+                    )
                 return f"{range_column_expr} {operator} {left_placeholder} AND {right_placeholder}", params
 
         if operator in QueryBuilderService.FRIENDLY_TEXT_OPERATORS:
             sql_operator, pattern = QueryBuilderService._build_text_pattern(operator, filter_condition.value)
-            placeholder = QueryBuilderService._placeholder(engine, start_param_index)
-            params.append(pattern)
+            if start_param_index == -1:
+                placeholder = f"'{pattern.replace(chr(39), chr(39)*2)}'"
+            else:
+                placeholder = QueryBuilderService._placeholder(engine, start_param_index)
+                params.append(pattern)
             return f"TRIM({column_expr}) {sql_operator} {placeholder} ESCAPE '\\'", params
 
         if use_date_literals:
@@ -499,8 +514,11 @@ class QueryBuilderService:
                 []
             )
         else:
-            placeholder = QueryBuilderService._placeholder(engine, start_param_index)
-            params.append(numeric_value if should_use_numeric_cast else filter_condition.value)
+            if start_param_index == -1:
+                placeholder = str(numeric_value if should_use_numeric_cast else f"'{str(filter_condition.value).replace(chr(39), chr(39)*2)}'")
+            else:
+                placeholder = QueryBuilderService._placeholder(engine, start_param_index)
+                params.append(numeric_value if should_use_numeric_cast else filter_condition.value)
             return f"{filter_column_expr} {operator} {placeholder}", params
 
     @staticmethod
@@ -510,6 +528,7 @@ class QueryBuilderService:
         alias_by_table: dict[str, str],
         default_table: str,
         start_param_index: int = 1,
+        payload: QueryPayload | None = None,
     ) -> tuple[str, list[Any]]:
         where_clauses: list[str] = []
         params: list[Any] = []
@@ -520,7 +539,8 @@ class QueryBuilderService:
                 engine,
                 alias_by_table,
                 default_table,
-                start_param_index + len(params)
+                start_param_index + len(params),
+                payload
             )
             where_clauses.append(sql_cond)
             params.extend(cond_params)
@@ -550,7 +570,8 @@ class QueryBuilderService:
                     engine,
                     alias_by_table,
                     payload.table,
-                    start_param_index + len(params)
+                    -1 if start_param_index == -1 else start_param_index + len(params),
+                    payload
                 )
                 
                 params.extend(cond_params)
@@ -569,29 +590,36 @@ class QueryBuilderService:
                     if case_expr.aggregate_func:
                         then_expr = _agg_cast(then_expr)
                 else:
-                    placeholder = QueryBuilderService._placeholder(engine, start_param_index + len(params))
-                    params.append(branch.then_value)
+                    if start_param_index == -1:
+                        placeholder = f"'{str(branch.then_value).replace(chr(39), chr(39)*2)}'" if isinstance(branch.then_value, str) else str(branch.then_value)
+                    else:
+                        placeholder = QueryBuilderService._placeholder(engine, start_param_index + len(params))
+                        params.append(branch.then_value)
                     then_expr = _agg_cast(placeholder) if case_expr.aggregate_func else placeholder
                 
                 branch_sqls.append(f"WHEN {sql_cond} THEN {then_expr}")
 
-            if not branch_sqls:
-                continue
-
             # Handle ELSE value depending on type
-            if case_expr.else_type == "column":
+            if not case_expr.else_value:
+                else_expr = "NULL"
+            elif case_expr.else_type == "column":
                 _, _, else_expr = QueryBuilderService._resolve_column_expression(
-                    case_expr.else_value, alias_by_table, payload.table
+                    case_expr.else_value, alias_by_table, payload.table, payload
                 )
                 if case_expr.aggregate_func:
                     else_expr = _agg_cast(else_expr)
             else:
-                placeholder = QueryBuilderService._placeholder(engine, start_param_index + len(params))
-                params.append(case_expr.else_value)
+                if start_param_index == -1:
+                    placeholder = f"'{str(case_expr.else_value).replace(chr(39), chr(39)*2)}'" if isinstance(case_expr.else_value, str) else str(case_expr.else_value)
+                else:
+                    placeholder = QueryBuilderService._placeholder(engine, start_param_index + len(params))
+                    params.append(case_expr.else_value)
                 else_expr = _agg_cast(placeholder) if case_expr.aggregate_func else placeholder
-
-            branches_str = " ".join(branch_sqls)
-            case_sql = f"CASE {branches_str} ELSE {else_expr} END"
+            
+            if not branch_sqls:
+                case_sql = else_expr
+            else:
+                case_sql = f"CASE {' '.join(branch_sqls)} ELSE {else_expr} END"
             
             if case_expr.aggregate_func:
                 case_sql = f"{case_expr.aggregate_func}({case_sql})"
@@ -610,7 +638,11 @@ class QueryBuilderService:
         func_sqls: list[str] = []
 
         for fcol in payload.function_columns:
-            if not fcol.column.strip() or not fcol.alias.strip():
+            if not fcol.alias.strip():
+                continue
+            if not fcol.column.strip():
+                alias = QueryBuilderService._quote_identifier(fcol.alias)
+                func_sqls.append(f"NULL AS {alias}")
                 continue
             # Resolve main column expression
             if fcol.column == "*":
@@ -631,6 +663,11 @@ class QueryBuilderService:
                     expr = f"COALESCE({main_expr}, {second_expr})"
                 else:
                     expr = f"COALESCE({main_expr}, NULL)"
+            elif fcol.func == "MONTHS_SINCE":
+                if payload.engine == "duckdb":
+                    expr = f"DATE_DIFF('month', {QueryBuilderService._duckdb_date_expression(main_expr)}, CURRENT_DATE)"
+                else:
+                    expr = f"MONTHS_BETWEEN(CURRENT_DATE, {main_expr})"
             else:
                 expr = f"{fcol.func}({main_expr})"
 
@@ -683,6 +720,8 @@ class QueryBuilderService:
             payload.engine,
             alias_by_table,
             payload.table,
+            1,
+            payload
         )
 
         select_expressions: list[str] = []
@@ -791,7 +830,8 @@ class QueryBuilderService:
             engine,
             alias_by_table,
             payload.table,
-            start_param_index=len(select_params) + 1
+            start_param_index=len(select_params) + 1,
+            payload=payload
         )
         
         params = select_params + where_params

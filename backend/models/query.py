@@ -84,7 +84,7 @@ class CaseExpression(BaseModel):
 class FunctionColumn(BaseModel):
     """A standalone column with a SQL function applied."""
 
-    func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX", "COUNT_DISTINCT", "COALESCE"] = Field(
+    func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX", "COUNT_DISTINCT", "COALESCE", "MONTHS_SINCE"] = Field(
         ..., description="The SQL function to apply."
     )
     column: str = Field(..., description="The main column to apply the function to.")

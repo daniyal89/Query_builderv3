@@ -88,7 +88,8 @@ export type SqlFunction =
   | "MIN"
   | "MAX"
   | "COUNT_DISTINCT"
-  | "COALESCE";
+  | "COALESCE"
+  | "MONTHS_SINCE";
 
 export interface FunctionColumn {
   id: string;
