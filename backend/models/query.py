@@ -65,6 +65,14 @@ class CaseWhenBranch(BaseModel):
     column: str = Field(..., description="Column name to check.")
     operator: FilterOperator = Field(..., description="SQL comparison operator.")
     value: Any = Field(default="", description="Comparison value.")
+    second_operator: FilterOperator | None = Field(
+        default=None,
+        description="Optional second operator for compound conditions (e.g. the '<' in '>= X AND < Y').",
+    )
+    second_value: Any = Field(
+        default=None,
+        description="Value for the second operator in compound conditions.",
+    )
     then_type: Literal["literal", "column"] = Field(default="literal", description="Type of the THEN value.")
     then_value: str = Field(..., description="Value or column to return if condition is met.")
 

@@ -181,6 +181,7 @@ export const QueryBuilderWorkspace: React.FC<QueryBuilderWorkspaceProps> = ({
     applyState,
     executeQuery,
     executeExportQuery,
+    startLargeExportCsv,
   } = useQueryBuilder(engine, metadataTables);
 
   useEffect(() => {
@@ -1027,7 +1028,7 @@ WHERE 1 = 1`;
               </div>
             )}
 
-            <ResultsGrid result={state.result} isLoading={state.isLoading} onExportAll={executeExportQuery} />
+            <ResultsGrid result={state.result} isLoading={state.isLoading} onExportAll={executeExportQuery} onStartLargeExport={startLargeExportCsv} />
           </div>
         </div>
       </div>

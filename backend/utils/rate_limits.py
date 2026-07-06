@@ -28,6 +28,7 @@ DEFAULT_RATE_LIMIT_POLICIES: dict[str, RateLimitPolicy] = {
     "sidebar_build_duckdb": RateLimitPolicy(max_requests=6, window_seconds=60, label="DuckDB build"),
     "sidebar_csv_to_parquet": RateLimitPolicy(max_requests=6, window_seconds=60, label="CSV to Parquet"),
     "sidebar_full_pipeline": RateLimitPolicy(max_requests=6, window_seconds=60, label="Full Pipeline"),
+    "query_export_csv": RateLimitPolicy(max_requests=6, window_seconds=60, label="CSV export"),
 }
 
 

@@ -176,6 +176,65 @@ class DuckDBService:
             rows = result.fetchall()
             return columns, [list(row) for row in rows], len(rows)
 
+    def export_to_csv(
+        self,
+        sql: str,
+        output_path: str,
+        params: Optional[list[Any]] = None,
+    ) -> int:
+        """Execute *sql* and write the result directly to *output_path* as CSV.
+
+        Uses DuckDB's native ``COPY … TO`` command which streams rows from the
+        C++ execution engine directly to disk.  This avoids loading all rows into
+        Python memory and avoids JSON serialisation, making it suitable for result
+        sets with tens of millions of rows.
+
+        Args:
+            sql:         A ``SELECT`` statement (no LIMIT required — caller controls that).
+            output_path: Absolute path for the output ``.csv`` file.
+            params:      Optional positional parameters for the query.
+
+        Returns:
+            Number of rows written (from DuckDB's COPY result).
+
+        Raises:
+            RuntimeError:  If the database is not connected.
+            ValueError:    If *output_path* resolves outside expected bounds.
+        """
+        self._ensure_connected()
+
+        from pathlib import Path as _Path  # local import to avoid circular at module level
+        import os as _os
+
+        resolved_out = _Path(output_path).expanduser().resolve()
+        resolved_out.parent.mkdir(parents=True, exist_ok=True)
+
+        # Escape the output path for embedding in SQL string literal
+        path_str = str(resolved_out).replace("\\", "/")
+        path_sql_lit = "'" + path_str.replace("'", "''") + "'"
+
+        with self._lock:
+            assert self._conn is not None
+
+            # Render parameterised SQL to a plain string so we can embed it in COPY
+            if params:
+                rendered_rel = self._conn.execute(sql, params).relation
+                # Use the relation object directly in COPY if available; fall back to re-execute
+                copy_sql = (
+                    f"COPY ({sql}) TO {path_sql_lit} "
+                    f"(HEADER true, DELIMITER ',', QUOTE '\"', FORCE_QUOTE *)"
+                )
+                result_row = self._conn.execute(copy_sql, params).fetchone()
+            else:
+                copy_sql = (
+                    f"COPY ({sql}) TO {path_sql_lit} "
+                    f"(HEADER true, DELIMITER ',', QUOTE '\"', FORCE_QUOTE *)"
+                )
+                result_row = self._conn.execute(copy_sql).fetchone()
+
+        rows_written = int(result_row[0]) if result_row else 0
+        return rows_written
+
     def create_object_from_file(self, payload: FileObjectRequest) -> TableMetadata:
         self._ensure_connected()
         object_name = payload.object_name.strip()

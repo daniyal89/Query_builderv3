@@ -284,6 +284,8 @@ class QueryBuilderService:
                         -1 # -1 means inline parameters
                     )
                     if case_sqls:
+                        if payload.engine == "duckdb":
+                            return "", column, QueryBuilderService._quote_identifier(case_expr.alias)
                         # Return the case expression WITHOUT the ' AS ALIAS' suffix
                         expr = case_sqls[0].rsplit(" AS ", 1)[0].strip()
                         return "", column, expr
@@ -296,6 +298,8 @@ class QueryBuilderService:
                         alias_by_table
                     )
                     if func_sqls:
+                        if payload.engine == "duckdb":
+                            return "", column, QueryBuilderService._quote_identifier(fcol.alias)
                         # Return the function expression WITHOUT the ' AS ALIAS' suffix
                         expr = func_sqls[0].rsplit(" AS ", 1)[0].strip()
                         return "", column, expr
@@ -362,9 +366,9 @@ class QueryBuilderService:
         computed_expressions: list[str] = []
         selected_expressions: list[str] = []
         
-        # Build computed columns from CASE expressions
+        # Build computed columns from CASE expressions (force inline literals so it matches GROUP BY exactly)
         case_sqls, case_params = QueryBuilderService._build_case_expressions(
-            payload, engine, alias_by_table, start_param_index
+            payload, engine, alias_by_table, -1
         )
         computed_expressions.extend(case_sqls)
 
@@ -448,9 +452,9 @@ class QueryBuilderService:
                 literals = ", ".join(QueryBuilderService._date_literal(value) for value in values)
                 return f"{date_filter_expr} {operator} ({literals})", []
             else:
-                # Wrap column with UPPER(TRIM(CAST(... AS VARCHAR))) and uppercase
+                # Wrap column with UPPER(TRIM(CAST(... AS VARCHAR(255)))) and uppercase
                 # the values for robust case-insensitive matching.
-                normalized_col = f"UPPER(TRIM(CAST({column_expr} AS VARCHAR)))"
+                normalized_col = f"UPPER(TRIM(CAST({column_expr} AS VARCHAR(255))))"
                 upper_values = [
                     str(v).strip().upper() if isinstance(v, str) else v
                     for v in values
@@ -509,17 +513,43 @@ class QueryBuilderService:
             return f"TRIM({column_expr}) {sql_operator} {placeholder} ESCAPE '\\'", params
 
         if use_date_literals:
-            return (
-                f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}",
-                []
-            )
+            primary_sql = f"{date_filter_expr} {operator} {QueryBuilderService._date_literal(filter_condition.value)}"
+            primary_params: list[Any] = []
         else:
             if start_param_index == -1:
                 placeholder = str(numeric_value if should_use_numeric_cast else f"'{str(filter_condition.value).replace(chr(39), chr(39)*2)}'")
             else:
                 placeholder = QueryBuilderService._placeholder(engine, start_param_index)
                 params.append(numeric_value if should_use_numeric_cast else filter_condition.value)
-            return f"{filter_column_expr} {operator} {placeholder}", params
+            primary_sql = f"{filter_column_expr} {operator} {placeholder}"
+            primary_params = list(params)
+
+        # --- Compound condition support (e.g. >= X AND < Y) ---
+        second_op = getattr(filter_condition, "second_operator", None)
+        second_val = getattr(filter_condition, "second_value", None)
+        if second_op and second_val is not None:
+            second_numeric = QueryBuilderService._to_float_if_numeric(second_val)
+            second_should_cast = (
+                engine == "duckdb"
+                and not use_date_literals
+                and second_op in QueryBuilderService.NUMERIC_COMPARISON_OPERATORS
+                and second_numeric is not None
+            )
+            second_col_expr = (
+                f"TRY_CAST({column_expr} AS DOUBLE)" if second_should_cast else f"TRIM({column_expr})"
+            )
+            if use_date_literals:
+                second_sql = f"{date_filter_expr} {second_op} {QueryBuilderService._date_literal(second_val)}"
+            elif start_param_index == -1:
+                second_placeholder = str(second_numeric if second_should_cast else f"'{str(second_val).replace(chr(39), chr(39)*2)}'")
+                second_sql = f"{second_col_expr} {second_op} {second_placeholder}"
+            else:
+                second_placeholder = QueryBuilderService._placeholder(engine, start_param_index + len(primary_params))
+                primary_params.append(second_numeric if second_should_cast else second_val)
+                second_sql = f"{second_col_expr} {second_op} {second_placeholder}"
+            return f"{primary_sql} AND {second_sql}", primary_params
+
+        return primary_sql, primary_params
 
     @staticmethod
     def _build_where_clause(

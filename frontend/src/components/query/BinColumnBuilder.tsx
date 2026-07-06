@@ -34,8 +34,8 @@ const PRESETS: BinPreset[] = [
     alias: "PAYMENT_AGING",
     rows: [
       { min: "0", max: "3", label: "0-3 months" },
-      { min: "4", max: "6", label: "3-6 months" },
-      { min: "7", max: "12", label: "6-12 months" },
+      { min: "3", max: "6", label: "3-6 months" },
+      { min: "6", max: "12", label: "6-12 months" },
     ],
     elseLabel: "12+ months",
   },
@@ -45,9 +45,9 @@ const PRESETS: BinPreset[] = [
     alias: "QUARTERLY_AGING",
     rows: [
       { min: "0", max: "3", label: "Q1 (0-3 months)" },
-      { min: "4", max: "6", label: "Q2 (3-6 months)" },
-      { min: "7", max: "9", label: "Q3 (6-9 months)" },
-      { min: "10", max: "12", label: "Q4 (9-12 months)" },
+      { min: "3", max: "6", label: "Q2 (3-6 months)" },
+      { min: "6", max: "9", label: "Q3 (6-9 months)" },
+      { min: "9", max: "12", label: "Q4 (9-12 months)" },
     ],
     elseLabel: "Over 1 year",
   },
@@ -57,8 +57,8 @@ const PRESETS: BinPreset[] = [
     alias: "AMOUNT_BIN",
     rows: [
       { min: "0", max: "1000", label: "0-1K" },
-      { min: "1001", max: "5000", label: "1K-5K" },
-      { min: "5001", max: "10000", label: "5K-10K" },
+      { min: "1000", max: "5000", label: "1K-5K" },
+      { min: "5000", max: "10000", label: "5K-10K" },
     ],
     elseLabel: "10K+",
   },
@@ -68,9 +68,9 @@ const PRESETS: BinPreset[] = [
     alias: "AMOUNT_BIN",
     rows: [
       { min: "0", max: "10000", label: "0-10K" },
-      { min: "10001", max: "50000", label: "10K-50K" },
-      { min: "50001", max: "100000", label: "50K-1L" },
-      { min: "100001", max: "500000", label: "1L-5L" },
+      { min: "10000", max: "50000", label: "10K-50K" },
+      { min: "50000", max: "100000", label: "50K-1L" },
+      { min: "100000", max: "500000", label: "1L-5L" },
     ],
     elseLabel: "5L+",
   },
@@ -78,8 +78,8 @@ const PRESETS: BinPreset[] = [
 
 const DEFAULT_ROWS: Omit<BinRow, "id">[] = [
   { min: "0", max: "3", label: "0-3 months" },
-  { min: "4", max: "6", label: "3-6 months" },
-  { min: "7", max: "12", label: "6-12 months" },
+  { min: "3", max: "6", label: "3-6 months" },
+  { min: "6", max: "12", label: "6-12 months" },
 ];
 
 interface BinColumnBuilderProps {
@@ -194,8 +194,10 @@ export const BinColumnBuilder: React.FC<BinColumnBuilderProps> = ({
         ...validRows.map((row, index) => ({
           id: genId(),
           column: selectedColumn,
-          operator: "<=" as const,
-          value: row.max.trim(),
+          operator: ">=" as const,
+          value: row.min.trim(),
+          secondOperator: "<" as const,
+          secondValue: row.max.trim(),
           thenType: "literal" as const,
           thenValue: `${String(index + 1).padStart(2, "0")}. ${row.label.trim()}`,
         })),
@@ -322,8 +324,8 @@ export const BinColumnBuilder: React.FC<BinColumnBuilderProps> = ({
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left px-3 py-1.5 text-xs font-semibold text-gray-600 w-24">Min</th>
-                  <th className="text-left px-3 py-1.5 text-xs font-semibold text-gray-600 w-24">Max</th>
+                  <th className="text-left px-3 py-1.5 text-xs font-semibold text-gray-600 w-24">From (≥)</th>
+                  <th className="text-left px-3 py-1.5 text-xs font-semibold text-gray-600 w-24">To (&lt;)</th>
                   <th className="text-left px-3 py-1.5 text-xs font-semibold text-gray-600">Label</th>
                   <th className="w-8"></th>
                 </tr>

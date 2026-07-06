@@ -229,6 +229,7 @@ export interface UseQueryBuilderReturn {
   applyState: (nextState: Partial<QueryState>) => void;
   executeQuery: () => Promise<QueryResult | undefined>;
   executeExportQuery: (onProgress?: (progressEvent: AxiosProgressEvent) => void) => Promise<QueryResult | undefined>;
+  startLargeExportCsv: (outputPath: string) => Promise<any>;
   reset: () => void;
 }
 
@@ -1094,18 +1095,12 @@ export function useQueryBuilder(
     }
   }, [engine, state]);
 
-  // Export fetches ALL rows only when limitRows is 0 (unlimited).
-  // When limitRows > 0, the result already has the correct data.
-  const executeExportQuery = useCallback(async (onProgress?: (progressEvent: AxiosProgressEvent) => void) => {
-    // If limit > 0, we already have the exact rows in state — no extra fetch
-    if (state.limitRows > 0) return state.result ?? undefined;
-
+  const getExportPayload = useCallback(() => {
     const isBuilderMode = state.sourceMode === "builder";
-    try {
-      const payload: QueryPayload = isBuilderMode
-        ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: 0 }
-        : {
-          execution_mode: "sql",
+    return isBuilderMode
+      ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: 0 }
+      : {
+          execution_mode: "sql" as const,
           engine,
           table: state.table,
           select: [],
@@ -1120,7 +1115,16 @@ export function useQueryBuilder(
           aggregates: [],
           sql: state.sqlText,
         };
+  }, [engine, state, metadataTables]);
 
+  // Export fetches ALL rows only when limitRows is 0 (unlimited).
+  // When limitRows > 0, the result already has the correct data.
+  const executeExportQuery = useCallback(async (onProgress?: (progressEvent: AxiosProgressEvent) => void) => {
+    // If limit > 0, we already have the exact rows in state — no extra fetch
+    if (state.limitRows > 0) return state.result ?? undefined;
+
+    try {
+      const payload = getExportPayload();
       return await executeQueryApi(payload, onProgress);
     } catch (err: any) {
       setState((prev) => ({
@@ -1129,7 +1133,21 @@ export function useQueryBuilder(
       }));
       return undefined;
     }
-  }, [engine, state, metadataTables]);
+  }, [getExportPayload, state.limitRows, state.result]);
+
+  const startLargeExportCsv = useCallback(async (outputPath: string) => {
+    try {
+      const payload = getExportPayload();
+      const { startExportCsv } = await import("../api/exportApi");
+      return await startExportCsv({ payload, output_path: outputPath });
+    } catch (err: any) {
+      setState((prev) => ({
+        ...prev,
+        error: getErrorMessage(err, "Failed to start export job"),
+      }));
+      return undefined;
+    }
+  }, [getExportPayload]);
 
   const reset = useCallback(() => {
     setState({ ...initialState, marcadoseUnion: createDefaultMarcadoseUnion() });
@@ -1172,6 +1190,7 @@ export function useQueryBuilder(
     applyState,
     executeQuery,
     executeExportQuery,
+    startLargeExportCsv,
     reset,
   };
 }

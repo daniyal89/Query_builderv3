@@ -8,7 +8,10 @@ interface ResultsGridProps {
   result: QueryResult | null;
   isLoading: boolean;
   onExportAll?: (onProgress?: (progressEvent: any) => void) => Promise<QueryResult | undefined>;
+  onStartLargeExport?: (outputPath: string) => Promise<any>;
 }
+
+const LARGE_EXPORT_THRESHOLD = 200000;
 
 const VIRTUALIZATION_THRESHOLD = 120;
 const VIRTUAL_ROW_HEIGHT = 40;
@@ -51,7 +54,7 @@ async function saveBlob(blob: Blob, suggestedName: string) {
   URL.revokeObjectURL(url);
 }
 
-export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onExportAll }) => {
+export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onExportAll, onStartLargeExport }) => {
   const [scrollTop, setScrollTop] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState("");
@@ -91,6 +94,50 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
 
   const handleExportCSV = async () => {
     if (!result) return;
+
+    if (result.total >= LARGE_EXPORT_THRESHOLD && onStartLargeExport) {
+      const suggestedPath = "C:\\exports\\query_results.csv";
+      const outputPath = window.prompt(
+        `This dataset is very large (${result.total.toLocaleString()} rows). The export will run directly on the server to save memory.\n\nEnter the absolute path where you want to save the CSV file:`,
+        suggestedPath
+      );
+
+      if (!outputPath) return; // User cancelled
+
+      setIsExporting(true);
+      setExportProgress("Starting export job...");
+      try {
+        const response = await onStartLargeExport(outputPath);
+        if (!response?.job_id) throw new Error("Failed to start export job");
+
+        const jobId = response.job_id;
+        const { getExportCsvStatus } = await import("../../api/exportApi");
+        
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          const statusRes = await getExportCsvStatus(jobId);
+          
+          if (statusRes.status === "completed") {
+            setExportProgress(`Done! ${statusRes.rows_written.toLocaleString()} rows written to ${statusRes.output_path}`);
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            break;
+          } else if (statusRes.status === "failed" || statusRes.status === "cancelled") {
+            throw new Error(statusRes.message || "Export failed");
+          } else {
+            const progressMsg = statusRes.rows_written > 0 
+              ? `Written ${statusRes.rows_written.toLocaleString()} rows...` 
+              : statusRes.message || "Exporting...";
+            setExportProgress(progressMsg);
+          }
+        }
+      } catch (err: any) {
+        window.alert(`Export error: ${err.message || err}`);
+      } finally {
+        setIsExporting(false);
+        setExportProgress("");
+      }
+      return;
+    }
 
     // If total rows > displayed rows AND we have an export function, fetch all rows
     if (onExportAll && result.total > result.rows.length) {
