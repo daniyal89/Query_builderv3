@@ -44,8 +44,18 @@ from backend.services.job_runtime import (
 from backend.services.query_builder_service import QueryBuilderService
 from backend.utils.path_safety import sanitize_local_path_input
 from backend.utils.rate_limits import enforce_rate_limit
+from backend.utils.dialogs import ask_save_as_filename
 
 router = APIRouter()
+
+@router.get("/pick-save-file")
+def pick_save_file_endpoint(suggested_name: str = "export.csv") -> dict[str, str | None]:
+    """
+    Opens a native Windows Save As dialog on the host machine.
+    Returns the absolute path selected by the user, or None if cancelled.
+    """
+    path = ask_save_as_filename(suggested_name)
+    return {"path": path}
 
 EXPORT_CSV_JOB_TYPE = "query.export_csv"
 EXPORT_CSV_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)

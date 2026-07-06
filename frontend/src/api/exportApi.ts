@@ -51,3 +51,14 @@ export async function cancelExportCsv(jobId: string): Promise<ExportCsvJobStatus
   const { data } = await apiClient.post<ExportCsvJobStatusResponse>(`/query/export-csv/cancel/${jobId}`);
   return data;
 }
+
+/**
+ * Open a native Windows Save As dialog on the backend host.
+ * Returns the selected absolute path, or null if cancelled.
+ */
+export async function pickSaveFile(suggestedName = "export.csv"): Promise<string | null> {
+  const { data } = await apiClient.get<{ path: string | null }>(`/query/pick-save-file`, {
+    params: { suggested_name: suggestedName }
+  });
+  return data.path;
+}

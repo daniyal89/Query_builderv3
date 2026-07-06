@@ -165,7 +165,10 @@ function renameTableReferences(
       ...state.pivotConfig,
       rows: state.pivotConfig.rows.map(rename),
       columns: state.pivotConfig.columns.map(rename),
-      values: rename(state.pivotConfig.values),
+      aggregates: (state.pivotConfig.aggregates || []).map(agg => ({
+        ...agg,
+        column: rename(agg.column)
+      })),
     },
   };
 }
@@ -246,7 +249,7 @@ const initialState: QueryBuilderState = {
   limitRows: 0,
   offset: 0,
   mode: "LIST",
-  pivotConfig: { rows: [], columns: [], values: "", func: "SUM" },
+  pivotConfig: { rows: [], columns: [], aggregates: [] },
   marcadoseUnion: createDefaultMarcadoseUnion(),
   result: null,
   isLoading: false,
@@ -548,7 +551,7 @@ export function useQueryBuilder(
       return undefined;
     }
 
-    if (state.mode === "REPORT" && !state.pivotConfig.values.trim()) {
+    if (state.mode === "REPORT" && (!state.pivotConfig.aggregates || state.pivotConfig.aggregates.length === 0)) {
       setState((prev) => ({
         ...prev,
         generatedSql: "",

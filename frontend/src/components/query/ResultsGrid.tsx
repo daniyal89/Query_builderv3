@@ -97,21 +97,23 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
 
     if (result.total >= LARGE_EXPORT_THRESHOLD && onStartLargeExport) {
       const suggestedPath = "C:\\exports\\query_results.csv";
-      const outputPath = window.prompt(
-        `This dataset is very large (${result.total.toLocaleString()} rows). The export will run directly on the server to save memory.\n\nEnter the absolute path where you want to save the CSV file:`,
-        suggestedPath
-      );
-
-      if (!outputPath) return; // User cancelled
-
       setIsExporting(true);
-      setExportProgress("Starting export job...");
+      setExportProgress("Opening file picker...");
       try {
+        const { pickSaveFile, getExportCsvStatus } = await import("../../api/exportApi");
+        const outputPath = await pickSaveFile(suggestedPath);
+        
+        if (!outputPath) {
+          setIsExporting(false);
+          setExportProgress("");
+          return; // User cancelled
+        }
+
+        setExportProgress("Starting export job...");
         const response = await onStartLargeExport(outputPath);
         if (!response?.job_id) throw new Error("Failed to start export job");
 
         const jobId = response.job_id;
-        const { getExportCsvStatus } = await import("../../api/exportApi");
         
         while (true) {
           await new Promise((resolve) => setTimeout(resolve, 1000));

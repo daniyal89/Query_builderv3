@@ -154,9 +154,17 @@ class PivotConfig(BaseModel):
 
     rows: list[str] = Field(default_factory=list, description="Fields to group vertically.")
     columns: list[str] = Field(default_factory=list, description="Fields to pivot horizontally.")
-    values: str = Field(..., description="Field to aggregate.")
-    func: Literal["SUM", "COUNT", "AVG", "MIN", "MAX"] = Field(..., description="Function for aggregation.")
+    aggregates: list[AggregateRule] = Field(default_factory=list, description="List of aggregations to apply.")
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_values(cls, data: dict[str, Any]) -> dict[str, Any]:
+        if "values" in data and "func" in data:
+            if not data.get("aggregates") and data["values"]:
+                data["aggregates"] = [{"column": data["values"], "func": data["func"]}]
+            # We don't remove them so that legacy JSON doesn't crash strict validators,
+            # but pydantic will ignore extra fields if model is not extra='forbid'
+        return data
 
 class MarcadoseUnionConfig(BaseModel):
     """Monthly Marcadose master-table replacement and UNION ALL configuration."""
