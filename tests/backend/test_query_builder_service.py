@@ -32,7 +32,7 @@ def test_build_preview_sql_renders_joined_query_with_aliases() -> None:
 
     assert 'SELECT t0."ACCT_ID" AS "master.ACCT_ID", t1."STATUS" AS "usage_view.STATUS"' in sql
     assert 'FROM "master" t0 LEFT JOIN "usage_view" t1 ON t0."ACCT_ID" = t1."ACCT_ID"' in sql
-    assert 'WHERE t1."STATUS" = \'ACTIVE\'' in sql
+    assert 'WHERE TRIM(t1."STATUS") = \'ACTIVE\'' in sql
     assert 'ORDER BY t1."STATUS" DESC' in sql
     assert sql.endswith("LIMIT 25 OFFSET 5")
 
@@ -62,7 +62,7 @@ def test_build_count_sql_keeps_join_structure() -> None:
 
     assert sql == (
         'SELECT COUNT(*) FROM "master" t0 INNER JOIN "detail" t1 '
-        'ON t0."ACCT_ID" = t1."ACCT_ID" WHERE t1."FLAG" = :1'
+        'ON t0."ACCT_ID" = t1."ACCT_ID" WHERE TRIM(t1."FLAG") = :1'
     )
     assert params == ["Y"]
 
@@ -79,7 +79,7 @@ def test_oracle_schema_qualified_table_names_are_quoted_by_part() -> None:
     sql = QueryBuilderService.build_preview_sql(payload)
 
     assert 'SELECT t0."ACCT_ID" FROM "MERCADOS"."CM_MASTER_DATA_0326_DVVNL" t0' in sql
-    assert 'WHERE t0."DISCOM" = \'DVVNL\'' in sql
+    assert 'WHERE TRIM(t0."DISCOM") = \'DVVNL\'' in sql
     assert sql.endswith("FETCH FIRST 10 ROWS ONLY")
 
 
@@ -185,7 +185,7 @@ def test_repeated_join_aliases_flow_through_select_filter_and_sort() -> None:
     sql = QueryBuilderService.build_preview_sql(payload)
 
     assert 'SELECT t2."STATUS" AS "detail_secondary.STATUS"' in sql
-    assert 'WHERE t1."FLAG" = \'Y\'' in sql
+    assert 'WHERE TRIM(t1."FLAG") = \'Y\'' in sql
     assert 'ORDER BY t2."STATUS" ASC' in sql
 
 
@@ -241,7 +241,7 @@ def test_oracle_report_sql_uses_grouped_select_instead_of_disabled_pivot() -> No
     assert 't0."DISCOM" AS "__REPORT_COLUMN_1__"' in sql
     assert 'SUM(t0."LOAD") AS "__REPORT_VALUE__"' in sql
     assert 'FROM "MASTER" t0' in sql
-    assert 'WHERE t0."STATUS" = :1' in sql
+    assert 'WHERE TRIM(t0."STATUS") = :1' in sql
     assert 'GROUP BY t0."DIV_CODE", t0."DISCOM" ORDER BY 1, 2' in sql
     assert params == ["ACTIVE"]
 
@@ -324,7 +324,7 @@ def test_oracle_date_filter_uses_date_literal_in_preview_sql() -> None:
 
     sql = QueryBuilderService.build_preview_sql(payload)
 
-    assert "t0.\"OPR_FLG\" = 'Y'" in sql
+    assert "TRIM(t0.\"OPR_FLG\") = 'Y'" in sql
     assert "t0.\"LAST_BILL_DATE\" >= DATE '2026-03-01'" in sql
 
 
@@ -393,7 +393,7 @@ def test_duckdb_keeps_string_comparison_when_filter_value_is_not_numeric() -> No
     sql, params = QueryBuilderService.build_sql(payload)
 
     assert "TRY_CAST(" not in sql
-    assert "t0.\"DISCOM\" = ?" in sql
+    assert "TRIM(t0.\"DISCOM\") = ?" in sql
     assert params == ["DVVNL"]
 
 

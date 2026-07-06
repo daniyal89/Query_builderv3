@@ -68,6 +68,10 @@ export interface CaseWhenBranch {
   column: string;
   operator: FilterOperator;
   value: string;
+  /** Optional second operator for compound conditions (e.g. the '<' in '>= X AND < Y'). */
+  secondOperator?: FilterOperator;
+  /** Value for the second operator in compound conditions. */
+  secondValue?: string;
   thenType: "literal" | "column";
   thenValue: string;
 }
