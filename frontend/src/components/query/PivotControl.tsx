@@ -102,35 +102,70 @@ export const PivotControl: React.FC<PivotControlProps> = ({ columns, config, onC
         </div>
       </div>
 
-      {/* Values & Function */}
+      {/* Values & Aggregation */}
       <div className="p-4 bg-indigo-50/30">
-        <h3 className="font-semibold text-gray-700 mb-2">3. Values & Aggregation</h3>
-        <div className="flex space-x-2">
-          <div className="flex-1">
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Value Field</label>
-            <SearchableSelect
-              value={config.values}
-              options={valueFieldOptions}
-              onChange={(values) => onChange({ values })}
-              placeholder="-- Select Field --"
-              searchPlaceholder="Search value fields..."
-              emptyMessage="No value fields match your search."
-            />
-          </div>
-          <div className="w-1/3">
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Function</label>
-            <select
-              value={config.func}
-              onChange={(e) => onChange({ func: e.target.value as any })}
-              className="w-full border border-gray-300 rounded px-2 py-1.5 text-xs bg-white focus:ring-1 focus:ring-indigo-500"
-            >
-              <option value="SUM">SUM</option>
-              <option value="COUNT">COUNT</option>
-              <option value="AVG">AVG</option>
-              <option value="MIN">MIN</option>
-              <option value="MAX">MAX</option>
-            </select>
-          </div>
+        <h3 className="font-semibold text-gray-700 mb-2 flex items-center justify-between">
+          <span>3. Values & Aggregation</span>
+          <button
+            type="button"
+            onClick={() => onChange({ aggregates: [...(config.aggregates || []), { column: "", func: "SUM" }] })}
+            className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
+            Add Value
+          </button>
+        </h3>
+        <div className="space-y-2">
+          {(!config.aggregates || config.aggregates.length === 0) ? (
+            <p className="text-xs text-gray-500 italic py-2">No values added. Click "Add Value" to define report metrics.</p>
+          ) : config.aggregates.map((agg, idx) => (
+            <div key={idx} className="flex space-x-2 items-end">
+              <div className="flex-1">
+                <label className="block text-[10px] font-semibold text-gray-500 mb-0.5 uppercase tracking-wider">Value Field {idx + 1}</label>
+                <SearchableSelect
+                  value={agg.column}
+                  options={valueFieldOptions}
+                  onChange={(val) => {
+                    const newAggs = [...config.aggregates];
+                    newAggs[idx] = { ...agg, column: val };
+                    onChange({ aggregates: newAggs });
+                  }}
+                  placeholder="-- Select Field --"
+                  searchPlaceholder="Search value fields..."
+                  emptyMessage="No value fields match your search."
+                />
+              </div>
+              <div className="w-1/3">
+                <label className="block text-[10px] font-semibold text-gray-500 mb-0.5 uppercase tracking-wider">Function</label>
+                <select
+                  value={agg.func}
+                  onChange={(e) => {
+                    const newAggs = [...config.aggregates];
+                    newAggs[idx] = { ...agg, func: e.target.value as any };
+                    onChange({ aggregates: newAggs });
+                  }}
+                  className="w-full border border-gray-300 rounded px-2 py-[7px] text-xs bg-white focus:ring-1 focus:ring-indigo-500"
+                >
+                  <option value="SUM">SUM</option>
+                  <option value="COUNT">COUNT</option>
+                  <option value="AVG">AVG</option>
+                  <option value="MIN">MIN</option>
+                  <option value="MAX">MAX</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const newAggs = config.aggregates.filter((_, i) => i !== idx);
+                  onChange({ aggregates: newAggs });
+                }}
+                className="mb-[1px] p-1.5 text-gray-400 hover:text-red-500 rounded hover:bg-red-50 transition-colors"
+                title="Remove Value"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+              </button>
+            </div>
+          ))}
         </div>
       </div>
 

@@ -722,16 +722,16 @@ class QueryBuilderService:
         return ", ".join(sort_clauses)
 
     @staticmethod
-    def _report_fields(payload: QueryPayload) -> tuple[list[str], list[str], str]:
+    def _report_fields(payload: QueryPayload) -> tuple[list[str], list[str], list[Any]]:
         if payload.mode != "REPORT" or not payload.pivot:
             raise ValueError("Report configuration is required for Generate Report mode.")
 
         row_fields = [field.strip() for field in payload.pivot.rows if field.strip()]
         column_fields = [field.strip() for field in payload.pivot.columns if field.strip()]
-        value_field = payload.pivot.values.strip()
-        if not value_field:
-            raise ValueError("Select a Values field before generating a report.")
-        return row_fields, column_fields, value_field
+        aggregates = payload.pivot.aggregates
+        if not aggregates:
+            raise ValueError("Select at least one Values field before generating a report.")
+        return row_fields, column_fields, aggregates
 
     @staticmethod
     def build_report_sql(payload: QueryPayload) -> tuple[str, list[Any]]:
@@ -742,7 +742,7 @@ class QueryBuilderService:
         grouped result into a table before returning it to the UI.
         """
 
-        row_fields, column_fields, value_field = QueryBuilderService._report_fields(payload)
+        row_fields, column_fields, aggregates = QueryBuilderService._report_fields(payload)
         alias_by_table = QueryBuilderService._build_alias_map(payload)
         from_clause = QueryBuilderService._build_from_clause(payload, alias_by_table)
         where_str, params = QueryBuilderService._build_where_clause(
@@ -769,11 +769,17 @@ class QueryBuilderService:
             )
             group_expressions.append(expression)
 
-        _, _, value_expression = QueryBuilderService._resolve_column_expression(value_field, alias_by_table, payload.table, payload)
-        aggregate_expression = f"{payload.pivot.func}({value_expression})"
-        select_expressions.append(
-            f"{aggregate_expression} AS {QueryBuilderService._quote_identifier(QueryBuilderService.REPORT_VALUE_ALIAS)}"
-        )
+        for index, agg in enumerate(aggregates, start=1):
+            _, _, value_expression = QueryBuilderService._resolve_column_expression(agg.column, alias_by_table, payload.table, payload)
+            
+            # Fix: DuckDB requires explicit casting for string columns used in numeric aggregates
+            if payload.engine == "duckdb" and agg.func in ("SUM", "AVG"):
+                value_expression = f"TRY_CAST({value_expression} AS DOUBLE)"
+                
+            aggregate_expression = f"{agg.func}({value_expression})"
+            select_expressions.append(
+                f"{aggregate_expression} AS {QueryBuilderService._quote_identifier(f'__REPORT_VALUE_{index}__')}"
+            )
 
         sql = f"SELECT {', '.join(select_expressions)} FROM {from_clause}"
         if where_str:
@@ -800,13 +806,14 @@ class QueryBuilderService:
     def pivot_report_rows(payload: QueryPayload, aggregate_rows: list[list[Any]]) -> tuple[list[str], list[list[Any]]]:
         """Reshape grouped aggregate rows into an Excel-style pivot table."""
 
-        row_fields, column_fields, value_field = QueryBuilderService._report_fields(payload)
-        value_label = f"{payload.pivot.func}({value_field})"
-        value_index = len(row_fields) + len(column_fields)
+        row_fields, column_fields, aggregates = QueryBuilderService._report_fields(payload)
+        value_labels = [f"{agg.func}({agg.column})" for agg in aggregates]
+        value_start_index = len(row_fields) + len(column_fields)
+        num_aggregates = len(aggregates)
 
         if not column_fields:
-            columns = [*row_fields, value_label]
-            rows = [list(row[: len(row_fields)]) + [row[value_index]] for row in aggregate_rows]
+            columns = [*row_fields, *value_labels]
+            rows = [list(row[: len(row_fields)]) + list(row[value_start_index:]) for row in aggregate_rows]
             return columns, rows
 
         pivot_labels: list[str] = []
@@ -816,21 +823,27 @@ class QueryBuilderService:
 
         for aggregate_row in aggregate_rows:
             row_key = tuple(aggregate_row[: len(row_fields)])
-            pivot_key = tuple(aggregate_row[len(row_fields) : value_index])
-            pivot_label = QueryBuilderService._format_pivot_heading(column_fields, pivot_key)
-
-            if pivot_label not in seen_pivot_labels:
-                seen_pivot_labels.add(pivot_label)
-                pivot_labels.append(pivot_label)
+            pivot_key = tuple(aggregate_row[len(row_fields) : value_start_index])
+            base_pivot_label = QueryBuilderService._format_pivot_heading(column_fields, pivot_key)
 
             if row_key not in rows_by_key:
                 row_order.append(row_key)
                 rows_by_key[row_key] = {}
+                
+            for i, val_label in enumerate(value_labels):
+                if num_aggregates == 1:
+                    full_label = base_pivot_label
+                else:
+                    full_label = f"{base_pivot_label} | {val_label}"
+                
+                if full_label not in seen_pivot_labels:
+                    seen_pivot_labels.add(full_label)
+                    pivot_labels.append(full_label)
 
-            rows_by_key[row_key][pivot_label] = aggregate_row[value_index]
+                rows_by_key[row_key][full_label] = aggregate_row[value_start_index + i]
 
         if not pivot_labels:
-            return [*row_fields, value_label], []
+            return [*row_fields, *value_labels], []
 
         columns = [*row_fields, *pivot_labels]
         rows = [

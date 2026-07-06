@@ -204,8 +204,7 @@ export interface QueryPreview {
 export interface PivotConfig {
   rows: string[];
   columns: string[];
-  values: string;
-  func: "SUM" | "COUNT" | "AVG" | "MIN" | "MAX";
+  aggregates: AggregateRule[];
 }
 
 export interface AggregateRule {

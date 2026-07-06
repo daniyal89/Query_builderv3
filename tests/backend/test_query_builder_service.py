@@ -239,7 +239,7 @@ def test_oracle_report_sql_uses_grouped_select_instead_of_disabled_pivot() -> No
 
     assert 'SELECT t0."DIV_CODE" AS "__REPORT_ROW_1__"' in sql
     assert 't0."DISCOM" AS "__REPORT_COLUMN_1__"' in sql
-    assert 'SUM(t0."LOAD") AS "__REPORT_VALUE__"' in sql
+    assert 'SUM(t0."LOAD") AS "__REPORT_VALUE_1__"' in sql
     assert 'FROM "MASTER" t0' in sql
     assert 'WHERE TRIM(t0."STATUS") = :1' in sql
     assert 'GROUP BY t0."DIV_CODE", t0."DISCOM" ORDER BY 1, 2' in sql
@@ -276,7 +276,7 @@ def test_report_sql_can_group_by_joined_columns() -> None:
     assert 'FROM "MASTER" t0 LEFT JOIN "DETAIL" t1 ON t0."ACCT_ID" = t1."ACCT_ID"' in sql
     assert 't0."DIV_CODE" AS "__REPORT_ROW_1__"' in sql
     assert 't1."STATUS" AS "__REPORT_COLUMN_1__"' in sql
-    assert 'SUM(t0."LOAD") AS "__REPORT_VALUE__"' in sql
+    assert 'SUM(t0."LOAD") AS "__REPORT_VALUE_1__"' in sql
     assert params == []
 
 
