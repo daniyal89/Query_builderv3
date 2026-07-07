@@ -1055,8 +1055,11 @@ export function useQueryBuilder(
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
     try {
+      // When limit is 0 (unlimited), cap UI display at 1000 rows to prevent browser OOM crashes
+      const uiLimit = state.limitRows === 0 ? 1000 : state.limitRows;
+
       const payload: QueryPayload = isBuilderMode
-        ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: state.limitRows }
+        ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: uiLimit }
         : {
           execution_mode: "sql",
           engine,
@@ -1065,7 +1068,7 @@ export function useQueryBuilder(
           filters: [],
           sort: [],
           joins: [],
-          limit_rows: state.limitRows,
+          limit_rows: uiLimit,
           offset: state.offset,
           mode: state.mode,
           marcadose_union: state.marcadoseUnion,
@@ -1076,13 +1079,19 @@ export function useQueryBuilder(
 
       const result = await executeQueryApi(payload);
 
-      setState((prev) => ({
-        ...prev,
-        result,
-        isLoading: false,
-        sqlText: result.executed_sql || prev.sqlText,
-        generatedSql: isBuilderMode && result.executed_sql ? result.executed_sql : prev.generatedSql,
-      }));
+      setState((prev) => {
+        // If we forced a safety limit (limitRows === 0 -> 1000), don't overwrite the generated SQL
+        // otherwise it would incorrectly display LIMIT 1000 in the UI and carry over on reset.
+        const shouldUpdateSql = state.limitRows !== 0;
+
+        return {
+          ...prev,
+          result,
+          isLoading: false,
+          sqlText: shouldUpdateSql ? (result.executed_sql || prev.sqlText) : prev.sqlText,
+          generatedSql: (isBuilderMode && result.executed_sql && shouldUpdateSql) ? result.executed_sql : prev.generatedSql,
+        };
+      });
 
       return result;
     } catch (err: any) {
