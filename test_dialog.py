@@ -1,7 +1,6 @@
 import os
 import ctypes
 from ctypes.wintypes import HWND, HINSTANCE, LPCWSTR, DWORD, WORD, LPWSTR
-from typing import Optional
 
 OFN_OVERWRITEPROMPT = 0x00000002
 OFN_NOCHANGEDIR = 0x00000008
@@ -31,20 +30,11 @@ class OPENFILENAMEW(ctypes.Structure):
         ("lpTemplateName", LPCWSTR)
     ]
 
-def ask_save_as_filename(suggested_name: str = "export.csv") -> Optional[str]:
-    """
-    Opens a native Windows Save As dialog safely from any thread 
-    without needing Tkinter or subprocesses.
-    """
-    import sys
-    if sys.platform != "win32":
-        return None
-        
+def ask_save_as_filename(suggested_name: str = "export.csv") -> str:
     MAX_PATH = 32768
     ofn = OPENFILENAMEW()
     ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
     
-    # Format: "Display Name\0*.ext\0"
     filter_str = "CSV Files\0*.csv\0All Files\0*.*\0\0"
     ofn.lpstrFilter = filter_str
     ofn.nFilterIndex = 1
@@ -58,11 +48,12 @@ def ask_save_as_filename(suggested_name: str = "export.csv") -> Optional[str]:
     ofn.lpstrDefExt = "csv"
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST
     
-    try:
-        comdlg32 = ctypes.windll.comdlg32
-        if comdlg32.GetSaveFileNameW(ctypes.byref(ofn)):
-            return file_buffer.value
-    except Exception as e:
-        print(f"Error calling GetSaveFileNameW: {e}")
-        
+    comdlg32 = ctypes.windll.comdlg32
+    if comdlg32.GetSaveFileNameW(ctypes.byref(ofn)):
+        return file_buffer.value
     return None
+
+if __name__ == "__main__":
+    print("Calling GetSaveFileNameW...")
+    res = ask_save_as_filename("C:\\test\\test.csv")
+    print("Result:", res)

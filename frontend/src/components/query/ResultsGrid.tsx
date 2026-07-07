@@ -3,6 +3,7 @@
  */
 import React, { useEffect, useMemo, useState } from "react";
 import type { QueryResult } from "../../types/query.types";
+import { ExportModal } from "./ExportModal";
 
 interface ResultsGridProps {
   result: QueryResult | null;
@@ -12,6 +13,9 @@ interface ResultsGridProps {
 }
 
 const LARGE_EXPORT_THRESHOLD = 200000;
+
+/** Max rows displayed in the UI grid — all rows still available for CSV export. */
+const UI_DISPLAY_LIMIT = 50;
 
 const VIRTUALIZATION_THRESHOLD = 120;
 const VIRTUAL_ROW_HEIGHT = 40;
@@ -40,10 +44,11 @@ async function saveBlob(blob: Blob, suggestedName: string) {
       return;
     }
   } catch (error: any) {
-    if (error.name !== "AbortError") {
-      console.error("Failed to save file using picker:", error);
+    if (error.name === "AbortError") {
+      return; // User cancelled the picker, stop here
     }
-    return;
+    console.warn("Failed to save file using picker, falling back to anchor download:", error);
+    // Fall back to anchor click
   }
 
   const url = URL.createObjectURL(blob);
@@ -58,13 +63,20 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
   const [scrollTop, setScrollTop] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState("");
+  const [showExportModal, setShowExportModal] = useState(false);
 
   useEffect(() => {
     setScrollTop(0);
   }, [result]);
 
-  const rowCount = result?.rows.length ?? 0;
-  const useVirtualization = rowCount >= VIRTUALIZATION_THRESHOLD;
+  // Cap rows shown in UI to UI_DISPLAY_LIMIT; full result.rows kept for CSV
+  const displayRows = useMemo(
+    () => (result ? result.rows.slice(0, UI_DISPLAY_LIMIT) : []),
+    [result],
+  );
+  const displayRowCount = displayRows.length;
+
+  const useVirtualization = displayRowCount >= VIRTUALIZATION_THRESHOLD;
   const visibleWindowSize =
     Math.ceil(VIRTUAL_VIEWPORT_HEIGHT / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2;
   const startIndex = useVirtualization
@@ -72,76 +84,37 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
     : 0;
   const endIndex = result
     ? useVirtualization
-      ? Math.min(result.rows.length, startIndex + visibleWindowSize)
-      : result.rows.length
+      ? Math.min(displayRowCount, startIndex + visibleWindowSize)
+      : displayRowCount
     : 0;
   const topSpacerHeight = useVirtualization ? startIndex * VIRTUAL_ROW_HEIGHT : 0;
   const bottomSpacerHeight =
     result && useVirtualization
-      ? Math.max(0, (result.rows.length - endIndex) * VIRTUAL_ROW_HEIGHT)
+      ? Math.max(0, (displayRowCount - endIndex) * VIRTUAL_ROW_HEIGHT)
       : 0;
 
   const visibleRows = useMemo(
     () =>
-      result
-        ? result.rows.slice(startIndex, endIndex).map((row, visibleIndex) => ({
-            absoluteIndex: startIndex + visibleIndex,
-            row,
-          }))
-        : [],
-    [endIndex, result, startIndex],
+      displayRows
+        .slice(startIndex, endIndex)
+        .map((row, visibleIndex) => ({
+          absoluteIndex: startIndex + visibleIndex,
+          row,
+        })),
+    [displayRows, endIndex, startIndex],
   );
 
   const handleExportCSV = async () => {
     if (!result) return;
 
-    if (result.total >= LARGE_EXPORT_THRESHOLD && onStartLargeExport) {
-      const suggestedPath = "C:\\exports\\query_results.csv";
-      setIsExporting(true);
-      setExportProgress("Opening file picker...");
-      try {
-        const { pickSaveFile, getExportCsvStatus } = await import("../../api/exportApi");
-        const outputPath = await pickSaveFile(suggestedPath);
-        
-        if (!outputPath) {
-          setIsExporting(false);
-          setExportProgress("");
-          return; // User cancelled
-        }
-
-        setExportProgress("Starting export job...");
-        const response = await onStartLargeExport(outputPath);
-        if (!response?.job_id) throw new Error("Failed to start export job");
-
-        const jobId = response.job_id;
-        
-        while (true) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          const statusRes = await getExportCsvStatus(jobId);
-          
-          if (statusRes.status === "completed") {
-            setExportProgress(`Done! ${statusRes.rows_written.toLocaleString()} rows written to ${statusRes.output_path}`);
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-            break;
-          } else if (statusRes.status === "failed" || statusRes.status === "cancelled") {
-            throw new Error(statusRes.message || "Export failed");
-          } else {
-            const progressMsg = statusRes.rows_written > 0 
-              ? `Written ${statusRes.rows_written.toLocaleString()} rows...` 
-              : statusRes.message || "Exporting...";
-            setExportProgress(progressMsg);
-          }
-        }
-      } catch (err: any) {
-        window.alert(`Export error: ${err.message || err}`);
-      } finally {
-        setIsExporting(false);
-        setExportProgress("");
-      }
+    // ── Large export → open the Export Modal ──
+    // Use result.rows.length (what the query actually returned) not result.total
+    if (result.rows.length >= LARGE_EXPORT_THRESHOLD && onStartLargeExport) {
+      setShowExportModal(true);
       return;
     }
 
-    // If total rows > displayed rows AND we have an export function, fetch all rows
+    // ── Medium export: total > displayed but < threshold ──
     if (onExportAll && result.total > result.rows.length) {
       setIsExporting(true);
       setExportProgress("Fetching...");
@@ -165,7 +138,7 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
       return;
     }
 
-    // Otherwise export the rows we already have
+    // ── Small export: export what we have ──
     setIsExporting(true);
     setExportProgress("Building CSV...");
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -208,20 +181,15 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
         <div>
           <h3 className="text-sm font-semibold text-gray-700">Results</h3>
           <p className="mt-0.5 text-xs text-gray-500">
-            {result.rows.length} of {result.total} rows
-            {result.truncated && (
-              <span className="ml-1 font-medium text-amber-600">
-                (limited - CSV export will fetch all {result.total.toLocaleString()} rows)
+            Showing {Math.min(displayRowCount, result.rows.length)} of {result.rows.length.toLocaleString()} rows
+            {result.rows.length > displayRowCount && (
+              <span className="ml-1 text-indigo-600 font-medium">
+                — CSV will export all {result.rows.length.toLocaleString()} rows
               </span>
             )}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {useVirtualization && (
-            <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-sky-700">
-              Windowed rendering
-            </span>
-          )}
           <button
             onClick={() => void handleExportCSV()}
             disabled={isExporting}
@@ -235,8 +203,10 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
             ) : (
               <>
                 CSV
-                {result.truncated && result.total > result.rows.length && (
-                  <span className="text-[10px] opacity-80">(All {result.total.toLocaleString()})</span>
+                {result.rows.length > displayRowCount && (
+                  <span className="text-[10px] opacity-80">
+                    (All {result.rows.length.toLocaleString()})
+                  </span>
                 )}
               </>
             )}
@@ -322,6 +292,16 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, onE
           </tbody>
         </table>
       </div>
+
+      {/* Export Modal for large datasets */}
+      {onStartLargeExport && (
+        <ExportModal
+          open={showExportModal}
+          totalRows={result.rows.length}
+          onClose={() => setShowExportModal(false)}
+          onStartExport={onStartLargeExport}
+        />
+      )}
     </div>
   );
 };

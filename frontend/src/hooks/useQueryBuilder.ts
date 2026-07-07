@@ -1055,11 +1055,8 @@ export function useQueryBuilder(
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
     try {
-      // When limit is 0 (unlimited), cap UI display at 1000 rows
-      const uiLimit = state.limitRows === 0 ? 1000 : state.limitRows;
-
       const payload: QueryPayload = isBuilderMode
-        ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: uiLimit }
+        ? { ...buildBuilderPayload(state, engine, metadataTables), limit_rows: state.limitRows }
         : {
           execution_mode: "sql",
           engine,
@@ -1068,7 +1065,7 @@ export function useQueryBuilder(
           filters: [],
           sort: [],
           joins: [],
-          limit_rows: uiLimit,
+          limit_rows: state.limitRows,
           offset: state.offset,
           mode: state.mode,
           marcadose_union: state.marcadoseUnion,
