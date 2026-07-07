@@ -44,15 +44,16 @@ from backend.services.job_runtime import (
 from backend.services.query_builder_service import QueryBuilderService
 from backend.utils.path_safety import sanitize_local_path_input
 from backend.utils.rate_limits import enforce_rate_limit
-from backend.utils.dialogs import ask_save_as_filename
 
 router = APIRouter()
 
-@router.get("/pick-save-file")
-def pick_save_file_endpoint(suggested_name: str = "export.csv") -> dict[str, str | None]:
+from backend.utils.dialogs import ask_save_as_filename
+
+@router.get("/query/pick-save-file")
+def pick_save_file_endpoint(suggested_name: str = "export.csv") -> dict:
     """
-    Opens a native Windows Save As dialog on the host machine.
-    Returns the absolute path selected by the user, or None if cancelled.
+    Opens a native Windows Save As dialog on the backend host.
+    Returns {"path": "<selected_path>"} or {"path": None}.
     """
     path = ask_save_as_filename(suggested_name)
     return {"path": path}
