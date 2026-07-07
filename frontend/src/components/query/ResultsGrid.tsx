@@ -40,10 +40,11 @@ async function saveBlob(blob: Blob, suggestedName: string) {
       return;
     }
   } catch (error: any) {
-    if (error.name !== "AbortError") {
-      console.error("Failed to save file using picker:", error);
+    if (error.name === "AbortError") {
+      return; // User cancelled the picker, stop here
     }
-    return;
+    console.warn("Failed to save file using picker, falling back to anchor download:", error);
+    // Fall back to anchor click
   }
 
   const url = URL.createObjectURL(blob);
