@@ -1028,7 +1028,13 @@ WHERE 1 = 1`;
               </div>
             )}
 
-            <ResultsGrid result={state.result} isLoading={state.isLoading} onExportAll={executeExportQuery} onStartLargeExport={startLargeExportCsv} />
+            <ResultsGrid
+              result={state.result}
+              isLoading={state.isLoading}
+              isUnlimited={state.limitRows === 0}
+              onExportAll={executeExportQuery}
+              onStartLargeExport={startLargeExportCsv}
+            />
           </div>
         </div>
       </div>

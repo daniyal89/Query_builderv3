@@ -1,68 +1,57 @@
-import os
-import ctypes
-from ctypes.wintypes import HWND, HINSTANCE, LPCWSTR, DWORD, WORD, LPWSTR
+import subprocess
+import sys
+import json
 from typing import Optional
-
-OFN_OVERWRITEPROMPT = 0x00000002
-OFN_NOCHANGEDIR = 0x00000008
-OFN_PATHMUSTEXIST = 0x00000800
-
-class OPENFILENAMEW(ctypes.Structure):
-    _fields_ = [
-        ("lStructSize", DWORD),
-        ("hwndOwner", HWND),
-        ("hInstance", HINSTANCE),
-        ("lpstrFilter", LPCWSTR),
-        ("lpstrCustomFilter", LPWSTR),
-        ("nMaxCustFilter", DWORD),
-        ("nFilterIndex", DWORD),
-        ("lpstrFile", LPWSTR),
-        ("nMaxFile", DWORD),
-        ("lpstrFileTitle", LPWSTR),
-        ("nMaxFileTitle", DWORD),
-        ("lpstrInitialDir", LPCWSTR),
-        ("lpstrTitle", LPCWSTR),
-        ("Flags", DWORD),
-        ("nFileOffset", WORD),
-        ("nFileExtension", WORD),
-        ("lpstrDefExt", LPCWSTR),
-        ("lCustData", DWORD),
-        ("lpfnHook", ctypes.c_void_p),
-        ("lpTemplateName", LPCWSTR)
-    ]
 
 def ask_save_as_filename(suggested_name: str = "export.csv") -> Optional[str]:
     """
-    Opens a native Windows Save As dialog safely from any thread 
-    without needing Tkinter or subprocesses.
+    Opens a native Windows Save As dialog.
+    Runs in a subprocess to avoid tkinter thread/asyncio loop conflicts.
     """
-    import sys
-    if sys.platform != "win32":
-        return None
-        
-    MAX_PATH = 32768
-    ofn = OPENFILENAMEW()
-    ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
-    
-    # Format: "Display Name\0*.ext\0"
-    filter_str = "CSV Files\0*.csv\0All Files\0*.*\0\0"
-    ofn.lpstrFilter = filter_str
-    ofn.nFilterIndex = 1
-    
-    file_buffer = ctypes.create_unicode_buffer(MAX_PATH)
-    file_buffer.value = suggested_name
-    ofn.lpstrFile = ctypes.cast(file_buffer, LPWSTR)
-    ofn.nMaxFile = MAX_PATH
-    
-    ofn.lpstrTitle = "Save Query Results As..."
-    ofn.lpstrDefExt = "csv"
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST
-    
+    script = f"""
+import tkinter as tk
+from tkinter import filedialog
+import json
+
+try:
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    path = filedialog.asksaveasfilename(
+        initialfile={repr(suggested_name)},
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+    root.destroy()
+    print(json.dumps({{"path": path if path else None}}))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}))
+"""
     try:
-        comdlg32 = ctypes.windll.comdlg32
-        if comdlg32.GetSaveFileNameW(ctypes.byref(ofn)):
-            return file_buffer.value
-    except Exception as e:
-        print(f"Error calling GetSaveFileNameW: {e}")
+        # Prevent showing a black console window when running python.exe on Windows
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            startupinfo=startupinfo
+        )
         
-    return None
+        try:
+            data = json.loads(result.stdout.strip())
+            if "error" in data:
+                print(f"Tkinter subprocess error: {data['error']}")
+                return None
+            return data.get("path")
+        except json.JSONDecodeError:
+            print(f"Failed to parse subprocess output: {result.stdout}")
+            return None
+            
+    except Exception as e:
+        print(f"Error opening dialog via subprocess: {e}")
+        return None
