@@ -68,10 +68,45 @@ class CsvToParquetRequest(BaseModel):
         return normalized
 
 
+class FileRowAudit(BaseModel):
+    """What happened to one source file, in rows."""
+
+    source_file: str
+    target_file: str | None = None
+    outcome: str = "written"  # written | reused | repaired | skipped | failed
+    reason: str = ""
+    source_rows: int = 0
+    written_rows: int = 0
+    quarantined_rows: int = 0
+    quarantine_reasons: dict[str, int] = {}
+    quarantine_file: str | None = None
+
+
+class RowReconciliation(BaseModel):
+    """Source → parquet → table row balance for a whole run.
+
+    ``unaccounted_rows`` must be zero. Anything else means rows went missing
+    without a decision being recorded, which is the failure this pipeline used
+    to have no way of detecting.
+    """
+
+    source_rows: int = 0
+    written_rows: int = 0
+    reused_rows: int = 0
+    quarantined_rows: int = 0
+    unaccounted_rows: int = 0
+    table_rows: int | None = None
+    balanced: bool = True
+    discrepancies: list[str] = []
+
+
 class SidebarToolResponse(BaseModel):
     status: str = "ok"
     message: str
     output_path: str | None = None
+    rows_written: int = 0
+    rows_quarantined: int = 0
+    data_quality: str = "ok"  # ok | warning | loss
 
 
 class CsvToParquetJobStartResponse(BaseModel):
@@ -94,6 +129,10 @@ class CsvToParquetJobResponse(BaseModel):
     output_path: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    row_audit: list[FileRowAudit] = []
+    row_audit_truncated: bool = False
+    reconciliation: RowReconciliation = RowReconciliation()
+    data_quality: str = "ok"  # ok | warning | loss
 
 
 class BuildDuckDbJobStartResponse(BaseModel):
@@ -110,6 +149,11 @@ class BuildDuckDbJobResponse(BaseModel):
     progress_percent: int = 0
     started_at: str | None = None
     finished_at: str | None = None
+    parquet_input_rows: int | None = None
+    table_rows: int | None = None
+    row_delta: int = 0
+    excluded_input_files: list[str] = []
+    data_quality: str = "ok"  # ok | warning | loss
 
 
 # ─────────────────── Full Pipeline (CSV→Parquet + Build DuckDB) ──────────────
@@ -191,8 +235,14 @@ class FullPipelineStatusResponse(BaseModel):
     # Build DuckDB progress
     build_progress_percent: int = 0
     build_output_path: str | None = None
+    parquet_input_rows: int | None = None
+    table_rows: int | None = None
     # Overall
     overall_progress_percent: int = 0
     started_at: str | None = None
     finished_at: str | None = None
+    row_audit: list[FileRowAudit] = []
+    row_audit_truncated: bool = False
+    reconciliation: RowReconciliation = RowReconciliation()
+    data_quality: str = "ok"  # ok | warning | loss
 

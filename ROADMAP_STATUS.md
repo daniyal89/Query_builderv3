@@ -1,6 +1,10 @@
 # Query Builder Project Roadmap & Execution Status
 
-_Last updated: 2026-05-01 (UTC) - frontend tests/build pass locally with dark mode baseline, new SQL highlighting, virtualized result rendering, route prefetching, and generated bundle reports; the frontend CI gate now runs both tests and build; the backend suite now passes locally end-to-end (`108 passed`) with the persistent job runtime in place for FTP, Drive, and Sidebar Tools; repeated-table join aliasing is implemented; Sprint 6 security hardening is functionally complete, including Google Drive logout/revoke UX; subquery remains deferred; Sprint 2 Data Tools UX consistency implementation continues with shared alert-component adoption in progress, including completed-job success summaries in Sidebar Tools._
+_Last updated: 2026-08-04 (UTC) - **silent row loss in the CSV→Parquet→DuckDB pipeline is fixed**: the enrichment path was deleting every row with a non-numeric ACCT_ID (4 of 10 realistic values survived) and 100% of rows from any file lacking the column, while reporting success. ACCT_ID is now normalised and zero-padded to 10 digits with invalid rows quarantined and counted; every job reconciles `source = written + quarantined`; parquet writes are atomic and corrupt outputs are rebuilt rather than skipped forever; the build stages into a temp table so a failed build cannot destroy a good one. Enrichment moved from pandas to DuckDB SQL (27.9s → 3.5s, 90 MB → 0.1 MB on the real 103k-row file), pinned by a differential test. Added `backend/tools/audit_rows.py` to measure what past months lost. Backend `143 passed`, frontend `20 passed`, build and lint clean._
+
+_Earlier on 2026-08-04: backend suite passes end-to-end (`109 passed`); the query builder workspace, virtualized results grid, and background large-CSV export (DuckDB `COPY … TO`) are in place, along with local DuckDB alterations (`/api/alter-db/*`); sidebar tooling has been split into `backend/services/sidebar_tools_service.py` so the endpoint module is routes only; startup now uses a `lifespan` handler; a repository-hygiene pass untracked the committed OAuth client file (**secret still needs rotating**), pytest artifacts, and root data files. See "Cross-cutting - Cleanup & Tech Debt" and the 2026-08-04 handover section for detail._
+
+_Previously (2026-05-01): frontend tests/build pass locally with dark mode baseline, new SQL highlighting, virtualized result rendering, route prefetching, and generated bundle reports; the frontend CI gate now runs both tests and build; the backend suite now passes locally end-to-end (`108 passed`) with the persistent job runtime in place for FTP, Drive, and Sidebar Tools; repeated-table join aliasing is implemented; Sprint 6 security hardening is functionally complete, including Google Drive logout/revoke UX; subquery remains deferred; Sprint 2 Data Tools UX consistency implementation continues with shared alert-component adoption in progress, including completed-job success summaries in Sidebar Tools._
 
 ## Status Legend
 - `[Done]`
@@ -197,6 +201,23 @@ _Last updated: 2026-05-01 (UTC) - frontend tests/build pass locally with dark mo
 | Empty states in Query Builder (saved queries, history) lack icons/guidance | Medium | Add proper empty-state UI | Done |
 | Merge & Enrich wizard missing step indicator | Medium | Add stepper/progress bar | Done |
 | FTP password fields exposed as plaintext | High | Mask with `type="password"` | Done |
+| `config/google_oauth_client.json` tracked in git despite `.gitignore` | Critical | Untrack; **rotate the client secret** | Untracked 2026-08-04 — rotation still pending |
+| ~150 `test-tmp/` pytest artifacts + `samples/` tracked in git | Medium | Untrack (files stay on disk) | Done 2026-08-04 |
+| Root data files (`BILLED_DVVNL_*.csv.gz/.parquet`, `*.duckdb`) tracked | Medium | Untrack and gitignore | Done 2026-08-04 |
+| `old_results_grid.tsx` / `old_results_grid_utf8.tsx` stale root copies | Low | Delete | Done 2026-08-04 |
+| Debug `print()` in query preview / alter-db / dialogs | Medium | Route through `app_logger` | Done 2026-08-04 |
+| Deprecated `@app.on_event("startup")` | Medium | Migrate to `lifespan` | Done 2026-08-04 |
+| `sidebar_tools.py` at 1,439 lines mixing routes and business logic | High | Extract `sidebar_tools_service.py` | Done 2026-08-04 |
+| Silent `.env` precedence across three candidate paths | Low | Log which file supplied each value | Done 2026-08-04 |
+| Time-dependent FTP test hardcoding `MAR_2026` | Medium | Derive month from `_expand_tokens` | Done 2026-08-04 |
+| `useQueryBuilder.ts` (1,205) / `QueryBuilderWorkspace.tsx` (1,043) oversized | Medium | Split into focused hooks/components | Not started |
+| Silent row loss: ACCT_ID filter dropped recoverable rows; missing column dropped 100% | Critical | Normalise + LPAD to 10; quarantine invalid rows with counts | Done 2026-08-04 |
+| No row accounting anywhere (source→parquet→table never reconciled) | Critical | `ConversionLedger` + `reconciliation` + `data_quality` in job status and UI | Done 2026-08-04 |
+| Crashed writes left 0-byte parquet that was then skipped forever | High | Atomic temp+rename; footer validation before reuse | Done 2026-08-04 |
+| `DROP TABLE` before `CREATE TABLE AS` destroyed good tables on failure | High | Staging table + verified count + transactional swap | Done 2026-08-04 |
+| Two divergent conversion branches (pandas vs DuckDB) with different output | High | Unified into `pipeline_sql.py`; differential test pins equivalence | Done 2026-08-04 |
+| Retire `_apply_csv_enrichment_pandas` + differential test | Low | Delete after one clean production month on the SQL path | Pending |
+| `LOAD_KW` / `TOTAL_AMT` stored as strings (absent from MERCADOS_SCHEMA) | Low | Decide whether to type them properly — changes master table column types | Not started |
 
 ---
 

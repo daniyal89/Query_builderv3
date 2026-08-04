@@ -34,7 +34,9 @@ export const HomePage: React.FC = () => {
       setEmergencyProxyEnabled(Boolean(parsed.enable));
       setEmergencyProxyHost(parsed.host || "10.96.5.20");
       setEmergencyProxyPort(parsed.port || "80");
-    } catch {}
+    } catch {
+      // Corrupt or unreadable localStorage entry — fall back to the defaults above.
+    }
   }, []);
 
   const saveEmergencyProxySettings = () => {

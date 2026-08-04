@@ -3,6 +3,8 @@ import sys
 import json
 from typing import Optional
 
+from backend.utils.logger import app_logger
+
 def ask_save_as_filename(suggested_name: str = "export.csv") -> Optional[str]:
     """
     Opens a native Windows Save As dialog.
@@ -45,13 +47,13 @@ except Exception as e:
         try:
             data = json.loads(result.stdout.strip())
             if "error" in data:
-                print(f"Tkinter subprocess error: {data['error']}")
+                app_logger.warning(f"Save-as dialog subprocess reported an error: {data['error']}")
                 return None
             return data.get("path")
         except json.JSONDecodeError:
-            print(f"Failed to parse subprocess output: {result.stdout}")
+            app_logger.warning(f"Could not parse save-as dialog output: {result.stdout!r}")
             return None
             
     except Exception as e:
-        print(f"Error opening dialog via subprocess: {e}")
+        app_logger.warning(f"Failed to open save-as dialog subprocess: {e}")
         return None

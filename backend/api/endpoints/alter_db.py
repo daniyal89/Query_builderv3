@@ -22,6 +22,7 @@ from backend.services.job_runtime import (
     BackgroundJobPolicy,
     job_runtime,
 )
+from backend.utils.logger import app_logger
 from backend.utils.path_safety import sanitize_local_path_input
 
 router = APIRouter()
@@ -190,7 +191,7 @@ def get_alter_db_tables(db_path: str) -> list[str]:
             tables = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
             return [t[0] for t in tables]
     except Exception as e:
-        print(f"Error fetching tables: {e}")
+        app_logger.warning(f"Failed to list tables for alter-db metadata: {e}")
         return []
 
 @router.get("/alter-db/metadata/columns")
@@ -212,7 +213,7 @@ def get_alter_db_columns(db_path: str, table_name: str) -> list[str]:
             columns = conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ?", [table_name]).fetchall()
             return [c[0] for c in columns]
     except Exception as e:
-        print(f"Error fetching columns: {e}")
+        app_logger.warning(f"Failed to list columns for alter-db metadata: {e}")
         return []
 
 @router.get("/alter-db/metadata/file-columns")
@@ -233,5 +234,5 @@ def get_alter_db_file_columns(file_path: str) -> list[str]:
             return list(df.columns)
         return []
     except Exception as e:
-        print(f"Error fetching file columns: {e}")
+        app_logger.warning(f"Failed to read file columns for alter-db metadata: {e}")
         return []

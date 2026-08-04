@@ -87,7 +87,6 @@ async def preview_query(
     attempted_sql: str | None = None
 
     try:
-        print(f"PREVIEW PAYLOAD: {payload.model_dump_json()}")
         enforce_rate_limit(request, "query_preview")
 
         if payload.execution_mode == "sql":

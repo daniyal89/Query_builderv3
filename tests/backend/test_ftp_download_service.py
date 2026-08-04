@@ -35,7 +35,10 @@ def test_expand_tokens_replaces_supported_placeholders() -> None:
 
 def test_download_files_skips_existing_and_downloads_missing(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "output"
-    existing_dir = root / "MAR_2026" / "KESCO"
+    # {MONTH} resolves to the previous calendar month, so derive it the same way
+    # the service does instead of hardcoding a label that expires.
+    current_month = FTPDownloadService._expand_tokens("{MONTH}", "KESCO")
+    existing_dir = root / current_month / "KESCO"
     existing_dir.mkdir(parents=True, exist_ok=True)
     existing_file = existing_dir / "already.gz"
     existing_file.write_bytes(b"1234")

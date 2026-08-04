@@ -6,21 +6,60 @@ root path (/), and includes all API routers under the /api prefix. Also
 configures the SPA fallback so React Router handles client-side routes.
 """
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 import subprocess
 import time
+from typing import AsyncIterator
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.config import settings
+from backend.config import ENV_FILE_SOURCES, settings
 from backend.api.router import api_router
 from backend.services.error_log_service import ErrorLogService
 from backend.services.job_runtime import job_runtime
 from backend.utils.exceptions import register_exception_handlers
 from backend.utils.logger import app_logger
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Initialise the job runtime and record a startup event with the build version."""
+    del application
+
+    job_runtime.initialize()
+    repo_root = Path(__file__).resolve().parents[1]
+    commit = "unknown"
+    summary = "unknown"
+    try:
+        commit = (
+            subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, text=True)
+            .strip()
+        )
+        summary = (
+            subprocess.check_output(["git", "log", "-1", "--pretty=%s"], cwd=repo_root, text=True)
+            .strip()
+        )
+    except Exception:
+        pass
+    ErrorLogService.append_system_event(
+        event="application_startup",
+        detail="Application startup detected.",
+        extra={"git_commit": commit, "git_summary": summary},
+    )
+
+    # Proxy settings resolved from a .env file are easy to forget about — say which
+    # file won so an unexpected proxy can be traced without guesswork.
+    for variable, source in ENV_FILE_SOURCES.items():
+        app_logger.info(
+            f"{variable} resolved from {source}",
+            extra={"extra_info": {"event": "env_file_value_used", "variable": variable, "source": source}},
+        )
+
+    yield
 
 
 def create_app() -> FastAPI:
@@ -36,31 +75,9 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
+        lifespan=lifespan,
     )
     register_exception_handlers(application)
-
-    @application.on_event("startup")
-    async def log_startup_version() -> None:
-        job_runtime.initialize()
-        repo_root = Path(__file__).resolve().parents[1]
-        commit = "unknown"
-        summary = "unknown"
-        try:
-            commit = (
-                subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root, text=True)
-                .strip()
-            )
-            summary = (
-                subprocess.check_output(["git", "log", "-1", "--pretty=%s"], cwd=repo_root, text=True)
-                .strip()
-            )
-        except Exception:
-            pass
-        ErrorLogService.append_system_event(
-            event="application_startup",
-            detail="Application startup detected.",
-            extra={"git_commit": commit, "git_summary": summary},
-        )
 
     @application.middleware("http")
     async def attach_request_id_and_log(request: Request, call_next):

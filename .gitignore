@@ -14,6 +14,7 @@ build/
 frontend_dist/
 *.spec.bak
 samples/
+*.tsbuildinfo
 
 # IDE
 .vscode/
@@ -35,6 +36,15 @@ config/service_account.json
 # Local database files
 *.duckdb
 *.duckdb.wal
+# ...except the checked-in fixture the backend suite connects to
+!test_data.duckdb
+
+# Local data files (never commit source/exported datasets)
+*.csv.gz
+*.parquet
+
+# Office lock files
+~$*
 
 # Misc
 csv_to_prequat.py

@@ -7,7 +7,7 @@ import pytest
 import duckdb
 from fastapi.testclient import TestClient
 
-from backend.api.endpoints.sidebar_tools import (
+from backend.services.sidebar_tools_service import (
     _infer_input_root,
     _is_readable_input_file,
     _parquet_target_for_input,
@@ -200,8 +200,12 @@ def test_csv_to_parquet_endpoint_skips_existing_output_file(tmp_path: Path) -> N
     with gzip.open(source, "wt", encoding="utf-8") as handle:
         handle.write("KNO,VALUE\n123,1\n")
 
+    # Must be a *valid* parquet: a corrupt one is deliberately rebuilt rather than
+    # skipped, which is what made zero-byte outputs permanent.
     output_file = tmp_path / "already.parquet"
-    output_file.write_bytes(b"existing")
+    duckdb.connect().execute(
+        "COPY (SELECT 1 AS KNO, 1 AS VALUE) TO ? (FORMAT PARQUET)", [str(output_file)]
+    )
     original_size = output_file.stat().st_size
 
     client = TestClient(app)

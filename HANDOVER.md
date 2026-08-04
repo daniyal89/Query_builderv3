@@ -118,6 +118,158 @@ This section captures **all major patches and function-structure changes shipped
 
 ---
 
+## Handover Update (2026-08-04)
+
+Covers work landed between 2026-05-01 and 2026-08-04, plus the repository-hygiene
+pass performed on 2026-08-04.
+
+### A) Query Builder workspace and results grid
+
+- `QueryBuilderWorkspace` and `useQueryBuilder` now own query composition, SQL
+  state, and execution for both engines; the page components are thin shells.
+- `ResultsGrid` renders large result sets with windowed rows and supports
+  multi-mode CSV export.
+- Bin columns, function columns, CASE expressions, and pivot controls are wired
+  into the builder payload.
+
+### B) Large-result CSV export
+
+- `POST /api/query/export-csv/start` enqueues a background job that hands the SQL
+  to DuckDB's native `COPY … TO`, streaming rows straight to disk instead of
+  serialising them as JSON. Poll `/status/{job_id}`; cancel via `/cancel/{job_id}`.
+- Results above `LARGE_EXPORT_ROW_THRESHOLD` (200,000 rows) go through this path.
+- `GET /api/query/pick-save-file` opens a native Windows Save As dialog on the
+  backend host. It runs tkinter in a **subprocess** — calling it in-process
+  conflicts with the asyncio loop.
+
+### C) Local DuckDB alterations
+
+- New `/api/alter-db/*` endpoints plus `LocalDbAlterationsPage` for derived
+  columns, joins, and object drops against a local `.duckdb` file.
+
+### D) Structure: sidebar tools split into a service (2026-08-04)
+
+- `backend/api/endpoints/sidebar_tools.py` was 1,439 lines of endpoint + business
+  logic. Helpers, job workers, and the synchronous conversion path now live in
+  **`backend/services/sidebar_tools_service.py`**; the endpoint module is routes
+  only (~200 lines).
+- Tests that need the internal helpers import them from the **service** module now.
+- The DISCOM `CASE` expression existed in three copies; it is now
+  `_discom_case_sql()`, with `_csv_to_parquet_select_sql()` shared by the
+  single-file and multi-file conversion paths.
+
+### E) Repository hygiene (2026-08-04)
+
+- `config/google_oauth_client.json` was **tracked despite being gitignored**
+  (gitignore does not apply retroactively). It has been untracked. **The client
+  secret in it must be rotated in Google Cloud Console** — it exists in history.
+- Untracked: `test-tmp/` pytest artifacts, `samples/`, `frontend/tsconfig.tsbuildinfo`,
+  `monthly.duckdb`, `test_data.duckdb`, and the root `BILLED_DVVNL_*` data files.
+  All remain on disk; only the git index changed.
+- `.gitignore` gained `*.tsbuildinfo`, `*.csv.gz`, `*.parquet`, and `~$*`.
+- Removed the stale root copies `old_results_grid.tsx` / `old_results_grid_utf8.tsx`.
+- Debug `print()` calls in the query preview, alter-db metadata, and save-dialog
+  paths now go through `app_logger`.
+- Startup moved from the deprecated `@app.on_event("startup")` to a `lifespan`
+  context manager.
+- Proxy values that come from a `.env` file now log which file supplied them
+  (`event: env_file_value_used`) — three candidate paths are searched, including
+  the CWD, and a stale local `.env` used to win silently.
+
+### F) CSV → Parquet → DuckDB row loss (2026-08-04)
+
+Rows were disappearing between the monthly CSVs and the master table. It was not
+one bug — the pipeline had **no row accounting at all**, so several defects each
+lost data while the job reported `status="completed"`.
+
+**Root cause.** In enrichment mode the converter silently deleted every row whose
+`ACCT_ID` was not purely digits. Measured against realistic values, **4 of 10
+survived**; the casualties included `' 987 '`, `'1,234'` and `'1234.0'`, which are
+valid accounts that normalisation should have repaired. And when a CSV had no
+`ACCT_ID` column at all, `df.get("ACCT_ID", "")` returned a scalar whose
+index-alignment blanked every row but the first — **100% of that file's rows**,
+reported only as a "skipped file".
+
+**The rule now** (ACCT_ID is a 10-digit string, unique across DISCOMs):
+normalise (trim, strip separators, drop a float `.0`), then `LPAD` to 10 with
+zeros — matching `merge_service`'s existing `zfill`/`LPAD`. Anything still
+invalid goes to `<output>/_quarantine/*.parquet` **with per-reason counts**,
+never silently dropped. `1.23457E+11` is deliberately *not* recovered: the
+precision is already gone, so "recovering" it would invent a wrong account.
+
+**Other confirmed loss vectors, all fixed:**
+
+| Was | Now |
+|-----|-----|
+| `if not _apply_csv_enrichment(...)` — a 3-tuple is always truthy, so every failure on the sync path counted as success | returns a `FileRowAudit`; callers read `.outcome` |
+| Skip-if-target-exists tested existence only, so a crashed write left a 0-byte parquet that was skipped **forever** | `_classify_existing_target` reads the parquet footer: valid → reuse, corrupt → rebuild |
+| Writes went straight to the final path | `_atomic_parquet_target`: temp file + `os.replace` |
+| A corrupt parquet was silently filtered out of the build by a 16-byte gate | `_classify_input_file` — a corrupt non-temp parquet now **raises** and blocks the build |
+| `DROP TABLE` then `CREATE TABLE AS SELECT`, so a failed build destroyed the good table | build into `__staging_<hex>`, verify the count against the parquet footers, then swap inside a transaction |
+| `CAST(x AS DOUBLE)` aborted the build on one bad cell — after the DROP had committed | `TRY_CAST`, matching `pd.to_numeric(errors="coerce")` |
+| Retry re-ran the worker and skipped everything the failed attempt wrote | validate-before-skip makes retries correct without a resume cursor |
+
+**Row accounting is now first-class.** `ConversionLedger` replaces three
+duplicated sets of loose counters (that duplication is how the sync path drifted
+into the truthiness bug). Every job reports
+`source = written + quarantined`, and `unaccounted_rows` must be zero;
+`data_quality` is `ok` / `warning` / `loss`, surfaced in the Sidebar Tools UI by
+`components/sidebar/RowReconciliation.tsx`.
+
+**Enrichment unified into DuckDB SQL.** `backend/services/pipeline_sql.py`
+replaces the pandas implementation. On the real 14.9 MB / 103,074-row file:
+**27.9s → 3.5s and 90 MB → 0.1 MB** of Python memory, because it streams instead
+of loading the file. Both conversion branches now emit the same parquet shape.
+
+- The port is pinned by `tests/backend/test_enrichment_differential.py`, which
+  runs both implementations over 9 fixtures and compares column-by-column.
+  `_apply_csv_enrichment_pandas` is **retired** and kept only as that oracle —
+  delete it, `_derive_category_from_supply_type`, `_write_quarantine` and the
+  differential test once one production month has run clean.
+- It replicates pandas' `_x`/`_y` merge-collision suffixes deliberately: the real
+  files carry `DIV_NAME`, `CIRCLE_NAME` etc. that collide with the HIR lookup, and
+  those suffixed names are what the master table's columns are already called.
+- **Deliberate improvements** (pinned in that test): pandas read the literal code
+  `"NA"` as a missing value and blanked it, and re-formatted numerics through
+  float64 (`-.2` → `-0.2`, `26.415439999999997` → `26.41544`). The SQL path keeps
+  the source text verbatim.
+- Also dropped `sample_size = -1`, which cost 1.09s vs 0.66s per file and
+  collapsed cross-file parallelism (8 files: 7.9s → 1.7s), and reduced
+  `_validate_gzip_file` from a full decompress (0.29s/file) to the 2-byte magic
+  check. A plain-text file named `.gz` is now detected and read correctly instead
+  of failing into a silent skip.
+
+**Auditing past months.** `python -m backend.tools.audit_rows --sources <dir>
+--parquet <dir> --db monthly.duckdb --table Master_0226` is read-only and exits
+non-zero when the numbers don't balance. Use it to decide which past months need
+reprocessing. Verified end-to-end on the real file: source 103,074 → parquet
+103,074 → table 103,074.
+
+The zero-byte `BILLED_DVVNL_DIV293313_02062026.parquet` in the repo root has been
+deleted; re-running its `.csv.gz` sibling now produces all 103,074 rows.
+
+### G) Test suite
+
+- `pytest tests` — **143 passed** as of 2026-08-04 (109 before this work).
+- `npx vitest run` in `frontend/` — **20 passed**; `npm run build` and
+  `npm run lint` clean (0 errors).
+- Two tests were failing before this pass, for reasons unrelated to product code:
+  - `test_download_files_skips_existing_and_downloads_missing` hardcoded
+    `MAR_2026`, but `{MONTH}` resolves to the *previous calendar month*, so the
+    test expired. It now derives the label from `_expand_tokens`.
+  - `test_sidebar_build_duckdb_creates_object_from_parquet` expected the period
+    suffix in the build message; `_execute_build_duckdb` now appends
+    `" for {month_label}"` when a label is supplied.
+- Three existing tests were updated because the **behaviour they pinned was the
+  bug**: the enrichment test now expects `0000001001` (zero-padded ACCT_ID);
+  `test_csv_to_parquet_endpoint_skips_existing_output_file` now seeds a *valid*
+  parquet, since a corrupt one is deliberately rebuilt; and the build message now
+  carries its row count.
+- Never hardcode formatted numbers in frontend tests — `toLocaleString()` follows
+  the runtime locale, which is Indian grouping here (`1,03,074`, not `103,074`).
+
+---
+
 ## 2. Directory Tree
 
 ```

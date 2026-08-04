@@ -43,7 +43,9 @@ function readInitialState() {
   try {
     const raw = window.localStorage.getItem(ALTER_DB_STORAGE_KEY);
     if (raw) return JSON.parse(raw);
-  } catch {}
+  } catch {
+    // Corrupt saved state — fall through to the defaults below.
+  }
   return {
     mode: "derived" as "derived" | "join" | "drop",
     db_path: "",
@@ -65,7 +67,9 @@ const SavedFormulasLoader: React.FC<{ onSelect: (formula: string) => void }> = (
     try {
       const existing = window.localStorage.getItem("alter_db_saved_formulas");
       if (existing) setFormulas(JSON.parse(existing));
-    } catch {}
+    } catch {
+      // Corrupt saved formulas — keep the current list rather than crashing the page.
+    }
   };
 
   useEffect(() => {
@@ -417,7 +421,11 @@ export const LocalDbAlterationsPage: React.FC = () => {
                       if (name && form.sql_formula.trim()) {
                         const existing = window.localStorage.getItem("alter_db_saved_formulas");
                         let parsed = [];
-                        try { if (existing) parsed = JSON.parse(existing); } catch {}
+                        try {
+                          if (existing) parsed = JSON.parse(existing);
+                        } catch {
+                          // Corrupt saved formulas — start a fresh list.
+                        }
                         parsed = parsed.filter((f: any) => f.name !== name);
                         parsed.push({ name, formula: form.sql_formula.trim() });
                         window.localStorage.setItem("alter_db_saved_formulas", JSON.stringify(parsed));

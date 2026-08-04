@@ -1,7 +1,11 @@
 /**
- * ResultsGrid.tsx - Query results table with CSV download and virtualized rows.
+ * ResultsGrid.tsx - Query results table with CSV download.
+ *
+ * The grid renders at most UI_DISPLAY_LIMIT rows; the full result set stays
+ * available for CSV export. That cap is what keeps the DOM small, so no row
+ * virtualization is involved.
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import type { QueryResult } from "../../types/query.types";
 import { ExportModal } from "./ExportModal";
 
@@ -18,10 +22,7 @@ const LARGE_EXPORT_THRESHOLD = 200000;
 /** Max rows displayed in the UI grid — all rows still available for CSV export. */
 const UI_DISPLAY_LIMIT = 50;
 
-const VIRTUALIZATION_THRESHOLD = 120;
-const VIRTUAL_ROW_HEIGHT = 40;
-const VIRTUAL_VIEWPORT_HEIGHT = 600;
-const VIRTUAL_OVERSCAN = 8;
+const GRID_MAX_HEIGHT = 600;
 
 function buildCSVBlob(result: QueryResult): Blob {
   const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
@@ -61,14 +62,9 @@ async function saveBlob(blob: Blob, suggestedName: string) {
 }
 
 export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, isUnlimited, onExportAll, onStartLargeExport }) => {
-  const [scrollTop, setScrollTop] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState("");
   const [showExportModal, setShowExportModal] = useState(false);
-
-  useEffect(() => {
-    setScrollTop(0);
-  }, [result]);
 
   // Cap rows shown in UI to UI_DISPLAY_LIMIT; full result.rows kept for CSV
   const displayRows = useMemo(
@@ -76,34 +72,6 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, isU
     [result],
   );
   const displayRowCount = displayRows.length;
-
-  const useVirtualization = displayRowCount >= VIRTUALIZATION_THRESHOLD;
-  const visibleWindowSize =
-    Math.ceil(VIRTUAL_VIEWPORT_HEIGHT / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2;
-  const startIndex = useVirtualization
-    ? Math.max(0, Math.floor(scrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN)
-    : 0;
-  const endIndex = result
-    ? useVirtualization
-      ? Math.min(displayRowCount, startIndex + visibleWindowSize)
-      : displayRowCount
-    : 0;
-  const topSpacerHeight = useVirtualization ? startIndex * VIRTUAL_ROW_HEIGHT : 0;
-  const bottomSpacerHeight =
-    result && useVirtualization
-      ? Math.max(0, (displayRowCount - endIndex) * VIRTUAL_ROW_HEIGHT)
-      : 0;
-
-  const visibleRows = useMemo(
-    () =>
-      displayRows
-        .slice(startIndex, endIndex)
-        .map((row, visibleIndex) => ({
-          absoluteIndex: startIndex + visibleIndex,
-          row,
-        })),
-    [displayRows, endIndex, startIndex],
-  );
 
   const handleExportCSV = async () => {
     if (!result) return;
@@ -218,16 +186,7 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, isU
       <div
         data-testid="results-grid-scroll"
         className="overflow-x-auto overflow-y-auto"
-        style={
-          useVirtualization
-            ? { height: `${VIRTUAL_VIEWPORT_HEIGHT}px` }
-            : { maxHeight: `${VIRTUAL_VIEWPORT_HEIGHT}px` }
-        }
-        onScroll={
-          useVirtualization
-            ? (event) => setScrollTop(event.currentTarget.scrollTop)
-            : undefined
-        }
+        style={{ maxHeight: `${GRID_MAX_HEIGHT}px` }}
       >
         <table className="min-w-full divide-y divide-gray-200 text-sm">
           <thead className="sticky top-0 z-10 bg-gray-50">
@@ -243,17 +202,10 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, isU
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 bg-white">
-            {useVirtualization && topSpacerHeight > 0 && (
-              <tr aria-hidden="true">
-                <td colSpan={result.columns.length} style={{ height: `${topSpacerHeight}px`, padding: 0 }} />
-              </tr>
-            )}
-
-            {visibleRows.map(({ absoluteIndex, row }) => (
+            {displayRows.map((row, rowIndex) => (
               <tr
-                key={absoluteIndex}
-                style={useVirtualization ? { height: `${VIRTUAL_ROW_HEIGHT}px` } : undefined}
-                className={absoluteIndex % 2 === 0 ? "bg-white" : "bg-gray-50/50"}
+                key={rowIndex}
+                className={rowIndex % 2 === 0 ? "bg-white" : "bg-gray-50/50"}
               >
                 {row.map((cell, columnIndex) => (
                   <td
@@ -279,15 +231,6 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({ result, isLoading, isU
                 >
                   No rows returned for this query.
                 </td>
-              </tr>
-            )}
-
-            {useVirtualization && bottomSpacerHeight > 0 && (
-              <tr aria-hidden="true">
-                <td
-                  colSpan={result.columns.length}
-                  style={{ height: `${bottomSpacerHeight}px`, padding: 0 }}
-                />
               </tr>
             )}
           </tbody>

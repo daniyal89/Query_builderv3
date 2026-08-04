@@ -4,7 +4,7 @@ import gzip
 from fastapi.testclient import TestClient
 import duckdb
 
-from backend.api.endpoints.sidebar_tools import _drop_existing_duckdb_object
+from backend.services.sidebar_tools_service import _drop_existing_duckdb_object
 from backend.app import app
 
 
@@ -29,7 +29,9 @@ def test_sidebar_build_duckdb_creates_object_from_parquet(tmp_path: Path) -> Non
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["status"] == "ok"
-    assert body["message"] == "Created TABLE Master_0226 for FEB_2026."
+    assert body["message"] == "Created TABLE Master_0226 for FEB_2026. 1 rows."
+    assert body["rows_written"] == 1
+    assert body["data_quality"] == "ok"
 
 
 def test_sidebar_csv_to_parquet_creates_output_file(tmp_path: Path) -> None:
@@ -169,7 +171,9 @@ def test_sidebar_csv_to_parquet_normalizes_other_identifier_keys_before_enrichme
         [str(output_path)],
     ).fetchall()
 
-    assert rows == [("1001", "101", "501", "49", "Div A", "Sub Div A", "LMV")]
+    # ACCT_ID is a 10-digit string, zero-padded on the left, matching the join
+    # key that merge_service builds with zfill/LPAD.
+    assert rows == [("0000001001", "101", "501", "49", "Div A", "Sub Div A", "LMV")]
 
 
 def test_sidebar_csv_to_parquet_rejects_unknown_compression(tmp_path: Path) -> None:

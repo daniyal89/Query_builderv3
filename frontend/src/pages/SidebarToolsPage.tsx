@@ -15,6 +15,7 @@ import {
 } from "../api/sidebarToolsApi";
 import { pickSystemFile, pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 import { StatusAlert } from "../components/common/StatusAlert";
+import { RowReconciliation } from "../components/sidebar/RowReconciliation";
 
 interface FieldProps {
   label: string;
@@ -914,6 +915,12 @@ export const SidebarToolsPage: React.FC = () => {
             {pipelineStatus.total_output_rows !== undefined && pipelineStatus.total_output_rows > 0 && (
               <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {pipelineStatus.total_output_rows.toLocaleString()}</p>
             )}
+            <RowReconciliation
+              reconciliation={pipelineStatus.reconciliation}
+              dataQuality={pipelineStatus.data_quality}
+              rowAudit={pipelineStatus.row_audit}
+              auditTruncated={pipelineStatus.row_audit_truncated}
+            />
             {pipelineRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(pipelineRunSeconds)}</p>}
             {pipelineStatus.parquet_current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {pipelineStatus.parquet_current_file}</p>}
           </div>
@@ -1173,6 +1180,12 @@ export const SidebarToolsPage: React.FC = () => {
             {parquetStatus.total_output_rows !== undefined && parquetStatus.total_output_rows > 0 && (
               <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {parquetStatus.total_output_rows.toLocaleString()}</p>
             )}
+            <RowReconciliation
+              reconciliation={parquetStatus.reconciliation}
+              dataQuality={parquetStatus.data_quality}
+              rowAudit={parquetStatus.row_audit}
+              auditTruncated={parquetStatus.row_audit_truncated}
+            />
             {parquetRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(parquetRunSeconds)}</p>}
             {parquetStatus.current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {parquetStatus.current_file}</p>}
           </div>
