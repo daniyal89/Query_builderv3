@@ -154,7 +154,7 @@ class FTPDownloadService:
 
         output_root_path = cls._expand_tokens(output_root, "ROOT")
         root_dir = Path(output_root_path).expanduser()
-        root_dir.mkdir(parents=True, exist_ok=True)
+        cls._ensure_output_root(root_dir)
 
         prepared_profiles = [cls._prepare_profile(profile, root_dir) for profile in profiles]
 
@@ -266,7 +266,7 @@ class FTPDownloadService:
 
             output_root_path = cls._expand_tokens(output_root, "ROOT")
             root_dir = Path(output_root_path).expanduser()
-            root_dir.mkdir(parents=True, exist_ok=True)
+            cls._ensure_output_root(root_dir)
             cls._update_job(job_id, output_root=str(root_dir))
 
             prepared_profiles = [cls._prepare_profile(profile, root_dir) for profile in profiles]
@@ -342,6 +342,54 @@ class FTPDownloadService:
                     error_message=str(exc),
                     finished_at=datetime.now().isoformat(timespec="seconds"),
                 )
+
+    # Google Drive for Desktop mounts a virtual drive whose root holds only these
+    # containers; real folders can exist one level down but not at the root.
+    _CLOUD_DRIVE_MARKERS = ("My Drive", "Shared drives")
+
+    @staticmethod
+    def _ensure_output_root(root_dir: Path) -> None:
+        """Create the download root, or explain why it cannot be created.
+
+        ``mkdir`` reports a bare ``WinError 2`` for several unrelated conditions —
+        a disconnected mapped drive, absent removable media, or a cloud-sync
+        virtual root that rejects folder creation. That told the operator nothing,
+        so identify which one it actually is.
+        """
+        try:
+            root_dir.mkdir(parents=True, exist_ok=True)
+            return
+        except OSError as exc:
+            anchor = root_dir.anchor
+            drive = Path(anchor) if anchor else None
+
+            if drive is not None and not drive.exists():
+                raise ValueError(
+                    f"Output drive {anchor} is not available, so '{root_dir}' cannot "
+                    "be created. Connect the drive (or pick another output folder) "
+                    "and start the download again."
+                ) from exc
+
+            # Creating a folder directly at a cloud-sync root always fails; the
+            # user almost certainly meant a folder inside "My Drive".
+            if drive is not None and root_dir.parent == drive:
+                try:
+                    entries = {item.name for item in drive.iterdir()}
+                except OSError:
+                    entries = set()
+                markers = [m for m in FTPDownloadService._CLOUD_DRIVE_MARKERS if m in entries]
+                if markers:
+                    suggestion = drive / markers[0] / root_dir.name
+                    raise ValueError(
+                        f"{anchor} is a cloud-synced drive (Google Drive), and folders "
+                        f"cannot be created at its root. Use a path inside it instead, "
+                        f"for example '{suggestion}'."
+                    ) from exc
+
+            raise ValueError(
+                f"Could not create the output folder '{root_dir}': {exc}. "
+                "Check that the drive is connected and writable."
+            ) from exc
 
     @staticmethod
     def _prepare_profile(profile: FTPDownloadProfile, root_dir: Path) -> _PreparedProfile:
