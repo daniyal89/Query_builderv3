@@ -60,6 +60,9 @@ MATERIALISE_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0
 
 
 MAX_CLEAN_AUDIT_ENTRIES = 200
+#: Cap on the per-file "unbalanced" lines kept in the persisted job snapshot. The
+#: exact `unaccounted_rows` total is never capped — only the human-readable detail.
+MAX_DISCREPANCY_LINES = 200
 
 # Failure reasons that mean "the source held no rows", not "rows were lost".
 # Empty division files are routine — one real month had 93 — and counting them as
@@ -129,11 +132,47 @@ class ConversionLedger:
     def __init__(self) -> None:
         self._entries: list[FileRowAudit] = []
         self._clean_dropped = 0
+        # Totals accumulate here, over every entry ever recorded — not over the
+        # capped `_entries` list. They used to be summed from `_entries` alone, so a
+        # 522-file month reported the rows of only the ~200 retained files while the
+        # UI said "totals above cover the whole run". A real run showed 13,503,150
+        # against an actual 46,380,696.
+        self._running = RowReconciliation()
+        self._discrepancies: list[str] = []
+        self._extra_discrepancies = 0
 
     def record(self, entry: FileRowAudit) -> None:
+        self._running.source_rows += entry.source_rows
+        self._running.quarantined_rows += entry.quarantined_rows
+        if entry.outcome == "reused":
+            self._running.reused_rows += entry.written_rows
+        else:
+            self._running.written_rows += entry.written_rows
+
+        accounted = entry.written_rows + entry.quarantined_rows
+        unbalanced = bool(entry.source_rows) and accounted != entry.source_rows
+        if unbalanced:
+            gap = entry.source_rows - accounted
+            self._running.unaccounted_rows += gap
+            line = (
+                f"{entry.source_file}: source {entry.source_rows:,}, "
+                f"written {entry.written_rows:,}, quarantined {entry.quarantined_rows:,} "
+                f"-> {gap:,} unaccounted"
+            )
+            if len(self._discrepancies) < MAX_DISCREPANCY_LINES:
+                self._discrepancies.append(line)
+            else:
+                self._extra_discrepancies += 1
+
         # Keep every problem entry; cap the boring ones so a 5000-file run
-        # doesn't bloat the persisted job snapshot.
-        interesting = entry.outcome not in {"written", "reused"} or entry.quarantined_rows > 0
+        # doesn't bloat the persisted job snapshot. "Unbalanced" counts as a problem:
+        # a file that lost rows without quarantining them is precisely what must
+        # never be dropped from the detail, and outcome alone does not reveal it.
+        interesting = (
+            entry.outcome not in {"written", "reused"}
+            or entry.quarantined_rows > 0
+            or unbalanced
+        )
         if interesting or len(self._entries) < MAX_CLEAN_AUDIT_ENTRIES:
             self._entries.append(entry)
         else:
@@ -148,26 +187,14 @@ class ConversionLedger:
         return self._clean_dropped > 0
 
     def totals(self) -> RowReconciliation:
-        totals = RowReconciliation()
-        discrepancies: list[str] = []
-        for entry in self._entries:
-            totals.source_rows += entry.source_rows
-            totals.quarantined_rows += entry.quarantined_rows
-            if entry.outcome == "reused":
-                totals.reused_rows += entry.written_rows
-            else:
-                totals.written_rows += entry.written_rows
-
-            accounted = entry.written_rows + entry.quarantined_rows
-            if entry.source_rows and accounted != entry.source_rows:
-                gap = entry.source_rows - accounted
-                totals.unaccounted_rows += gap
-                discrepancies.append(
-                    f"{entry.source_file}: source {entry.source_rows:,}, "
-                    f"written {entry.written_rows:,}, quarantined {entry.quarantined_rows:,} "
-                    f"-> {gap:,} unaccounted"
-                )
-        totals.discrepancies = discrepancies
+        """Row balance for the **whole** run, however much per-file detail was kept."""
+        totals = self._running.model_copy(deep=True)
+        totals.discrepancies = list(self._discrepancies)
+        if self._extra_discrepancies:
+            totals.discrepancies.append(
+                f"… and {self._extra_discrepancies:,} more file(s) did not balance; "
+                "the unaccounted total above covers all of them."
+            )
         totals.balanced = totals.unaccounted_rows == 0
         return totals
 

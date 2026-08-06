@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import app
 from backend.models.sidebar_tools import BuildDuckDbRequest, FileRowAudit
+from backend.services import sidebar_tools_service as svc
 from backend.services.sidebar_tools_service import (
     ConversionLedger,
     _apply_csv_enrichment,
@@ -521,6 +522,82 @@ def test_one_real_failure_outweighs_many_empty_files() -> None:
     )
 
     assert ledger.data_quality() == "loss"
+
+
+def test_totals_cover_every_file_not_just_the_retained_ones() -> None:
+    """Per-file detail is capped; the totals must not be.
+
+    A real 522-file month reported 13,503,150 source rows against an actual
+    46,380,696, because totals were summed from the capped entry list while the UI
+    said "totals above cover the whole run". The row-accounting guarantee this
+    pipeline exists for was quietly only covering the first 200 files.
+    """
+    ledger = _ledger(
+        *[
+            FileRowAudit(
+                source_file=f"div{i}.csv.gz",
+                outcome="reused",
+                source_rows=1_000,
+                written_rows=1_000,
+            )
+            for i in range(500)
+        ]
+    )
+
+    totals = ledger.totals()
+
+    assert totals.source_rows == 500_000
+    assert totals.reused_rows == 500_000
+    assert totals.balanced
+    assert ledger.truncated, "the per-file detail is still capped"
+    assert len(ledger.entries) < 500, "…which is the whole point of the cap"
+
+
+def test_a_file_that_lost_rows_is_never_dropped_from_the_detail() -> None:
+    """Unbalanced entries are 'interesting' regardless of outcome.
+
+    A written file with source 1,000 and written 900 loses 100 rows without
+    quarantining any, so outcome alone does not reveal it — and it used to be
+    eligible for truncation, taking its discrepancy line with it.
+    """
+    clean = [
+        FileRowAudit(
+            source_file=f"ok{i}.csv.gz", outcome="written", source_rows=10, written_rows=10
+        )
+        for i in range(400)
+    ]
+    short = FileRowAudit(
+        source_file="short.csv.gz", outcome="written", source_rows=1_000, written_rows=900
+    )
+    ledger = _ledger(*clean, short)
+
+    totals = ledger.totals()
+
+    assert totals.unaccounted_rows == 100
+    assert not totals.balanced
+    assert ledger.data_quality() == "loss"
+    assert any("short.csv.gz" in line for line in totals.discrepancies)
+    assert short in ledger.entries, "the file that lost rows must survive truncation"
+
+
+def test_the_unaccounted_total_is_exact_even_when_discrepancy_lines_are_capped() -> None:
+    ledger = _ledger(
+        *[
+            FileRowAudit(
+                source_file=f"short{i}.csv.gz",
+                outcome="written",
+                source_rows=100,
+                written_rows=99,
+            )
+            for i in range(svc.MAX_DISCREPANCY_LINES + 50)
+        ]
+    )
+
+    totals = ledger.totals()
+
+    assert totals.unaccounted_rows == svc.MAX_DISCREPANCY_LINES + 50
+    assert len(totals.discrepancies) == svc.MAX_DISCREPANCY_LINES + 1
+    assert "50 more file(s) did not balance" in totals.discrepancies[-1]
 
 
 def test_a_clean_run_is_still_ok() -> None:
