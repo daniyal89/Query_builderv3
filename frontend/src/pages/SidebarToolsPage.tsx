@@ -41,6 +41,27 @@ const PIPELINE_JOB_STORAGE_KEY = "sidebar_tools_pipeline_job_v1";
 // _v2 for the same reason as the build form: it persists object_type too.
 const PIPELINE_FORM_STORAGE_KEY = "sidebar_tools_pipeline_form_v2";
 
+/**
+ * Read a form's saved values, falling back to the previous key version.
+ *
+ * The key was bumped to _v2 only to change one field's default (object_type), but
+ * a bare key bump throws away everything else with it — and these forms hold the
+ * operator's real paths. That reset a live install's DuckDB path back to the
+ * shipped "./monthly.duckdb" placeholder, so a build silently landed in a
+ * throwaway database beside the exe instead of the real one. Each reader still
+ * coerces the fields whose defaults changed, so migrating the rest forward is safe.
+ */
+function readVersionedForm(key: string): string | null {
+  const current = window.localStorage.getItem(key);
+  if (current) return current;
+  const previous = key.endsWith("_v2") ? window.localStorage.getItem(key.replace(/_v2$/, "_v1")) : null;
+  if (previous) {
+    // Carry it forward so the old key can be dropped later without another reset.
+    window.localStorage.setItem(key, previous);
+  }
+  return previous;
+}
+
 type UppclPresetPaths = {
   build_db_path: string;
   build_input_path: string;
@@ -112,7 +133,7 @@ function readInitialPipelineForm(fallbackParquet: any, fallbackBuild: any) {
     month_label: fallbackBuild.month_label,
   };
   try {
-    const raw = window.localStorage.getItem(PIPELINE_FORM_STORAGE_KEY);
+    const raw = readVersionedForm(PIPELINE_FORM_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     return {
@@ -221,7 +242,7 @@ function readInitialBuildForm(): {
     month_label: "MAR_2026",
   };
   try {
-    const raw = window.localStorage.getItem(BUILD_FORM_STORAGE_KEY);
+    const raw = readVersionedForm(BUILD_FORM_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<typeof fallback>;
     return {
@@ -410,6 +431,12 @@ export const SidebarToolsPage: React.FC = () => {
   const isBuildRunning = buildStatus?.status === "queued" || buildStatus?.status === "running" || buildStatus?.status === "cancelling";
   const isPipelineRunning = pipelineStatus?.status === "queued" || pipelineStatus?.status === "running" || pipelineStatus?.status === "cancelling";
   const isMaterialiseRunning = materialiseStatus?.status === "queued" || materialiseStatus?.status === "running" || materialiseStatus?.status === "cancelling";
+  // A relative db_path resolves against the app's working directory, not the folder
+  // the operator has in mind — a build then lands in a throwaway database beside the
+  // exe and the month never appears on the Home page. Warn rather than block: a
+  // relative path is legitimate for a scratch database.
+  const relativeDbPath = (value: string) =>
+    value.trim().length > 0 && !/^([A-Za-z]:[\\/]|[\\/]{2}|[\\/])/.test(value.trim());
   const showBuildSuccess = buildStatus?.status === "completed" && Boolean(buildMessage.trim());
   const showParquetSuccess = parquetStatus?.status === "completed" && Boolean(parquetMessage.trim());
   const showPipelineSuccess = pipelineStatus?.status === "completed" && Boolean(pipelineMessage.trim());
@@ -991,6 +1018,13 @@ export const SidebarToolsPage: React.FC = () => {
               <input className="w-full rounded border p-2" value={pipelineForm.db_path} onChange={(e) => setPipelineForm((p) => ({ ...p, db_path: e.target.value }))} />
               <button type="button" onClick={async () => { const path = await pickSystemSavePath("monthly.duckdb", ".duckdb"); if (path) setPipelineForm((p) => ({ ...p, db_path: path })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Browse...</button>
             </div>
+            {relativeDbPath(pipelineForm.db_path) && (
+              <p className="mt-1 text-xs font-medium text-amber-700">
+                Relative path — resolves against wherever the app was started, so the
+                month would land in a throwaway database and never appear on the Home
+                page. Use a full path such as <code>C:/Users/aimld/uppcl_latest.duckdb</code>.
+              </p>
+            )}
           </Field>
           <Field label="Object name" help="DuckDB table/view name. Example: MASTER_MAR_2026">
             <input className="w-full rounded border p-2" value={pipelineForm.object_name} onChange={(e) => setPipelineForm((p) => ({ ...p, object_name: e.target.value }))} />
@@ -1118,6 +1152,14 @@ export const SidebarToolsPage: React.FC = () => {
                 Browse...
               </button>
             </div>
+            {relativeDbPath(buildForm.db_path) && (
+              <p className="mt-1 text-xs font-medium text-amber-700">
+                This is a relative path, so it resolves against wherever the app was
+                started — not a folder you chose. The month would be built into a
+                throwaway database and would not appear on the Home page. Use a full
+                path such as <code>C:/Users/aimld/uppcl_latest.duckdb</code>.
+              </p>
+            )}
           </Field>
           <Field label="Input parquet/csv path or glob" help="Supports wildcards. Example: G:/MASTER_PARQUET/MAR_2026/**/*.parquet">
             <div className="flex gap-2">
