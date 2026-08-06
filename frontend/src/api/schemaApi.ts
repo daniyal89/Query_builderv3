@@ -28,6 +28,18 @@ export async function getColumns(tableName: string, engine: QueryEngine = "duckd
   return response.data;
 }
 
+/** Exact `COUNT(*)` for one object — a full scan, so it is opt-in per object. */
+export async function getRowCount(
+  tableName: string,
+  signal?: AbortSignal,
+): Promise<{ table_name: string; row_count: number }> {
+  const response = await apiClient.get<{ table_name: string; row_count: number }>(
+    `/tables/${encodeURIComponent(tableName)}/row-count`,
+    { signal },
+  );
+  return response.data;
+}
+
 export async function deleteLocalObject(objectName: string): Promise<{ status: string; message: string }> {
   const response = await apiClient.delete<{ status: string; message: string }>(
     `/duckdb/objects/${encodeURIComponent(objectName)}`,

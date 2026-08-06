@@ -74,6 +74,32 @@ export interface BuildDuckDbJobStatusResponse {
   row_delta?: number;
   excluded_input_files?: string[];
   data_quality?: DataQuality;
+  /** How the month was stored — a VIEW resolves its rows rather than holding them. */
+  object_type?: "TABLE" | "VIEW";
+  /** Build succeeded but the dashboard could not be reconnected afterwards. */
+  reconnect_error?: string | null;
+}
+
+/** Promote one month to a real TABLE, handing the slot back from the previous one. */
+export interface MaterialiseMonthPayload extends BuildDuckDbPayload {
+  demote_previous?: boolean;
+}
+
+export interface MaterialiseMonthJobStatusResponse {
+  job_id: string;
+  status: "queued" | "running" | "cancelling" | "cancelled" | "completed" | "failed";
+  message: string;
+  output_path?: string | null;
+  progress_percent: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  promoted?: string | null;
+  promoted_rows?: number | null;
+  demoted?: string[];
+  /** Months left materialised because demoting them could not be proven safe. */
+  demote_warnings?: string[];
+  data_quality?: DataQuality;
+  reconnect_error?: string | null;
 }
 
 export interface CsvParquetJobStartResponse {
@@ -121,6 +147,35 @@ export async function getBuildDuckDbJobStatus(jobId: string): Promise<BuildDuckD
 
 export async function stopBuildDuckDbJob(jobId: string): Promise<BuildDuckDbJobStatusResponse> {
   const { data } = await apiClient.post<BuildDuckDbJobStatusResponse>(`/sidebar-tools/build-duckdb/stop/${jobId}`);
+  return data;
+}
+
+export async function startMaterialiseMonthJob(
+  payload: MaterialiseMonthPayload,
+): Promise<BuildDuckDbJobStartResponse> {
+  const { data } = await apiClient.post<BuildDuckDbJobStartResponse>(
+    "/sidebar-tools/materialise/start",
+    payload,
+  );
+  return data;
+}
+
+export async function getMaterialiseMonthJobStatus(
+  jobId: string,
+): Promise<MaterialiseMonthJobStatusResponse> {
+  const { data } = await apiClient.get<MaterialiseMonthJobStatusResponse>(
+    `/sidebar-tools/materialise/status/${jobId}`,
+    { timeout: 120_000 },
+  );
+  return data;
+}
+
+export async function stopMaterialiseMonthJob(
+  jobId: string,
+): Promise<MaterialiseMonthJobStatusResponse> {
+  const { data } = await apiClient.post<MaterialiseMonthJobStatusResponse>(
+    `/sidebar-tools/materialise/stop/${jobId}`,
+  );
   return data;
 }
 

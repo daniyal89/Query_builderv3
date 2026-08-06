@@ -9,13 +9,15 @@ are not safe to share across threads.
 import os
 import re
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import duckdb
 
 from backend.models.local_object import FileObjectRequest, FilePreviewRequest, FilePreviewResponse
 from backend.models.schema import TableMetadata, ColumnDetail
+from backend.services.duckdb_session import apply_session_settings
 from backend.services.sample_snapshot_service import SampleSnapshotService
 
 
@@ -25,6 +27,17 @@ SUPPORTED_SOURCE_EXTENSIONS = {".csv", ".tsv", ".xlsx"}
 
 class DatabaseLockedError(RuntimeError):
     """Raised when DuckDB cannot open a file because another process holds an exclusive lock."""
+
+
+class SourceUnavailableError(RuntimeError):
+    """A view's underlying files could not be read.
+
+    Distinct from "the object does not exist": the object is right there in the
+    catalog with its columns intact, and only reading through it fails — a renamed
+    folder, an unmapped drive, a deleted parquet. Worth its own type because the
+    remedy is completely different, and because an unhandled DuckDB IOException
+    would otherwise surface as a 500 with its message discarded.
+    """
 
 
 
@@ -41,6 +54,10 @@ class DuckDBService:
         self._db_path = None
         self._lock = threading.Lock()
         self._read_only = False
+        # Cursors borrowed by long-running statements that no longer hold _lock.
+        # connect/disconnect wait for these to drain before closing the parent.
+        self._idle = threading.Condition(self._lock)
+        self._in_flight = 0
 
     @property
     def is_connected(self) -> bool:
@@ -70,11 +87,7 @@ class DuckDBService:
             raise FileNotFoundError(f"Parent directory does not exist: {resolved.parent}")
 
         with self._lock:
-            if self._conn is not None:
-                try:
-                    self._conn.close()
-                except Exception:
-                    pass
+            self._drain_and_close_unlocked()
 
             try:
                 self._conn = duckdb.connect(str(resolved), read_only=False)
@@ -98,6 +111,9 @@ class DuckDBService:
 
             self._db_path = resolved
             self._read_only = False
+            # Before any query runs: caches the parquet footers a view re-reads on
+            # every bind, and pins the spill directory off the working directory.
+            apply_session_settings(self._conn)
             tables = self._fetch_table_entries_unlocked()
             try:
                 SampleSnapshotService.capture_duckdb_once(self._conn, resolved)
@@ -108,28 +124,105 @@ class DuckDBService:
 
     def disconnect(self) -> None:
         with self._lock:
-            if self._conn is not None:
-                try:
-                    self._conn.close()
-                except Exception:
-                    pass
-                self._conn = None
+            was_connected = self._conn is not None
+            self._drain_and_close_unlocked()
+            if was_connected:
                 self._db_path = None
                 self._read_only = False
 
     def list_tables(self) -> list[TableMetadata]:
+        """Metadata for every user table and view, in three catalog queries.
+
+        This used to run ``SELECT COUNT(*)`` plus an ``information_schema.columns``
+        query *per table* while holding the service-wide lock — so the Home page
+        full-scanned every 46M-row month on every load, and the cost grew by one
+        table each month. ``duckdb_tables.estimated_size`` is the cardinality
+        DuckDB already keeps in the catalog: free, and exact for tables that are
+        bulk-loaded and never deleted from (which is all of them here). It does go
+        stale after a ``DELETE``, so callers needing a guaranteed count use
+        :meth:`count_rows` — the UI has always rendered this figure as "~N".
+        """
         self._ensure_connected()
 
         with self._lock:
-            table_entries = self._fetch_table_entries_unlocked()
-            result: list[TableMetadata] = []
+            assert self._conn is not None
+            table_rows = self._conn.execute(
+                "SELECT table_name, estimated_size FROM duckdb_tables() "
+                "WHERE database_name = current_database() AND schema_name = 'main' "
+                "AND NOT internal"
+            ).fetchall()
+            view_rows = self._conn.execute(
+                "SELECT view_name FROM duckdb_views() "
+                "WHERE database_name = current_database() AND schema_name = 'main' "
+                "AND NOT internal"
+            ).fetchall()
+            column_rows = self._conn.execute(
+                "SELECT table_name, column_name, data_type, is_nullable FROM duckdb_columns() "
+                "WHERE database_name = current_database() AND schema_name = 'main' "
+                "AND NOT internal "
+                "ORDER BY table_name, column_index"
+            ).fetchall()
 
-            for name, table_type in table_entries:
-                columns = self._fetch_columns_unlocked(name)
-                row_count = self._fetch_row_count_unlocked(name) if table_type == "BASE TABLE" else 0
-                result.append(TableMetadata(table_name=name, columns=columns, row_count=row_count))
+        columns_by_object: dict[str, list[ColumnDetail]] = {}
+        for object_name, column_name, data_type, is_nullable in column_rows:
+            columns_by_object.setdefault(object_name, []).append(
+                ColumnDetail(name=column_name, dtype=data_type, nullable=bool(is_nullable))
+            )
 
-            return result
+        # A NULL/negative estimate would trip TableMetadata's ge=0; clamp rather
+        # than 500 the whole Home page over a catalog oddity.
+        row_counts: dict[str, int] = {
+            name: max(int(size or 0), 0) for name, size in table_rows
+        }
+        # The two catalog queries already say which is which — no extra query needed.
+        kinds: dict[str, str] = {name: "TABLE" for name, _ in table_rows}
+        # Views report 0, as they always have — counting one means running it. The
+        # object_type below is what stops that 0 reading as "this month is empty".
+        for (view_name,) in view_rows:
+            row_counts.setdefault(view_name, 0)
+            kinds[view_name] = "VIEW"
+
+        return [
+            TableMetadata(
+                table_name=name,
+                columns=columns_by_object.get(name, []),
+                row_count=row_counts[name],
+                object_type=kinds.get(name, "TABLE"),
+            )
+            for name in sorted(row_counts)
+        ]
+
+    def count_rows(self, table_name: str) -> int:
+        """Exact ``COUNT(*)`` for one object, for when the estimate is not enough.
+
+        Deliberately per-object and opt-in: this is the scan that made
+        :meth:`list_tables` O(tables x rows).
+
+        The count runs on a borrowed cursor, not under ``_lock``. For a view this
+        binds a whole month's parquet glob, and holding the service-wide lock for
+        that would block every other endpoint for its duration — the exact problem
+        :meth:`_borrowed_cursor` exists to solve.
+
+        Raises:
+            ValueError: the object does not exist.
+            SourceUnavailableError: it is a view whose parquet could not be read.
+        """
+        self._ensure_connected()
+
+        with self._lock:
+            if table_name not in self._fetch_table_names():
+                raise ValueError(f"Table '{table_name}' does not exist.")
+
+        with self._borrowed_cursor() as cursor:
+            try:
+                result = cursor.execute(
+                    f"SELECT COUNT(*) FROM {self._quote_identifier(table_name)}"
+                ).fetchone()
+            except duckdb.Error as exc:
+                # A view whose folder moved or drive re-lettered fails here and only
+                # here — the catalog still answers, so the object looks healthy.
+                raise SourceUnavailableError(str(exc)) from exc
+        return int(result[0]) if result else 0
 
     def get_columns(self, table_name: str) -> list[ColumnDetail]:
         self._ensure_connected()
@@ -169,9 +262,8 @@ class DuckDBService:
     def execute(self, sql: str, params: Optional[list[Any]] = None) -> tuple[list[str], list[list[Any]], int]:
         self._ensure_connected()
 
-        with self._lock:
-            assert self._conn is not None
-            result = self._conn.execute(sql, params) if params else self._conn.execute(sql)
+        with self._borrowed_cursor() as cursor:
+            result = cursor.execute(sql, params) if params else cursor.execute(sql)
             columns = [desc[0] for desc in result.description] if result.description else []
             rows = result.fetchall()
             return columns, [list(row) for row in rows], len(rows)
@@ -213,24 +305,17 @@ class DuckDBService:
         path_str = str(resolved_out).replace("\\", "/")
         path_sql_lit = "'" + path_str.replace("'", "''") + "'"
 
-        with self._lock:
-            assert self._conn is not None
-
-            # Render parameterised SQL to a plain string so we can embed it in COPY
-            if params:
-                rendered_rel = self._conn.execute(sql, params).relation
-                # Use the relation object directly in COPY if available; fall back to re-execute
-                copy_sql = (
-                    f"COPY ({sql}) TO {path_sql_lit} "
-                    f"(HEADER true, DELIMITER ',', QUOTE '\"', FORCE_QUOTE *)"
-                )
-                result_row = self._conn.execute(copy_sql, params).fetchone()
-            else:
-                copy_sql = (
-                    f"COPY ({sql}) TO {path_sql_lit} "
-                    f"(HEADER true, DELIMITER ',', QUOTE '\"', FORCE_QUOTE *)"
-                )
-                result_row = self._conn.execute(copy_sql).fetchone()
+        copy_sql = (
+            f"COPY ({sql}) TO {path_sql_lit} "
+            f"(HEADER true, DELIMITER ',', QUOTE '\"', FORCE_QUOTE *)"
+        )
+        # A multi-million-row COPY runs on its own cursor, so it no longer blocks
+        # every other endpoint for its duration. (The parameterised branch used to
+        # execute *sql* in full first and throw the result away before the COPY.)
+        with self._borrowed_cursor() as cursor:
+            result_row = (
+                cursor.execute(copy_sql, params) if params else cursor.execute(copy_sql)
+            ).fetchone()
 
         rows_written = int(result_row[0]) if result_row else 0
         return rows_written
@@ -275,7 +360,12 @@ class DuckDBService:
 
             columns = self._fetch_columns_unlocked(object_name)
             row_count = self._fetch_row_count_unlocked(object_name) if object_type == "TABLE" else 0
-            return TableMetadata(table_name=object_name, columns=columns, row_count=row_count)
+            return TableMetadata(
+                table_name=object_name,
+                columns=columns,
+                row_count=row_count,
+                object_type=object_type,
+            )
 
     def preview_file_source(self, payload: FilePreviewRequest) -> FilePreviewResponse:
         self._ensure_connected()
@@ -306,6 +396,58 @@ class DuckDBService:
     def _ensure_connected(self) -> None:
         if self._conn is None:
             raise RuntimeError("No database connected. Call connect() first.")
+
+    @contextmanager
+    def _borrowed_cursor(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        """Lend a cursor for one statement, holding ``_lock`` only to take it.
+
+        ``execute`` and ``export_to_csv`` used to hold the service-wide lock for
+        the whole statement, so a Home page load queued behind a 10-minute
+        export. A DuckDB cursor is an independent connection onto the same
+        database, so the statement can run unlocked — and the in-flight count
+        stops :meth:`disconnect` closing the parent connection underneath it.
+        """
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("No database connected. Call connect() first.")
+            cursor = self._conn.cursor()
+            self._in_flight += 1
+        try:
+            yield cursor
+        finally:
+            with self._lock:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+                self._in_flight -= 1
+                if self._in_flight == 0:
+                    self._idle.notify_all()
+
+    def _drain_and_close_unlocked(self) -> None:
+        """Wait for borrowed cursors to finish, then close *that* connection.
+
+        Caller must hold ``_lock``. ``Condition.wait`` releases it while waiting.
+
+        The connection is captured before the wait and only closed if it is still
+        the live one. ``wait()`` hands the lock to whoever else wants it, so a
+        materialise — which disconnects once per demote plus once for the promote —
+        can have a queued disconnect wake up after a later ``connect()`` has already
+        installed a fresh connection and reported success. Closing whatever happens
+        to be there at wake-up would take the app offline behind its own back.
+        """
+        target = self._conn
+        while self._in_flight:
+            self._idle.wait()
+        if target is None or self._conn is not target:
+            # Someone else replaced or already closed it while we waited; it is
+            # theirs to manage now.
+            return
+        try:
+            target.close()
+        except Exception:
+            pass
+        self._conn = None
 
     def _quote_identifier(self, identifier: str) -> str:
         return f'"{identifier.replace(chr(34), chr(34) * 2)}"'

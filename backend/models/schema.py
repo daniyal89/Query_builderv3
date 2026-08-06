@@ -26,7 +26,32 @@ class TableMetadata(BaseModel):
         default_factory=list,
         description="Ordered list of column descriptors.",
     )
-    row_count: int = Field(..., description="Total number of rows in the table.", ge=0)
+    row_count: int = Field(
+        ...,
+        description=(
+            "Catalog row estimate. Exact for bulk-loaded tables, 0 for views (counting "
+            "one means running it). Use /tables/{name}/row-count when it must be exact."
+        ),
+        ge=0,
+    )
+    object_type: str = Field(
+        default="TABLE",
+        description=(
+            "TABLE or VIEW. A VIEW reads parquet where it lies, so it reports 0 rows "
+            "here and its source folder has to stay put."
+        ),
+    )
+
+
+class TableRowCount(BaseModel):
+    """Exact row count for one object.
+
+    Separate from :class:`TableMetadata` because getting it costs a full scan,
+    while the ``row_count`` there is the catalog's free estimate.
+    """
+
+    table_name: str = Field(..., description="Object the count refers to.")
+    row_count: int = Field(..., description="Exact COUNT(*) at the time of the call.", ge=0)
 
 
 class MasterTable(BaseModel):

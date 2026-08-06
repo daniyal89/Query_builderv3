@@ -53,6 +53,22 @@ def _run_alter_db_job(job_id: str, request: AlterDbDerivedRequest | AlterDbJoinR
         with duckdb.connect(database=sanitized_db, read_only=False) as conn:
             job_runtime.raise_if_cancelled(job_id)
 
+            # A month stored as a view is not alterable, and DuckDB's own message
+            # ("Can only modify view with ALTER VIEW statement") tells an operator
+            # nothing about what to do instead. Refuse before touching anything.
+            existing = conn.execute(
+                "SELECT table_type FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND lower(table_name) = lower(?) LIMIT 1",
+                [request.table_name.strip()],
+            ).fetchone()
+            if existing and existing[0] == "VIEW":
+                raise ValueError(
+                    f"'{request.table_name}' is a view over parquet files, not a table, so "
+                    "its columns cannot be altered. Materialise that month first (Data "
+                    "Tools -> Materialise), or add the column as a derived expression in "
+                    "the query builder instead."
+                )
+
             tbl = _qi(request.table_name)
 
             if isinstance(request, AlterDbDropRequest):
@@ -183,12 +199,22 @@ def get_alter_db_tables(db_path: str) -> list[str]:
         
         # If already connected to this DB, reuse connection
         if svc.is_connected and svc._db_path and Path(svc._db_path).resolve() == Path(sanitized_db).resolve():
-            tables = svc._conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
+            tables = svc._conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_type = 'BASE TABLE' "
+                "ORDER BY table_name"
+            ).fetchall()
             return [t[0] for t in tables]
             
         # Otherwise open read-only
         with duckdb.connect(database=sanitized_db, read_only=True) as conn:
-            tables = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
+            tables = conn.execute(
+                # BASE TABLE only: a view cannot be ALTERed, so offering one here
+                # just leads to a failed job several clicks later.
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_type = 'BASE TABLE' "
+                "ORDER BY table_name"
+            ).fetchall()
             return [t[0] for t in tables]
     except Exception as e:
         app_logger.warning(f"Failed to list tables for alter-db metadata: {e}")

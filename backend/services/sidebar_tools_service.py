@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import re
 import glob
+import json
 import os
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import duckdb
 import pandas as pd
@@ -27,10 +28,12 @@ from backend.models.sidebar_tools import (
     CsvToParquetRequest,
     FileRowAudit,
     FullPipelineRequest,
+    MaterialiseMonthRequest,
     RowReconciliation,
     SidebarToolResponse,
 )
-from backend.services import pipeline_sql
+from backend.services import duckdb_handoff, pipeline_sql
+from backend.services.duckdb_session import apply_session_settings
 from backend.services.error_log_service import ErrorLogService
 from backend.services.job_runtime import (
     BackgroundJobCancelled,
@@ -50,9 +53,19 @@ CSV_TO_PARQUET_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_second
 BUILD_DUCKDB_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_seconds=1)
 FULL_PIPELINE_JOB_TYPE = "sidebar.full_pipeline"
 FULL_PIPELINE_POLICY = BackgroundJobPolicy(max_attempts=2, retry_backoff_seconds=1)
+MATERIALISE_JOB_TYPE = "sidebar.materialise_month"
+#: No retry: this copies ~46M rows over ~41 minutes and moves the materialised slot
+#: between months. Doing that twice unattended is never the right recovery.
+MATERIALISE_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
 
 
 MAX_CLEAN_AUDIT_ENTRIES = 200
+
+# Failure reasons that mean "the source held no rows", not "rows were lost".
+# Empty division files are routine — one real month had 93 — and counting them as
+# row loss paints the whole run red next to "every source row is accounted for",
+# which trains operators to ignore the one colour that should stop them.
+EMPTY_SOURCE_REASONS = frozenset({"EMPTY_FILE", "EMPTY_DATAFRAME", "EMPTY_DATA_ERROR"})
 
 
 @dataclass(frozen=True)
@@ -62,8 +75,14 @@ class BuildOutcome:
     output_path: str
     message: str
     parquet_input_rows: int | None = None
+    #: Rows the object holds (TABLE) or resolves to (VIEW).
     table_rows: int | None = None
     excluded_input_files: tuple[str, ...] = ()
+    #: Set when the build succeeded but the dashboard could not be reconnected
+    #: afterwards. The data is fine; the UI needs a manual reconnect.
+    reconnect_error: str | None = None
+    #: How the month is stored, so the UI can word the row figure correctly.
+    object_type: str = "TABLE"
 
     @property
     def row_delta(self) -> int:
@@ -75,7 +94,27 @@ class BuildOutcome:
     def data_quality(self) -> str:
         if self.row_delta:
             return "loss"
+        # Unreadable footers mean nothing was verified. Reporting "ok" for an
+        # unverified build is how a short table used to pass for a good one.
+        if self.table_rows is not None and self.parquet_input_rows is None:
+            return "warning"
         return "warning" if self.excluded_input_files else "ok"
+
+
+@dataclass(frozen=True)
+class MaterialiseOutcome:
+    """Result of moving the materialised slot from one month to another."""
+
+    output_path: str
+    message: str
+    promoted: str
+    promoted_rows: int | None = None
+    demoted: tuple[str, ...] = ()
+    #: Months deliberately left materialised because demoting them could not be
+    #: proven safe. Each entry says why, and each one costs ~11.7 GB until resolved.
+    demote_warnings: tuple[str, ...] = ()
+    data_quality: str = "ok"
+    reconnect_error: str | None = None
 
 
 class ConversionLedger:
@@ -134,9 +173,13 @@ class ConversionLedger:
 
     def data_quality(self) -> str:
         totals = self.totals()
-        if totals.unaccounted_rows or any(e.outcome == "failed" for e in self._entries):
+        failed = [e for e in self._entries if e.outcome == "failed"]
+        # An unrecognised or blank reason counts as a hard failure, never as empty.
+        if totals.unaccounted_rows or any(e.reason not in EMPTY_SOURCE_REASONS for e in failed):
             return "loss"
-        if totals.quarantined_rows or any(e.outcome == "repaired" for e in self._entries):
+        # Empty sources still warrant a look — a zero-row file can equally be a
+        # truncated download — they just are not row loss.
+        if totals.quarantined_rows or failed or any(e.outcome == "repaired" for e in self._entries):
             return "warning"
         return "ok"
 
@@ -408,11 +451,17 @@ def _enrich_csv_to_parquet_sql(
             if not col_names:
                 return _fail("EMPTY_DATAFRAME")
 
+            # Count first, so an empty source is reported as empty rather than as a
+            # schema problem. A zero-byte .gz still yields DuckDB a dummy `column0`,
+            # which otherwise reads as "this file has no ACCT_ID column" and sends
+            # the operator hunting for a header fault that isn't there.
+            count_row = conn.execute(f"SELECT count(*) FROM {relation_sql}").fetchone()
+            audit.source_rows = int(count_row[0]) if count_row else 0
+            if audit.source_rows == 0:
+                return _fail("EMPTY_FILE")
+
             if "ACCT_ID" not in col_names:
-                # A consumer cannot exist without an account id. Still report how
-                # many rows the file held, so the size of the gap is visible.
-                count_row = conn.execute(f"SELECT count(*) FROM {relation_sql}").fetchone()
-                audit.source_rows = int(count_row[0]) if count_row else 0
+                # A consumer cannot exist without an account id.
                 return _fail("MISSING_ACCT_ID_COLUMN")
 
             status_rows = conn.execute(
@@ -420,8 +469,6 @@ def _enrich_csv_to_parquet_sql(
             ).fetchall()
             counts = {str(row[0]): int(row[1]) for row in status_rows}
             audit.source_rows = sum(counts.values())
-            if audit.source_rows == 0:
-                return _fail("EMPTY_DATAFRAME")
 
             rejected = {reason: n for reason, n in counts.items() if reason != "OK"}
             if rejected:
@@ -839,6 +886,97 @@ def _resolve_relation_sql(input_path: str, *, _cached_files: list[str] | None = 
     raise ValueError(f"No readable files matched '{input_path}'.")
 
 
+def _resolve_view_relation_sql(parquet_glob: str, source_files: list[str]) -> str:
+    """A relation for a VIEW: still live, but structurally free of quarantine.
+
+    :func:`_resolve_relation_sql` freezes the matched files into a list literal.
+    That is right for ``CREATE TABLE`` — one shot over a set just validated — and
+    wrong for ``CREATE VIEW``: the literal is baked into the stored view SQL, so a
+    577-file month carries ~70 KB of paths and never sees a file added afterwards.
+
+    So instead of one recursive ``**`` glob, this emits one *non-recursive* glob per
+    directory that actually holds validated parquet — roughly one per DISCOM. Two
+    properties fall out of that, both of which a predicate could not give safely:
+
+    * Rejected rows can never be resolved. ``_write_quarantine_sql`` puts them in a
+      ``_quarantine`` **subdirectory**, and ``<dir>/*.parquet`` does not descend, so
+      they are excluded by the shape of the glob rather than by a filter someone
+      could defeat.
+    * New parquet dropped into an existing division directory is still picked up on
+      the next query, which is the point of using a view at all.
+
+    The predicate this replaces filtered on ``filename``, and that had two defects
+    found the hard way: some months' parquet carries a *physical* ``filename``
+    column (measured: FEB 2026 has 153 columns including one, JUL 2026 has 165,
+    MAR-JUN have 164 without) which shadows read_parquet's virtual column and makes
+    the filter silently test the source CSV path instead; and naming the virtual
+    column to dodge that tripped a DuckDB 1.5.3 internal assertion
+    ("Attempted to access index 2 within vector of size 2") on ``count(*)`` — the
+    exact query the build's verification runs.
+
+    A stray legacy ``tmp_*.parquet`` sitting directly in a division directory is no
+    longer excluded here; the build's footer-vs-view row check catches it and fails
+    the build rather than letting it through silently.
+    """
+    directories = sorted({Path(item).parent.as_posix() for item in source_files})
+    if not directories:
+        # No validated files to derive directories from — fall back to the caller's
+        # glob rather than emit an empty list that would match nothing.
+        return (
+            f"read_parquet({_sql_string_literal(parquet_glob)}, "
+            "union_by_name = true, hive_partitioning = false)"
+        )
+    globs = [f"{directory}/*.parquet" for directory in directories]
+    return (
+        f"read_parquet({_sql_string_list_literal(globs)}, "
+        "union_by_name = true, hive_partitioning = false)"
+    )
+
+
+def _absolutize_glob(pattern: str) -> str:
+    """Make a glob absolute without letting ``resolve()`` eat its wildcards.
+
+    A VIEW stores its glob verbatim, so a relative one would leave the process CWD
+    deciding forever whether that month resolves. ``Path.resolve()`` on a pattern
+    containing ``*`` would treat the wildcards as literal path segments, so only
+    the leading fixed portion is anchored.
+    """
+    if Path(pattern).is_absolute():
+        return pattern
+    head, star, tail = pattern.partition("*")
+    try:
+        if not star:
+            return Path(pattern).expanduser().resolve().as_posix()
+        # The head can end mid-segment ("data/part" in "data/part*.parquet"), so
+        # split on the raw separator rather than via Path, which would discard
+        # both the partial name and the "ended with a separator" distinction.
+        dir_part, _, partial = head.rpartition("/")
+        base = Path(dir_part or ".").expanduser().resolve()
+    except OSError:
+        return pattern
+    return f"{base.as_posix()}/{partial}{star}{tail}"
+
+
+def _parquet_input_row_count(files: list[str]) -> int | None:
+    """Total rows across *files* from their parquet footers — no data scan.
+
+    ``None`` when the footers cannot be read, which callers must treat as
+    "unverified" rather than "zero".
+    """
+    if not files:
+        return None
+    try:
+        with duckdb.connect() as meta_conn:
+            apply_session_settings(meta_conn)
+            row = meta_conn.execute(
+                "SELECT sum(num_rows) FROM parquet_file_metadata("
+                f"{_sql_string_list_literal(sorted(files))})"
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
 
 
 def _is_gzip_file(path: Path) -> bool:
@@ -909,17 +1047,17 @@ def _resolve_parquet_only_glob(input_path: str) -> str:
     if path_obj.is_file():
         if path_obj.suffix.lower() != ".parquet":
             raise ValueError("Build step requires Parquet input. Provide a .parquet file or folder with parquet outputs.")
-        return str(path_obj)
+        return str(path_obj.resolve())
 
     if path_obj.is_dir():
-        pattern = str((path_obj / "**/*.parquet").as_posix())
+        pattern = str((path_obj.resolve() / "**/*.parquet").as_posix())
         if any(_is_readable_input_file(item) for item in glob.glob(pattern, recursive=True)):
             return pattern
         raise ValueError(f"No parquet files found under '{path_obj}'.")
 
     parquet_matches = [item for item in glob.glob(normalized, recursive=True) if item.lower().endswith('.parquet') and _is_readable_input_file(item)]
     if parquet_matches:
-        return normalized
+        return _absolutize_glob(normalized)
 
     if "*" in normalized and ".parquet" not in normalized.lower():
         base_prefix = normalized.split("*")[0]
@@ -1054,6 +1192,120 @@ def _update_build_job(job_id: str, **updates: Any) -> None:
     job_runtime.update_job(job_id, **updates)
 
 
+#: Bumped if the provenance payload's shape changes, so a reader can refuse to
+#: act on something it does not understand rather than guessing.
+PROVENANCE_VERSION = 1
+
+
+def _stamp_object_provenance(
+    conn: duckdb.DuckDBPyConnection,
+    object_name: str,
+    object_type: str,
+    *,
+    source_glob: str,
+    verified_rows: int | None,
+    materialised_at: str | None = None,
+) -> None:
+    """Record where a month's rows came from, on the object itself.
+
+    A VIEW carries its glob in its own SQL, but materialising the month destroys
+    that SQL — and demoting it back to a view next cycle needs the glob again,
+    possibly in a different session. A ``COMMENT`` is dropped along with the
+    object, so unlike a separate registry table it cannot drift out of sync.
+
+    Best-effort: provenance is an aid, not the build's purpose, so a failure here
+    must never fail an otherwise good build. The demote guard treats a missing
+    comment as "provenance unknown" and refuses to act, which is the safe default.
+    """
+    payload = {
+        "version": PROVENANCE_VERSION,
+        "source_glob": source_glob,
+        "verified_rows": verified_rows,
+        "built_at": datetime.now().isoformat(timespec="seconds"),
+        "materialised_at": materialised_at,
+    }
+    literal = _sql_string_literal(json.dumps(payload, separators=(",", ":")))
+    object_sql = f'"{object_name.replace(chr(34), chr(34) * 2)}"'
+    try:
+        conn.execute(f"COMMENT ON {object_type} {object_sql} IS {literal}")
+    except Exception as exc:
+        ErrorLogService.append(
+            {
+                "endpoint": "/api/sidebar-tools/build-duckdb",
+                "method": "POST",
+                "status_code": 200,
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "stage": "provenance_comment",
+                "object_name": object_name,
+            }
+        )
+
+
+def _read_object_provenance(
+    conn: duckdb.DuckDBPyConnection, object_name: str
+) -> dict[str, Any] | None:
+    """Read back what :func:`_stamp_object_provenance` wrote, or ``None``.
+
+    ``None`` means "this object's source is unknown" — never "it has no source".
+    Callers must treat the two identically and refuse destructive work.
+    """
+    for catalog, name_column in (("duckdb_tables()", "table_name"), ("duckdb_views()", "view_name")):
+        try:
+            row = conn.execute(
+                f"SELECT comment FROM {catalog} "
+                f"WHERE database_name = current_database() AND schema_name = 'main' "
+                f"AND lower({name_column}) = lower(?)",
+                [object_name.strip()],
+            ).fetchone()
+        except Exception:
+            continue
+        if not row or not row[0]:
+            continue
+        try:
+            parsed = json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and parsed.get("version") == PROVENANCE_VERSION:
+            return parsed
+    return None
+
+
+#: Staging tables are named "<object>__staging_<hex>" and are always transient.
+_STAGING_SUFFIX = "__staging_"
+
+
+def _drop_orphan_staging_tables(conn: duckdb.DuckDBPyConnection, object_name: str) -> list[str]:
+    """Remove staging tables a previous crashed build left committed in the file.
+
+    ``CREATE TABLE ... AS SELECT`` autocommits, so the ~11.7 GB it writes is durable
+    the moment it finishes. A process killed between that and the ``finally`` drop
+    leaves the whole thing behind, and because each attempt mints a fresh random
+    suffix they accumulate rather than being reused.
+
+    Returns the names dropped, so the caller can report the space recovered.
+    """
+    prefix = f"{object_name}{_STAGING_SUFFIX}".lower()
+    dropped: list[str] = []
+    try:
+        rows = conn.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "WHERE database_name = current_database() AND schema_name = 'main' "
+            "AND NOT internal AND starts_with(lower(table_name), ?)",
+            [prefix],
+        ).fetchall()
+    except Exception:
+        return dropped
+    for (name,) in rows:
+        try:
+            conn.execute(f'DROP TABLE IF EXISTS "{name.replace(chr(34), chr(34) * 2)}"')
+            dropped.append(name)
+        except Exception:
+            # A leftover we cannot drop must not block the build that follows.
+            continue
+    return dropped
+
+
 def _drop_existing_duckdb_object(conn: duckdb.DuckDBPyConnection, object_name: str) -> None:
     existing = conn.execute(
         "SELECT table_type FROM information_schema.tables "
@@ -1096,20 +1348,31 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> BuildOutcome:
                 "Delete it and re-run CSV→Parquet for that source, or the table would "
                 "silently be built without those rows."
             )
-    relation_sql = _resolve_relation_sql(resolved_input, _cached_files=cached_files)
+    if not cached_files:
+        # Every matched file was rejected, so there is nothing valid to build from.
+        # Falling through would be worse than useless: the footer count comes back
+        # None (verification silently disabled) and _resolve_relation_sql, given an
+        # empty list, re-globs and falls back to reading the raw input — so pointing
+        # the build straight at a quarantine parquet would build a master out of
+        # exactly the rows the pipeline threw away, unverified.
+        detail = "; ".join(excluded_files[:5]) or "no files matched"
+        raise ValueError(
+            f"No usable parquet in the build input '{resolved_input}'. "
+            f"Rejected: {detail}. Point the build at a month's parquet folder — "
+            "quarantine and temp files are not a data source."
+        )
+
+    # A TABLE is a one-shot copy of the set just validated, so it gets the frozen
+    # file list. A VIEW must keep the glob: it re-resolves on every query, which is
+    # the whole point (~2s instead of ~41min) and means new files are picked up.
+    relation_sql = (
+        _resolve_view_relation_sql(resolved_input, cached_files)
+        if payload.object_type == "VIEW"
+        else _resolve_relation_sql(resolved_input, _cached_files=cached_files)
+    )
 
     # Expected row count straight from the parquet footers — no data scan.
-    parquet_input_rows: int | None = None
-    if cached_files:
-        try:
-            with duckdb.connect() as meta_conn:
-                row = meta_conn.execute(
-                    "SELECT sum(num_rows) FROM parquet_file_metadata("
-                    f"{_sql_string_list_literal(sorted(cached_files))})"
-                ).fetchone()
-            parquet_input_rows = int(row[0]) if row and row[0] is not None else None
-        except Exception:
-            parquet_input_rows = None
+    parquet_input_rows = _parquet_input_row_count(cached_files)
 
     # Temporarily release the dashboard's singleton connection to avoid
     # DuckDB write-write conflicts (DuckDB allows only one writer at a time).
@@ -1124,32 +1387,95 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> BuildOutcome:
             same_db = str(svc._db_path) == str(db_path)
         if same_db:
             dashboard_was_connected = True
+            # Flagged before disconnecting, so no request can observe the gap as
+            # "no database connected" (503) when the truth is "busy" (409).
+            duckdb_handoff.begin()
             svc.disconnect()
 
-    # Get column names via in-memory connection (reads parquet schema only,
-    # avoids write-write transaction conflict on the target database).
-    with duckdb.connect() as mem_conn:
-        columns_info = mem_conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
-    col_names = [row[0] for row in columns_info]
-    select_sql = _build_select_sql_for_schema(relation_sql, col_names)
-
     table_rows: int | None = None
+    reconnect_error: str | None = None
+    # The try starts here, not after the schema probe: everything below runs with the
+    # dashboard disconnected, so anything that raises in between — a truncated parquet
+    # failing DESCRIBE is the likely one — must still reach the finally that reconnects
+    # and clears the handoff. Otherwise every endpoint answers 409 "a build is running"
+    # for the life of the process, for a build that already failed.
     try:
+        # Get column names via in-memory connection (reads parquet schema only,
+        # avoids write-write transaction conflict on the target database).
+        # Describe the *validated* file list, never the raw glob — even for a view.
+        # `union_by_name = true` resolves a relation's schema across every matched file
+        # before any WHERE runs, so a quarantine file would contribute its internal
+        # `__reject_reason` column to the master and widen shared column types (a DATE
+        # becomes VARCHAR where the quarantine copy stored it as text). The outer
+        # projection is explicit, so describing the clean set is enough to keep it out.
+        schema_relation_sql = _resolve_relation_sql(resolved_input, _cached_files=cached_files)
+        with duckdb.connect() as mem_conn:
+            apply_session_settings(mem_conn)
+            columns_info = mem_conn.execute(
+                f"DESCRIBE SELECT * FROM {schema_relation_sql} LIMIT 0"
+            ).fetchall()
+        col_names = [row[0] for row in columns_info]
+        # Parquet written by phase 1 already carries DISCOM and CATEGORY, correctly
+        # derived from the same expressions. Trust them instead of re-deriving.
+        select_sql = _build_select_sql_for_schema(
+            relation_sql, col_names, derive="if_missing", legacy_category_alias=True
+        )
+
         with duckdb.connect(str(db_path)) as conn:
-            thread_count = max(1, os.cpu_count() or 1)
-            conn.execute(f"PRAGMA threads={thread_count}")
-            conn.execute("PRAGMA preserve_insertion_order=false")
+            # Pins temp_directory too: a 46M-row materialise spills gigabytes, and
+            # DuckDB's default '.tmp' is relative to the working directory.
+            apply_session_settings(
+                conn,
+                threads=max(1, os.cpu_count() or 1),
+                preserve_insertion_order=False,
+            )
 
             if payload.object_type == "VIEW":
-                # A view holds no rows, so there is nothing to stage or lose.
-                if payload.replace:
-                    conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-                    conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
-                conn.execute(f"CREATE VIEW {object_sql} AS {select_sql}")
+                # A view holds no rows, but it can still resolve the wrong ones.
+                # DuckDB re-walks the glob itself and applies none of
+                # _classify_input_file's rules, so a tmp_ or quarantined parquet
+                # that appeared since the walk would silently change what this
+                # month means. count(*) through the view is footer-only (no data
+                # scan), and DuckDB rolls DDL back, so a disagreement leaves the
+                # previous object exactly as it was.
+                conn.execute("BEGIN")
+                try:
+                    if payload.replace:
+                        _drop_existing_duckdb_object(conn, normalized_object_name)
+                    conn.execute(f"CREATE VIEW {object_sql} AS {select_sql}")
+                    count_row = conn.execute(f"SELECT count(*) FROM {object_sql}").fetchone()
+                    table_rows = int(count_row[0]) if count_row else 0
+
+                    if parquet_input_rows is not None and table_rows != parquet_input_rows:
+                        raise ValueError(
+                            f"Row count mismatch: the {len(cached_files)} parquet file(s) this "
+                            f"build validated hold {parquet_input_rows:,} rows, but the view "
+                            f"resolves {table_rows:,}. Its glob is seeing a different set of "
+                            f"files. {normalized_object_name} was left untouched."
+                        )
+                    conn.execute("COMMIT")
+                except Exception:
+                    conn.execute("ROLLBACK")
+                    raise
+                # After the commit, deliberately: a COMMENT failure would poison an
+                # open transaction and turn cosmetic metadata into a failed build.
+                _stamp_object_provenance(
+                    conn,
+                    normalized_object_name,
+                    "VIEW",
+                    source_glob=resolved_input,
+                    verified_rows=table_rows,
+                )
             else:
                 # Build into a staging table and swap only once the row count is
                 # verified. Dropping first meant a failed or short build destroyed
                 # the previous good table with nothing to fall back on.
+                # Sweep any staging table a previous crash left behind. `CREATE TABLE
+                # ... AS` autocommits, so a process killed between that and the
+                # `finally` drop leaves a fully committed ~11.7 GB table in the file
+                # that nothing else ever removes — and the next attempt mints a new
+                # random name rather than reusing it, so they accumulate.
+                _drop_orphan_staging_tables(conn, normalized_object_name)
                 staging_name = f"{normalized_object_name}__staging_{uuid.uuid4().hex[:8]}"
                 staging_sql = f'"{staging_name}"'
                 try:
@@ -1167,13 +1493,22 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> BuildOutcome:
                     conn.execute("BEGIN")
                     try:
                         if payload.replace:
-                            conn.execute(f"DROP VIEW IF EXISTS {object_sql}")
-                            conn.execute(f"DROP TABLE IF EXISTS {object_sql}")
+                            _drop_existing_duckdb_object(conn, normalized_object_name)
                         conn.execute(f"ALTER TABLE {staging_sql} RENAME TO {object_sql}")
                         conn.execute("COMMIT")
                     except Exception:
                         conn.execute("ROLLBACK")
                         raise
+                    # Same reasoning as the VIEW branch: after the commit, so a
+                    # COMMENT failure cannot cost a 41-minute build.
+                    _stamp_object_provenance(
+                        conn,
+                        normalized_object_name,
+                        "TABLE",
+                        source_glob=resolved_input,
+                        verified_rows=table_rows,
+                        materialised_at=datetime.now().isoformat(timespec="seconds"),
+                    )
                 finally:
                     conn.execute(f"DROP TABLE IF EXISTS {staging_sql}")
     finally:
@@ -1181,22 +1516,316 @@ def _execute_build_duckdb(payload: BuildDuckDbRequest) -> BuildOutcome:
         if dashboard_was_connected:
             try:
                 svc.connect(str(db_path))
-            except Exception:
-                pass  # Non-fatal: user can manually reconnect from the UI.
+            except Exception as exc:
+                # Non-fatal — the build itself succeeded — but silence here left the
+                # dashboard dead with every endpoint 503ing and no stated cause.
+                reconnect_error = f"{type(exc).__name__}: {exc}"
+                ErrorLogService.append(
+                    {
+                        "endpoint": "/api/sidebar-tools/build-duckdb",
+                        "method": "POST",
+                        "status_code": 200,
+                        "error": reconnect_error,
+                        "exception_type": type(exc).__name__,
+                        "stage": "dashboard_reconnect",
+                        "db_path": str(db_path),
+                    }
+                )
+            finally:
+                duckdb_handoff.end()
 
     period_suffix = f" for {(payload.month_label or '').strip()}" if (payload.month_label or "").strip() else ""
     message = f"Created {payload.object_type} {normalized_object_name}{period_suffix}."
     if table_rows is not None:
-        message += f" {table_rows:,} rows."
+        if payload.object_type == "VIEW":
+            # "N rows" would imply the view stores them. It reads them from the
+            # parquet, and how many files that is matters if one goes missing.
+            message += f" Resolves {table_rows:,} rows from {len(cached_files):,} parquet file(s)."
+        else:
+            message += f" {table_rows:,} rows."
     if excluded_files:
         message += f" Excluded inputs: {len(excluded_files)}."
+    if reconnect_error:
+        message += (
+            " The build succeeded, but reconnecting the dashboard to the database "
+            f"failed ({reconnect_error}). Reconnect from the Home page to see it."
+        )
     return BuildOutcome(
         output_path=str(db_path),
         message=message,
         parquet_input_rows=parquet_input_rows,
         table_rows=table_rows,
         excluded_input_files=tuple(excluded_files),
+        reconnect_error=reconnect_error,
+        object_type=payload.object_type,
     )
+
+
+#: A materialised month, by name. Used to find whichever month currently occupies
+#: the "fast" slot so it can be handed back when a newer one takes over.
+MASTER_OBJECT_PATTERN = re.compile(r"^Master_(\d{4})$", re.IGNORECASE)
+
+
+def _find_materialised_masters(conn: duckdb.DuckDBPyConnection, *, exclude: str) -> list[str]:
+    """``Master_MMYY`` objects currently stored as real tables, oldest name first."""
+    rows = conn.execute(
+        "SELECT table_name FROM duckdb_tables() "
+        "WHERE database_name = current_database() AND schema_name = 'main' AND NOT internal"
+    ).fetchall()
+    excluded = exclude.strip().lower()
+    return sorted(
+        name
+        for (name,) in rows
+        if MASTER_OBJECT_PATTERN.match(name) and name.lower() != excluded
+    )
+
+
+def _plan_demotion(
+    conn: duckdb.DuckDBPyConnection, object_name: str
+) -> tuple[str | None, str | None]:
+    """Decide whether *object_name* can safely become a view again.
+
+    Returns ``(source_glob, None)`` when it can, or ``(None, reason)`` when it
+    cannot. A materialised month may be the *only* copy of those rows, so every
+    uncertainty resolves to "leave it alone": an operator who deleted the parquet
+    after materialising must get a refusal, not a silent conversion that destroys
+    the data.
+    """
+    provenance = _read_object_provenance(conn, object_name)
+    if not provenance or not provenance.get("source_glob"):
+        return None, (
+            f"{object_name} was left materialised: this build did not record where its "
+            "parquet lives, so converting it to a view could destroy the only copy of "
+            "those rows. Re-run the build for that month to record its source."
+        )
+
+    source_glob = str(provenance["source_glob"])
+    files = [
+        item for item in glob.glob(source_glob, recursive=True) if _is_readable_input_file(item)
+    ]
+    if not files:
+        return None, (
+            f"{object_name} was left materialised: no readable parquet found at "
+            f"{source_glob}. A view there would resolve to nothing."
+        )
+
+    footer_rows = _parquet_input_row_count(files)
+    if footer_rows is None:
+        return None, (
+            f"{object_name} was left materialised: the parquet footers at {source_glob} "
+            "could not be read, so the conversion could not be verified."
+        )
+
+    object_sql = f'"{object_name.replace(chr(34), chr(34) * 2)}"'
+    count_row = conn.execute(f"SELECT count(*) FROM {object_sql}").fetchone()
+    table_rows = int(count_row[0]) if count_row else 0
+    if table_rows != footer_rows:
+        return None, (
+            f"{object_name} was left materialised: the table holds {table_rows:,} rows but "
+            f"its parquet now holds {footer_rows:,}, so a view over that parquet would not "
+            "be the same month. Check whether the parquet was re-converted."
+        )
+
+    return source_glob, None
+
+
+def _materialise_month(
+    payload: MaterialiseMonthRequest,
+    progress: Callable[[str, int], None] | None = None,
+    on_demoted: Callable[[str], None] | None = None,
+) -> MaterialiseOutcome:
+    """Promote one month to a TABLE, handing the slot back from the previous one.
+
+    Both directions go through :func:`_execute_build_duckdb`, so each inherits its
+    staging swap, footer verification, transactional replace and provenance stamp
+    rather than reimplementing them.
+
+    Demotion runs **first**: it frees pages that the promote then reuses, which is
+    what stops the file growing every month (DuckDB never shrinks a file, so
+    promoting first would need room for both months at once). A demoted month is
+    still fully queryable as a view, so the worst case if the promote then fails is
+    a slower month — not a missing one.
+    """
+    def _report(message: str, percent: int) -> None:
+        if progress is not None:
+            progress(message, percent)
+
+    target = _normalize_master_object_name(payload.object_name, "TABLE", payload.month_label)
+    db_path = Path(sanitize_local_path_input(payload.db_path, "db_path")).expanduser().resolve()
+    if not db_path.exists():
+        raise ValueError(f"Database file does not exist: {db_path}")
+
+    # ── Plan, before changing anything ────────────────────────────────────────
+    demote_plan: list[tuple[str, str]] = []
+    demote_warnings: list[str] = []
+    if payload.demote_previous:
+        _report("Checking which month currently holds the materialised slot...", 5)
+        with duckdb.connect(str(db_path)) as conn:
+            for name in _find_materialised_masters(conn, exclude=target):
+                source_glob, reason = _plan_demotion(conn, name)
+                if source_glob:
+                    demote_plan.append((name, source_glob))
+                else:
+                    demote_warnings.append(reason or f"{name} was left materialised.")
+
+    # ── Demote first, so the promote can reuse the freed pages ────────────────
+    demoted: list[str] = []
+    demote_reconnect_error: str | None = None
+    for index, (name, source_glob) in enumerate(demote_plan, start=1):
+        _report(f"Converting {name} back to a view ({index}/{len(demote_plan)})...", 10)
+        try:
+            # The MMYY has to be handed back as the month_label:
+            # _normalize_master_object_name requires one for any Master_* name and
+            # would otherwise reject the very name it produced.
+            match = MASTER_OBJECT_PATTERN.match(name)
+            demote_outcome = _execute_build_duckdb(
+                BuildDuckDbRequest(
+                    db_path=str(db_path),
+                    input_path=source_glob,
+                    object_name=name,
+                    object_type="VIEW",
+                    replace=True,
+                    month_label=match.group(1) if match else None,
+                )
+            )
+            demoted.append(name)
+            if on_demoted is not None:
+                # Reported as it happens, so a cancel arriving later can say what
+                # was already changed instead of "nothing".
+                on_demoted(name)
+            # Each demote disconnects and reconnects the dashboard. If one of those
+            # reconnects fails, everything after it — including the 41-minute promote
+            # — runs with the app unreachable, and only the promote's own outcome was
+            # being inspected. Carry the first failure through to the result.
+            if demote_outcome.reconnect_error and demote_reconnect_error is None:
+                demote_reconnect_error = demote_outcome.reconnect_error
+        except Exception as exc:
+            # The month is still a table and still correct, so this is a warning
+            # rather than a failure — but it must be visible, not swallowed.
+            demote_warnings.append(
+                f"{name} was left materialised: converting it to a view failed "
+                f"({type(exc).__name__}: {exc})."
+            )
+
+    # ── Promote the requested month ───────────────────────────────────────────
+    _report(f"Materialising {target}. This copies every row and takes a while...", 25)
+    outcome = _execute_build_duckdb(
+        payload.model_copy(update={"object_type": "TABLE", "replace": True})
+    )
+
+    message = f"{target} is now materialised."
+    if outcome.table_rows is not None:
+        message = f"{target} is now materialised with {outcome.table_rows:,} rows."
+    if demoted:
+        message += f" Converted back to view(s): {', '.join(demoted)}."
+    if demote_warnings:
+        message += f" {len(demote_warnings)} month(s) left materialised — see details."
+    reconnect_error = outcome.reconnect_error or demote_reconnect_error
+    if reconnect_error:
+        message += (
+            " The database work finished, but reconnecting the dashboard failed "
+            f"({reconnect_error}) — the app cannot read the database until you "
+            "reconnect from the Home page."
+        )
+
+    quality = outcome.data_quality
+    if quality == "ok" and (demote_warnings or reconnect_error):
+        quality = "warning"
+
+    return MaterialiseOutcome(
+        output_path=outcome.output_path,
+        message=message,
+        promoted=target,
+        promoted_rows=outcome.table_rows,
+        demoted=tuple(demoted),
+        demote_warnings=tuple(demote_warnings),
+        data_quality=quality,
+        reconnect_error=reconnect_error,
+    )
+
+
+def _update_materialise_job(job_id: str, **updates: Any) -> None:
+    job_runtime.update_job(job_id, **updates)
+
+
+def _run_materialise_month_job(job_id: str, payload: MaterialiseMonthRequest) -> None:
+    """Background worker for the promote/demote cycle."""
+    # Tracked outside the try so the cancel handler can report what already changed.
+    demoted_so_far: list[str] = []
+    try:
+        job_runtime.raise_if_cancelled(job_id)
+
+        def progress(message: str, percent: int) -> None:
+            job_runtime.raise_if_cancelled(job_id)
+            _update_materialise_job(
+                job_id, status="running", message=message, progress_percent=percent
+            )
+
+        outcome = _materialise_month(
+            payload, progress=progress, on_demoted=demoted_so_far.append
+        )
+        fields = {
+            "promoted": outcome.promoted,
+            "promoted_rows": outcome.promoted_rows,
+            "demoted": list(outcome.demoted),
+            "demote_warnings": list(outcome.demote_warnings),
+            "data_quality": outcome.data_quality,
+            "reconnect_error": outcome.reconnect_error,
+            "output_path": outcome.output_path,
+        }
+        if job_runtime.is_cancelled(job_id):
+            _update_materialise_job(
+                job_id,
+                status="cancelled",
+                message="Stop requested. Materialise finished but marked cancelled.",
+                progress_percent=100,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+                **fields,
+            )
+            return
+        _update_materialise_job(
+            job_id,
+            status="completed",
+            message=outcome.message,
+            progress_percent=100,
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+            **fields,
+        )
+    except BackgroundJobCancelled:
+        # Demotion runs first and each one is committed, so "changed nothing" is only
+        # true before the first demote. Saying otherwise sends the operator looking
+        # for a materialised month that is now a view.
+        if demoted_so_far:
+            message = (
+                "Materialise cancelled, but "
+                f"{', '.join(demoted_so_far)} had already been converted back to "
+                "view(s). Those months are still fully queryable; no month is "
+                "materialised until you run this again."
+            )
+        else:
+            message = "Materialise cancelled before it changed anything."
+        _update_materialise_job(
+            job_id,
+            status="cancelled",
+            message=message,
+            demoted=list(demoted_so_far),
+            finished_at=datetime.now().isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        ErrorLogService.append(
+            {
+                "endpoint": "/api/sidebar-tools/materialise/start",
+                "method": "POST",
+                "status_code": 500,
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "job_id": job_id,
+                "payload": payload.model_dump(),
+                "stage": "background_worker",
+            }
+        )
+        _update_materialise_job(job_id, message=str(exc), progress_percent=100)
+        raise
 
 
 def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
@@ -1210,6 +1839,8 @@ def _run_build_duckdb_job(job_id: str, payload: BuildDuckDbRequest) -> None:
             "row_delta": outcome.row_delta,
             "excluded_input_files": list(outcome.excluded_input_files),
             "data_quality": outcome.data_quality,
+            "reconnect_error": outcome.reconnect_error,
+            "object_type": outcome.object_type,
         }
         if job_runtime.is_cancelled(job_id):
             _update_build_job(
@@ -1275,17 +1906,52 @@ def _sql_varchar_normalize_expr(col: str) -> str:
     )
 
 
-def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str:
+#: Columns this module derives rather than trusts, and the source column each
+#: needs. Emitting the source copy *and* the derived one is what produced the
+#: duplicate CATEGORY/CATEGORY_1 in every built month.
+DERIVED_FROM = {"DISCOM": "DIV_CODE", "CATEGORY": "SUPPLY_TYPE"}
+
+
+def _build_select_sql_for_schema(
+    relation_sql: str,
+    col_names: list[str],
+    *,
+    derive: str = "always",
+    legacy_category_alias: bool = True,
+) -> str:
     """Build a SELECT with per-column casts.
 
     When the source is Parquet the CSV→Parquet step already stripped '.0'
     suffixes and normalised strings, so we use a cheap CAST instead of
     REGEXP_REPLACE (which runs a regex per-cell and is the main bottleneck).
+
+    Args:
+        derive: ``"always"`` for a CSV source — re-derive DISCOM/CATEGORY and drop
+            any source copy. ``"if_missing"`` for parquet written by this app's
+            phase 1, which already derived both: pass them through and derive only
+            what is genuinely absent. Re-deriving there cost 9 ``REGEXP_EXTRACT``
+            per row for a value already in the file — and produced the duplicate.
+        legacy_category_alias: also expose CATEGORY as ``CATEGORY_1`` so saved
+            queries written against the accidental duplicate keep working. For the
+            queryable table only; parquet outputs must not carry it onward.
     """
+    if derive not in {"always", "if_missing"}:
+        raise ValueError(f"derive must be 'always' or 'if_missing', got {derive!r}")
+
+    present = set(col_names)
+    # Only derivable when its source column is actually here. The old code dropped
+    # DISCOM unconditionally, so a file with DISCOM but no DIV_CODE lost it.
+    derivable = {name for name, source in DERIVED_FROM.items() if source in present}
+    if derive == "always":
+        to_derive = derivable
+    else:
+        to_derive = {name for name in derivable if name not in present}
+
     from_parquet = "read_parquet" in relation_sql
     select_exprs = []
     for col in col_names:
-        if col == "DISCOM": 
+        if col in to_derive:
+            # Re-derived below; keeping this copy too is the duplicate-column bug.
             continue
         expr = f'"{ col}"'
         if col in MERCADOS_SCHEMA:
@@ -1306,13 +1972,20 @@ def _build_select_sql_for_schema(relation_sql: str, col_names: list[str]) -> str
             expr = f'CAST("{col}" AS VARCHAR)' if from_parquet else _sql_varchar_normalize_expr(col)
         select_exprs.append(f'{expr} AS "{col}"')
 
-    if "DIV_CODE" in col_names:
+    if "DISCOM" in to_derive:
         select_exprs.append(_discom_case_sql('"DIV_CODE"'))
 
-    if "SUPPLY_TYPE" in col_names:
+    if "CATEGORY" in to_derive:
         select_exprs.append(_category_case_sql())
 
-    return f"SELECT {', '.join(select_exprs)} FROM {relation_sql}"
+    inner_sql = f"SELECT {', '.join(select_exprs)} FROM {relation_sql}"
+
+    # CATEGORY_1 was never a distinct value — it is what DuckDB named the second
+    # of two identical CATEGORY columns. Keep it as an explicit alias for one
+    # release so saved queries using either name still resolve, then drop it.
+    if legacy_category_alias and ("CATEGORY" in to_derive or "CATEGORY" in present):
+        return f'SELECT *, "CATEGORY" AS "CATEGORY_1" FROM ({inner_sql})'
+    return inner_sql
 
 
 def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
@@ -1395,10 +2068,12 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                 if action == "repair":
                     # Zero-byte or unreadable target from a crashed/cancelled write.
                     # Rebuilding is the whole point — never skip it as "already done".
-                    target_file.unlink(missing_ok=True)
                     parquet_skipped_details.append(f"{source_file} (CORRUPT_PARQUET_REBUILT)")
-                elif target_file.exists():
-                    target_file.unlink()
+                # Deliberately not deleting the old target first: _atomic_parquet_target
+                # ends in os.replace, which overwrites in one step. Deleting first left
+                # a window with no file at all — and a month linked as a VIEW reads
+                # these files live, so that window is a division silently missing from
+                # the master. A failed replace now leaves the previous file intact.
                 _update_csv_job(
                     job_id,
                     processed_files=index - 1,
@@ -1427,7 +2102,11 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
 
                     columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
                     col_names = [row[0] for row in columns_info]
-                    select_sql = _build_select_sql_for_schema(relation_sql, col_names)
+                    # CSV source: derive both, and never write CATEGORY_1 into the
+                    # parquet — the alias exists only on the queryable table.
+                    select_sql = _build_select_sql_for_schema(
+                        relation_sql, col_names, derive="always", legacy_category_alias=False
+                    )
 
                     with _atomic_parquet_target(target_file) as tmp_target:
                         res = conn.execute(
@@ -1636,7 +2315,7 @@ def execute_csv_to_parquet(payload: CsvToParquetRequest) -> SidebarToolResponse:
                 )
                 continue
             if action == "repair":
-                target_file.unlink(missing_ok=True)
+                # No pre-delete: os.replace in _atomic_parquet_target overwrites.
                 skipped_details.append(f"{source_file} (CORRUPT_PARQUET_REBUILT)")
             if lookup_mode:
                 audit = _apply_csv_enrichment(
@@ -1776,10 +2455,9 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                     )
                     continue
                 if action == "repair":
-                    target_file.unlink(missing_ok=True)
+                    # No pre-delete: os.replace in _atomic_parquet_target overwrites,
+                    # so a month linked as a VIEW never sees the file disappear.
                     parquet_skipped_details.append(f"{source_file} (CORRUPT_PARQUET_REBUILT)")
-                elif target_file.exists():
-                    target_file.unlink()
 
                 parquet_pct = int(((index - 1) / total_valid) * 70)
                 _update(
@@ -1810,7 +2488,11 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
 
                     columns_info = conn.execute(f"DESCRIBE SELECT * FROM {relation_sql} LIMIT 0").fetchall()
                     col_names = [row[0] for row in columns_info]
-                    select_sql = _build_select_sql_for_schema(relation_sql, col_names)
+                    # CSV source: derive both, and never write CATEGORY_1 into the
+                    # parquet — the alias exists only on the queryable table.
+                    select_sql = _build_select_sql_for_schema(
+                        relation_sql, col_names, derive="always", legacy_category_alias=False
+                    )
 
                     with _atomic_parquet_target(target_file) as tmp_target:
                         res = conn.execute(

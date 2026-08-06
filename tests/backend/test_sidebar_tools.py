@@ -268,6 +268,103 @@ def test_sidebar_build_duckdb_supports_trailing_star_pattern_for_nested_parquet(
     assert response.status_code == 200, response.text
 
 
+def _build_request(db_path: Path, input_path: Path, name: str, object_type: str) -> dict:
+    return {
+        "db_path": str(db_path),
+        "input_path": str(input_path),
+        "object_name": name,
+        "object_type": object_type,
+        "replace": True,
+        "month_label": "FEB_2026",
+    }
+
+
+def _object_type_of(db_path: Path, name: str) -> str | None:
+    with duckdb.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND lower(table_name) = lower(?)",
+            [name],
+        ).fetchone()
+    return row[0] if row else None
+
+
+def test_build_replaces_an_existing_table_with_a_view(tmp_path: Path) -> None:
+    """`replace=True` over an existing TABLE must not fail on the type mismatch.
+
+    The build ran `DROP VIEW IF EXISTS` then `DROP TABLE IF EXISTS`. DuckDB raises
+    CatalogException on the first when the object is a TABLE — `IF EXISTS` suppresses
+    "does not exist", not "wrong type". Every existing month is a TABLE, so promoting
+    or demoting one hits this every cycle. `_drop_existing_duckdb_object` resolves the
+    type first and was already tested directly; it just was not wired in.
+    """
+    db_path = tmp_path / "swap.duckdb"
+    parquet_path = tmp_path / "input.parquet"
+    duckdb.connect().execute(
+        "COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)]
+    )
+
+    client = TestClient(app)
+    first = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json=_build_request(db_path, parquet_path, "MASTER_FEB_2026", "TABLE"),
+    )
+    assert first.status_code == 200, first.text
+    assert _object_type_of(db_path, "Master_0226") == "BASE TABLE"
+
+    second = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json=_build_request(db_path, parquet_path, "MASTER_FEB_2026", "VIEW"),
+    )
+
+    assert second.status_code == 200, second.text
+    assert _object_type_of(db_path, "Master_0226") == "VIEW"
+
+
+def test_build_replaces_an_existing_view_with_a_table(tmp_path: Path) -> None:
+    """The same mismatch in the other direction — the promote path."""
+    db_path = tmp_path / "swap_back.duckdb"
+    parquet_path = tmp_path / "input.parquet"
+    duckdb.connect().execute(
+        "COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)]
+    )
+
+    client = TestClient(app)
+    first = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json=_build_request(db_path, parquet_path, "MASTER_FEB_2026", "VIEW"),
+    )
+    assert first.status_code == 200, first.text
+    assert _object_type_of(db_path, "Master_0226") == "VIEW"
+
+    second = client.post(
+        "/api/sidebar-tools/build-duckdb",
+        json=_build_request(db_path, parquet_path, "MASTER_FEB_2026", "TABLE"),
+    )
+
+    assert second.status_code == 200, second.text
+    assert _object_type_of(db_path, "Master_0226") == "BASE TABLE"
+
+
+def test_build_rebuilds_an_existing_table_of_the_same_type(tmp_path: Path) -> None:
+    """The ordinary monthly re-run: TABLE over TABLE, same name."""
+    db_path = tmp_path / "same_type.duckdb"
+    parquet_path = tmp_path / "input.parquet"
+    duckdb.connect().execute(
+        "COPY (SELECT 1 AS id, 'Alice' AS name) TO ? (FORMAT PARQUET)", [str(parquet_path)]
+    )
+
+    client = TestClient(app)
+    for _ in range(2):
+        response = client.post(
+            "/api/sidebar-tools/build-duckdb",
+            json=_build_request(db_path, parquet_path, "MASTER_FEB_2026", "TABLE"),
+        )
+        assert response.status_code == 200, response.text
+
+    assert _object_type_of(db_path, "Master_0226") == "BASE TABLE"
+
+
 def test_sidebar_build_duckdb_rejects_missing_input_pattern(tmp_path: Path) -> None:
     db_path = tmp_path / "tools_missing.duckdb"
 

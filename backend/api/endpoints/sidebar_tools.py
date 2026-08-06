@@ -22,6 +22,9 @@ from backend.models.sidebar_tools import (
     FullPipelineRequest,
     FullPipelineStartResponse,
     FullPipelineStatusResponse,
+    MaterialiseMonthJobResponse,
+    MaterialiseMonthRequest,
+    MaterialiseMonthStartResponse,
     SidebarToolResponse,
 )
 from backend.services.job_runtime import job_runtime
@@ -32,11 +35,14 @@ from backend.services.sidebar_tools_service import (
     CSV_TO_PARQUET_POLICY,
     FULL_PIPELINE_JOB_TYPE,
     FULL_PIPELINE_POLICY,
+    MATERIALISE_JOB_TYPE,
+    MATERIALISE_POLICY,
     _build_csv_to_parquet_targets,
     _execute_build_duckdb,
     _run_build_duckdb_job,
     _run_csv_to_parquet_job,
     _run_full_pipeline_job,
+    _run_materialise_month_job,
     execute_csv_to_parquet,
 )
 from backend.utils.rate_limits import enforce_rate_limit
@@ -45,7 +51,7 @@ router = APIRouter()
 
 
 @router.post("/sidebar-tools/build-duckdb", response_model=SidebarToolResponse)
-async def build_duckdb(request: Request, payload: BuildDuckDbRequest) -> SidebarToolResponse:
+def build_duckdb(request: Request, payload: BuildDuckDbRequest) -> SidebarToolResponse:
     try:
         enforce_rate_limit(request, "sidebar_build_duckdb")
         outcome = _execute_build_duckdb(payload)
@@ -62,7 +68,7 @@ async def build_duckdb(request: Request, payload: BuildDuckDbRequest) -> Sidebar
 
 
 @router.post("/sidebar-tools/build-duckdb/start", response_model=BuildDuckDbJobStartResponse)
-async def build_duckdb_start(request: Request, payload: BuildDuckDbRequest) -> BuildDuckDbJobStartResponse:
+def build_duckdb_start(request: Request, payload: BuildDuckDbRequest) -> BuildDuckDbJobStartResponse:
     enforce_rate_limit(request, "sidebar_build_duckdb")
     job_id = uuid.uuid4().hex
     job_runtime.start_job(
@@ -85,7 +91,7 @@ async def build_duckdb_start(request: Request, payload: BuildDuckDbRequest) -> B
 
 
 @router.get("/sidebar-tools/build-duckdb/status/{job_id}", response_model=BuildDuckDbJobResponse)
-async def build_duckdb_status(job_id: str) -> BuildDuckDbJobResponse:
+def build_duckdb_status(job_id: str) -> BuildDuckDbJobResponse:
     job = job_runtime.get_job(job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
@@ -93,7 +99,7 @@ async def build_duckdb_status(job_id: str) -> BuildDuckDbJobResponse:
 
 
 @router.post("/sidebar-tools/build-duckdb/stop/{job_id}", response_model=BuildDuckDbJobResponse)
-async def build_duckdb_stop(job_id: str) -> BuildDuckDbJobResponse:
+def build_duckdb_stop(job_id: str) -> BuildDuckDbJobResponse:
     job = job_runtime.stop_job(job_id, "Stop requested. Waiting for operation to finish...")
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Build DuckDB job not found.")
@@ -101,7 +107,7 @@ async def build_duckdb_stop(job_id: str) -> BuildDuckDbJobResponse:
 
 
 @router.post("/sidebar-tools/csv-to-parquet", response_model=SidebarToolResponse)
-async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> SidebarToolResponse:
+def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> SidebarToolResponse:
     try:
         enforce_rate_limit(request, "sidebar_csv_to_parquet")
         return execute_csv_to_parquet(payload)
@@ -112,7 +118,7 @@ async def csv_to_parquet(request: Request, payload: CsvToParquetRequest) -> Side
 
 
 @router.post("/sidebar-tools/csv-to-parquet/start", response_model=CsvToParquetJobStartResponse)
-async def csv_to_parquet_start(request: Request, payload: CsvToParquetRequest) -> CsvToParquetJobStartResponse:
+def csv_to_parquet_start(request: Request, payload: CsvToParquetRequest) -> CsvToParquetJobStartResponse:
     enforce_rate_limit(request, "sidebar_csv_to_parquet")
     try:
         files, output_root, _, single_target = _build_csv_to_parquet_targets(payload)
@@ -143,7 +149,7 @@ async def csv_to_parquet_start(request: Request, payload: CsvToParquetRequest) -
 
 
 @router.get("/sidebar-tools/csv-to-parquet/status/{job_id}", response_model=CsvToParquetJobResponse)
-async def csv_to_parquet_status(job_id: str) -> CsvToParquetJobResponse:
+def csv_to_parquet_status(job_id: str) -> CsvToParquetJobResponse:
     job = job_runtime.get_job(job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CSV to Parquet job not found.")
@@ -151,7 +157,7 @@ async def csv_to_parquet_status(job_id: str) -> CsvToParquetJobResponse:
 
 
 @router.post("/sidebar-tools/csv-to-parquet/stop/{job_id}", response_model=CsvToParquetJobResponse)
-async def csv_to_parquet_stop(job_id: str) -> CsvToParquetJobResponse:
+def csv_to_parquet_stop(job_id: str) -> CsvToParquetJobResponse:
     job = job_runtime.stop_job(job_id, "Stop requested. Waiting for current file to finish...")
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CSV to Parquet job not found.")
@@ -162,7 +168,7 @@ async def csv_to_parquet_stop(job_id: str) -> CsvToParquetJobResponse:
 
 
 @router.post("/sidebar-tools/full-pipeline/start", response_model=FullPipelineStartResponse)
-async def full_pipeline_start(request: Request, payload: FullPipelineRequest) -> FullPipelineStartResponse:
+def full_pipeline_start(request: Request, payload: FullPipelineRequest) -> FullPipelineStartResponse:
     enforce_rate_limit(request, "sidebar_full_pipeline")
     job_id = uuid.uuid4().hex
     job_runtime.start_job(
@@ -192,7 +198,7 @@ async def full_pipeline_start(request: Request, payload: FullPipelineRequest) ->
 
 
 @router.get("/sidebar-tools/full-pipeline/status/{job_id}", response_model=FullPipelineStatusResponse)
-async def full_pipeline_status(job_id: str) -> FullPipelineStatusResponse:
+def full_pipeline_status(job_id: str) -> FullPipelineStatusResponse:
     job = job_runtime.get_job(job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Full pipeline job not found.")
@@ -200,8 +206,67 @@ async def full_pipeline_status(job_id: str) -> FullPipelineStatusResponse:
 
 
 @router.post("/sidebar-tools/full-pipeline/stop/{job_id}", response_model=FullPipelineStatusResponse)
-async def full_pipeline_stop(job_id: str) -> FullPipelineStatusResponse:
+def full_pipeline_stop(job_id: str) -> FullPipelineStatusResponse:
     job = job_runtime.stop_job(job_id, "Stop requested. Waiting for current operation to finish…")
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Full pipeline job not found.")
     return FullPipelineStatusResponse(**job)
+
+
+# ─────────── Materialise: move the fast slot from one month to another ────────
+
+
+@router.post("/sidebar-tools/materialise/start", response_model=MaterialiseMonthStartResponse)
+def materialise_month_start(
+    request: Request, payload: MaterialiseMonthRequest
+) -> MaterialiseMonthStartResponse:
+    """Promote a month to a real TABLE, handing the slot back from the previous one.
+
+    Long-running by nature (~41 minutes for ~46M rows), so it is a job from the
+    start rather than a synchronous endpoint.
+    """
+    enforce_rate_limit(request, "sidebar_build_duckdb")
+    job_id = uuid.uuid4().hex
+    job_runtime.start_job(
+        job_type=MATERIALISE_JOB_TYPE,
+        job_id=job_id,
+        initial_snapshot={
+            "job_id": job_id,
+            "status": "queued",
+            "message": "Materialise queued.",
+            "output_path": None,
+            "progress_percent": 0,
+            "promoted": None,
+            "promoted_rows": None,
+            "demoted": [],
+            "demote_warnings": [],
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "finished_at": None,
+        },
+        payload=payload.model_dump(mode="json"),
+        policy=MATERIALISE_POLICY,
+        worker=lambda running_job_id: _run_materialise_month_job(running_job_id, payload),
+    )
+    return MaterialiseMonthStartResponse(
+        job_id=job_id, status="queued", message="Materialise job started."
+    )
+
+
+@router.get(
+    "/sidebar-tools/materialise/status/{job_id}", response_model=MaterialiseMonthJobResponse
+)
+def materialise_month_status(job_id: str) -> MaterialiseMonthJobResponse:
+    job = job_runtime.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Materialise job not found.")
+    return MaterialiseMonthJobResponse(**job)
+
+
+@router.post(
+    "/sidebar-tools/materialise/stop/{job_id}", response_model=MaterialiseMonthJobResponse
+)
+def materialise_month_stop(job_id: str) -> MaterialiseMonthJobResponse:
+    job = job_runtime.stop_job(job_id, "Stop requested. Waiting for the current step to finish...")
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Materialise job not found.")
+    return MaterialiseMonthJobResponse(**job)

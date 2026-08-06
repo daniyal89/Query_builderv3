@@ -123,6 +123,14 @@ export const LocalDbAlterationsPage: React.FC = () => {
     window.localStorage.setItem(ALTER_DB_STORAGE_KEY, JSON.stringify(form));
   }, [form]);
 
+  // The table field is a free-text input with a datalist, so an operator can type
+  // anything — including a month stored as a view, which only fails once the job
+  // runs. Flag it here while the list is actually loaded.
+  const unknownTable =
+    form.table_name.trim().length > 0 &&
+    availableTables.length > 0 &&
+    !availableTables.some((name) => name.toLowerCase() === form.table_name.trim().toLowerCase());
+
   // Fetch Tables when db_path changes
   useEffect(() => {
     if (!form.db_path) {
@@ -338,6 +346,14 @@ export const LocalDbAlterationsPage: React.FC = () => {
           </Field>
           <Field label="Table Name" help="Type or select a table from the chosen DuckDB.">
             <input className="w-full rounded border p-2" list="db-tables-list" value={form.table_name} onChange={(e) => updateForm({ table_name: e.target.value })} />
+            {unknownTable && (
+              <p className="mt-1 text-xs font-medium text-amber-700">
+                <span className="font-semibold">{form.table_name}</span> is not an alterable
+                table in this database. Months stored as a view read their rows from parquet
+                and cannot have columns added or dropped — materialise that month from Data
+                Tools first, or add the column as a derived expression in the query builder.
+              </p>
+            )}
           </Field>
           <Field label={form.mode === "drop" ? "Column Name to Drop" : "New Column Name"} help="The name of the column.">
             <input className="w-full rounded border p-2" list={form.mode === "drop" ? "db-columns-list" : undefined} value={form.new_column_name} onChange={(e) => updateForm({ new_column_name: e.target.value })} />
@@ -475,7 +491,9 @@ export const LocalDbAlterationsPage: React.FC = () => {
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <button
             onClick={form.mode === "derived" ? runDerived : form.mode === "join" ? runJoin : runDrop}
-            disabled={isRunning}
+            // Blocked for an unalterable target: the backend refuses it anyway, and
+            // failing here costs the operator a job round-trip to find that out.
+            disabled={isRunning || unknownTable}
             className={`rounded px-5 py-2 text-sm font-semibold text-white transition-opacity disabled:opacity-60 ${form.mode === "drop" ? "bg-red-600 hover:bg-red-700 shadow-sm" : "bg-indigo-600 hover:bg-indigo-700 shadow-sm"}`}
           >
             {isRunning ? "Executing..." : form.mode === "drop" ? "Drop Column" : `Run ${form.mode === "derived" ? "Derived Column" : "Join"}`}

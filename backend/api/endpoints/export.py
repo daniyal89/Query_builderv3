@@ -155,7 +155,7 @@ def _run_export_job(job_id: str, payload: ExportCsvRequest, db: DuckDBService) -
     summary="Start a background CSV export job (writes directly to disk — suited for very large results)",
     tags=["Query"],
 )
-async def start_export_csv(
+def start_export_csv(
     request: Request,
     payload: ExportCsvRequest,
     db: DuckDBService = Depends(get_db_service),
@@ -221,7 +221,7 @@ async def start_export_csv(
     summary="Poll the status of a CSV export job",
     tags=["Query"],
 )
-async def get_export_csv_status(job_id: str) -> ExportCsvJobStatusResponse:
+def get_export_csv_status(job_id: str) -> ExportCsvJobStatusResponse:
     """Return the current snapshot of the export job."""
     job = job_runtime.get_job(job_id)
     if not job:
@@ -238,7 +238,7 @@ async def get_export_csv_status(job_id: str) -> ExportCsvJobStatusResponse:
     summary="Request cancellation of a running CSV export job",
     tags=["Query"],
 )
-async def cancel_export_csv(job_id: str) -> ExportCsvJobStatusResponse:
+def cancel_export_csv(job_id: str) -> ExportCsvJobStatusResponse:
     """Signal the running export worker to stop at the next checkpoint."""
     job = job_runtime.stop_job(job_id, "Cancellation requested by user.")
     if not job:

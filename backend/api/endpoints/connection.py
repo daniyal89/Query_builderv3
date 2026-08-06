@@ -24,7 +24,7 @@ router = APIRouter()
         "opens a connection, and returns the number of discovered tables."
     ),
 )
-async def connect_to_duckdb(
+def connect_to_duckdb(
     payload: ConnectionRequest,
     db: DuckDBService = Depends(get_db_service),
 ) -> ConnectionResponse:

@@ -6,6 +6,7 @@ import { useState } from "react";
 import { connectDuckdb } from "../api/connectionApi";
 import { getTables } from "../api/schemaApi";
 import { useAppContext } from "../context/AppContext";
+import { clearViewRowCountCache } from "./useViewRowCounts";
 import type { TableMetadata } from "../types/schema.types";
 
 export interface UseConnectionReturn {
@@ -45,6 +46,9 @@ export function useConnection(): UseConnectionReturn {
     setError(null);
     try {
       await connectDuckdb({ db_path: path });
+      // Counts belong to the database that was open when they were taken. Keeping
+      // them across a connect would show one file's row counts against another's.
+      clearViewRowCountCache();
       const tablesData = await getTables("duckdb");
       appCtx.setDuckdbConnected(true, tablesData);
       appCtx.setDuckdbPath(path);
@@ -57,6 +61,9 @@ export function useConnection(): UseConnectionReturn {
   };
 
   const refreshTables = async () => {
+    // A refresh is how the app learns a month was rebuilt, so any count taken
+    // before it describes the previous contents.
+    clearViewRowCountCache();
     const tablesData = await getTables("duckdb");
     appCtx.setDuckdbConnected(true, tablesData);
     return tablesData;

@@ -143,7 +143,9 @@ export const HomePage: React.FC = () => {
         </div>
       )}
 
-      {isConnected && <TableList tables={tables} onDeleteTable={handleDeleteTable} />}
+      {isConnected && (
+        <TableList tables={tables} onDeleteTable={handleDeleteTable} dbPath={dbPath} />
+      )}
     </div>
   );
 };

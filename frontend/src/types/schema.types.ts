@@ -22,6 +22,12 @@ export interface TableMetadata {
   columns: ColumnDetail[];
   /** Total number of rows in the table. */
   row_count: number;
+  /**
+   * TABLE or VIEW. Optional because the Oracle listing does not report it.
+   * A VIEW reads parquet where it lies: `row_count` is 0 for one, and its source
+   * folder has to stay where it is.
+   */
+  object_type?: "TABLE" | "VIEW";
 }
 
 /**

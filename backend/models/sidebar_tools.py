@@ -38,6 +38,49 @@ class BuildDuckDbRequest(BaseModel):
         return normalized
 
 
+class MaterialiseMonthRequest(BuildDuckDbRequest):
+    """Promote one month to a real TABLE and demote whichever month held that slot.
+
+    Deliberately a ``BuildDuckDbRequest``: promoting *is* a TABLE build, so the
+    same validated fields apply and the service can hand the payload straight to
+    ``_execute_build_duckdb``.
+    """
+
+    object_type: str = Field(default="TABLE", description="Always TABLE for a promote.")
+    demote_previous: bool = Field(
+        default=True,
+        description=(
+            "Convert the previously materialised month back to a view. Only ever acts "
+            "when that month's parquet is present and still matches it row for row."
+        ),
+    )
+
+
+class MaterialiseMonthJobResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    output_path: str | None = None
+    progress_percent: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+    #: The month promoted to a TABLE.
+    promoted: str | None = None
+    promoted_rows: int | None = None
+    #: Months converted back to views to make room.
+    demoted: list[str] = []
+    #: Months left materialised because demoting them could not be proven safe.
+    demote_warnings: list[str] = []
+    data_quality: str = "ok"  # ok | warning | loss
+    reconnect_error: str | None = None
+
+
+class MaterialiseMonthStartResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+
+
 class CsvToParquetRequest(BaseModel):
     input_path: str = Field(..., description="Input CSV path or glob pattern.")
     output_path: str = Field(
@@ -154,6 +197,11 @@ class BuildDuckDbJobResponse(BaseModel):
     row_delta: int = 0
     excluded_input_files: list[str] = []
     data_quality: str = "ok"  # ok | warning | loss
+    #: Build succeeded but the dashboard could not be reconnected to the database.
+    #: The table is fine; the UI needs a manual reconnect. Previously swallowed.
+    reconnect_error: str | None = None
+    #: TABLE or VIEW — lets the UI say "resolves N rows" rather than "holds N rows".
+    object_type: str = "TABLE"
 
 
 # ─────────────────── Full Pipeline (CSV→Parquet + Build DuckDB) ──────────────
