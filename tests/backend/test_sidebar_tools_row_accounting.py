@@ -12,8 +12,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import app
-from backend.models.sidebar_tools import BuildDuckDbRequest
+from backend.models.sidebar_tools import BuildDuckDbRequest, FileRowAudit
 from backend.services.sidebar_tools_service import (
+    ConversionLedger,
     _apply_csv_enrichment,
     _atomic_parquet_target,
     _classify_existing_target,
@@ -359,7 +360,9 @@ def test_failed_build_leaves_the_previous_table_intact(tmp_path: Path, monkeypat
     import backend.services.sidebar_tools_service as svc
 
     monkeypatch.setattr(
-        svc, "_build_select_sql_for_schema", lambda relation, cols: f"SELECT * FROM {relation} WHERE false"
+        svc,
+        "_build_select_sql_for_schema",
+        lambda relation, cols, **kwargs: f"SELECT * FROM {relation} WHERE false",
     )
 
     with pytest.raises(ValueError, match="Row count mismatch"):
@@ -430,3 +433,99 @@ def test_plain_text_gz_is_converted_not_silently_skipped(tmp_path: Path) -> None
 
     assert response.status_code == 200, response.text
     assert _parquet_row_count(out_dir / "part.parquet") == 2
+
+
+def test_empty_source_reports_empty_file_not_missing_column(tmp_path: Path) -> None:
+    """A zero-row .gz must not be reported as a schema problem.
+
+    DuckDB gives an empty gz a dummy `column0`, which used to read as
+    MISSING_ACCT_ID_COLUMN and sent operators hunting for a header fault that
+    was not there. 93 files in one real month hit this.
+    """
+    import gzip
+
+    hir_div, hir_sdo, supp = _lookup_frames(tmp_path)
+    source = tmp_path / "empty.csv.gz"
+    with gzip.open(source, "wb"):
+        pass  # a valid gzip stream with no payload
+    target = tmp_path / "out.parquet"
+
+    audit = _apply_csv_enrichment(source, target, "zstd", hir_div, hir_sdo, supp)
+
+    assert audit.outcome == "failed"
+    assert audit.reason == "EMPTY_FILE"
+    assert audit.source_rows == 0
+    assert not target.exists()
+
+
+def test_missing_acct_id_is_still_reported_when_the_file_has_rows(tmp_path: Path) -> None:
+    hir_div, hir_sdo, supp = _lookup_frames(tmp_path)
+    source = tmp_path / "no_acct.csv"
+    source.write_text("DIV_CODE,LOAD\nDIV100,5\nDIV100,6\n", encoding="utf-8")
+
+    audit = _apply_csv_enrichment(source, tmp_path / "o.parquet", "zstd", hir_div, hir_sdo, supp)
+
+    assert audit.reason == "MISSING_ACCT_ID_COLUMN"
+    assert audit.source_rows == 2, "report how many rows the failed file held"
+
+
+# ── The quality verdict must distinguish "no rows existed" from "rows were lost" ──
+
+
+def _ledger(*entries: FileRowAudit) -> ConversionLedger:
+    ledger = ConversionLedger()
+    for entry in entries:
+        ledger.record(entry)
+    return ledger
+
+
+def _empty(name: str, reason: str = "EMPTY_FILE") -> FileRowAudit:
+    return FileRowAudit(source_file=name, outcome="failed", reason=reason, source_rows=0)
+
+
+def test_empty_sources_are_a_warning_not_row_loss() -> None:
+    """A month with empty divisions must not paint the run red.
+
+    "loss" sits next to "every source row is accounted for" in the same card, so
+    spending it on files that never held a row teaches operators to ignore it.
+    """
+    ledger = _ledger(
+        FileRowAudit(source_file="a.csv.gz", outcome="written", source_rows=10, written_rows=10),
+        *[_empty(f"empty{i}.csv.gz") for i in range(93)],
+    )
+
+    assert ledger.data_quality() == "warning"
+    assert ledger.totals().unaccounted_rows == 0
+    assert ledger.totals().balanced
+
+
+@pytest.mark.parametrize("reason", ["EMPTY_FILE", "EMPTY_DATAFRAME", "EMPTY_DATA_ERROR"])
+def test_every_empty_reason_is_treated_alike(reason: str) -> None:
+    assert _ledger(_empty("e.csv.gz", reason)).data_quality() == "warning"
+
+
+@pytest.mark.parametrize("reason", ["MISSING_ACCT_ID_COLUMN", "TRUNCATED_EOF", "READ_ERROR:boom", ""])
+def test_real_failures_are_still_row_loss(reason: str) -> None:
+    """Including a blank reason — an unrecognised failure must not be excused."""
+    entry = FileRowAudit(source_file="bad.csv.gz", outcome="failed", reason=reason, source_rows=5)
+
+    assert _ledger(entry).data_quality() == "loss"
+
+
+def test_one_real_failure_outweighs_many_empty_files() -> None:
+    ledger = _ledger(
+        *[_empty(f"empty{i}.csv.gz") for i in range(50)],
+        FileRowAudit(
+            source_file="bad.csv.gz", outcome="failed", reason="TRUNCATED_EOF", source_rows=7
+        ),
+    )
+
+    assert ledger.data_quality() == "loss"
+
+
+def test_a_clean_run_is_still_ok() -> None:
+    ledger = _ledger(
+        FileRowAudit(source_file="a.csv.gz", outcome="written", source_rows=10, written_rows=10)
+    )
+
+    assert ledger.data_quality() == "ok"

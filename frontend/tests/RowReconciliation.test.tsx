@@ -129,4 +129,45 @@ describe("RowReconciliation", () => {
     expect(screen.getByText(/1 file\(s\) failed/)).toBeInTheDocument();
     expect(screen.getByText(/MISSING_ACCT_ID_COLUMN/)).toBeInTheDocument();
   });
+
+  it("counts empty sources separately from files that failed", () => {
+    render(
+      <RowReconciliation
+        reconciliation={reconciliation({ source_rows: 1000, written_rows: 1000 })}
+        dataQuality="warning"
+        rowAudit={[
+          audit({ source_file: "ok.csv.gz", source_rows: 1000, written_rows: 1000 }),
+          ...Array.from({ length: 93 }, (_, i) =>
+            audit({ source_file: `empty${i}.csv.gz`, outcome: "failed", reason: "EMPTY_FILE" }),
+          ),
+        ]}
+      />,
+    );
+
+    // 93 empty divisions are not 93 failures — that framing buried the real ones.
+    expect(screen.queryByText(/file\(s\) failed/)).not.toBeInTheDocument();
+    expect(screen.getByText(/93 source file\(s\) held no rows/)).toBeInTheDocument();
+  });
+
+  it("still lists a real failure that arrives alongside empty sources", () => {
+    render(
+      <RowReconciliation
+        reconciliation={reconciliation({ source_rows: 500, written_rows: 0, unaccounted_rows: 500 })}
+        dataQuality="loss"
+        rowAudit={[
+          audit({ source_file: "empty.csv.gz", outcome: "failed", reason: "EMPTY_FILE" }),
+          audit({
+            source_file: "truncated.csv.gz",
+            outcome: "failed",
+            reason: "TRUNCATED_EOF",
+            source_rows: 500,
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/1 file\(s\) failed/)).toBeInTheDocument();
+    expect(screen.getByText(/TRUNCATED_EOF/)).toBeInTheDocument();
+    expect(screen.getByText(/1 source file\(s\) held no rows/)).toBeInTheDocument();
+  });
 });

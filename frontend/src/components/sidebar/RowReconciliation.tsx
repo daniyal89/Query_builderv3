@@ -11,6 +11,7 @@ import type {
   FileRowAudit,
   RowReconciliation as Reconciliation,
 } from "../../api/sidebarToolsApi";
+import { EMPTY_SOURCE_REASONS } from "./skipReasons";
 
 interface RowReconciliationProps {
   reconciliation?: Reconciliation;
@@ -51,7 +52,11 @@ export const RowReconciliation: React.FC<RowReconciliationProps> = ({
   const { source_rows, written_rows, reused_rows, quarantined_rows, unaccounted_rows } =
     reconciliation;
   const reasons = quarantineReasons(rowAudit);
-  const failures = rowAudit.filter((entry) => entry.outcome === "failed");
+  const failed = rowAudit.filter((entry) => entry.outcome === "failed");
+  // A file that held no rows is not a failure to report alongside real ones —
+  // listing 93 empty divisions as "failed" buries the one that actually broke.
+  const failures = failed.filter((entry) => !EMPTY_SOURCE_REASONS.has(entry.reason));
+  const emptySources = failed.filter((entry) => EMPTY_SOURCE_REASONS.has(entry.reason));
   const quarantineFiles = rowAudit.filter((entry) => entry.quarantine_file);
 
   return (
@@ -97,6 +102,12 @@ export const RowReconciliation: React.FC<RowReconciliationProps> = ({
             {failures.length > 10 && <li>… and {failures.length - 10} more</li>}
           </ul>
         </details>
+      )}
+
+      {emptySources.length > 0 && (
+        <p className="mt-1 opacity-80">
+          {count(emptySources.length)} source file(s) held no rows — nothing to convert.
+        </p>
       )}
 
       {reconciliation.discrepancies.length > 0 && (
