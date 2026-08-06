@@ -5,6 +5,11 @@ import FolderMergePage from "../src/pages/FolderMergePage";
 import { server } from "./testServer";
 import { renderWithAppContext } from "./testUtils";
 
+/** Serialise events the way the /api/merge-folder SSE stream does. */
+function sseStream(events: Array<{ event: string; data: unknown }>): string {
+  return events.map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
+}
+
 describe("FolderMergePage", () => {
   it("submits a merge request and shows the returned summary", async () => {
     let mergePayload: Record<string, unknown> | null = null;
@@ -14,14 +19,25 @@ describe("FolderMergePage", () => {
         mergePayload = req.body as Record<string, unknown>;
 
         return res(
-          ctx.json({
-            output_path: "D:\\Output\\merged_output.csv",
-            output_format: "csv",
-            total_files: 4,
-            merged_items: 4,
-            total_rows: 120,
-            total_columns: 18,
-          }),
+          ctx.set("Content-Type", "text/event-stream"),
+          ctx.body(
+            sseStream([
+              { event: "progress", data: { event: "progress", stage: "reading", detail: "file 1", current: 1, total: 4 } },
+              {
+                event: "result",
+                data: {
+                  data: {
+                    output_path: "D:\\Output\\merged_output.csv",
+                    output_format: "csv",
+                    total_files: 4,
+                    merged_items: 4,
+                    total_rows: 120,
+                    total_columns: 18,
+                  },
+                },
+              },
+            ]),
+          ),
         );
       }),
     );

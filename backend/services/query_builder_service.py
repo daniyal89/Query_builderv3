@@ -20,6 +20,15 @@ class QueryBuilderService:
     RANGE_OPERATORS = {"BETWEEN", "NOT BETWEEN"}
     FRIENDLY_TEXT_OPERATORS = {"CONTAINS", "NOT CONTAINS", "STARTS WITH", "ENDS WITH"}
     NUMERIC_COMPARISON_OPERATORS = {">", "<", ">=", "<="}
+    #: Money/measure columns the pipeline stores as VARCHAR. They are absent from
+    #: MERCADOS_SCHEMA, so ``pipeline_sql`` lands them as normalised strings
+    #: (documented there: giving them real types would change the master table's
+    #: column types, a separate decision). Every other numeric path in this builder
+    #: casts explicitly — filters and report aggregates — but ORDER BY did not, so
+    #: sorting by amount compared '900' against '10000' as text and returned the
+    #: wrong top rows. The ~70 MERCADOS_SCHEMA NUMBER columns are real DOUBLEs and
+    #: need no help.
+    NUMERIC_TEXT_COLUMNS = frozenset({"TOTAL_AMT", "LOAD_KW"})
     REPORT_VALUE_ALIAS = "__REPORT_VALUE__"
     AI_HELPER_COMMENT_START = "/* AI_CONTEXT"
     AI_HELPER_COMMENT_END = "*/"
@@ -713,12 +722,20 @@ class QueryBuilderService:
 
         sort_clauses = []
         for sort in payload.sort:
-            _, _, column_expr = QueryBuilderService._resolve_column_expression(
+            _, column_name, column_expr = QueryBuilderService._resolve_column_expression(
                 sort.column,
                 alias_by_table,
                 payload.table,
             )
-            sort_clauses.append(f"{column_expr} {sort.direction}")
+            sort_expr = column_expr
+            if (
+                payload.engine == "duckdb"
+                and column_name.upper() in QueryBuilderService.NUMERIC_TEXT_COLUMNS
+            ):
+                # TRY_CAST, not CAST: one unparseable value must sort last rather
+                # than abort the whole query.
+                sort_expr = f"TRY_CAST({column_expr} AS DOUBLE)"
+            sort_clauses.append(f"{sort_expr} {sort.direction}")
         return ", ".join(sort_clauses)
 
     @staticmethod

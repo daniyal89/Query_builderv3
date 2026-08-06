@@ -37,6 +37,80 @@ def test_build_preview_sql_renders_joined_query_with_aliases() -> None:
     assert sql.endswith("LIMIT 25 OFFSET 5")
 
 
+def test_sorting_by_a_money_column_orders_numerically_not_alphabetically() -> None:
+    """TOTAL_AMT is stored VARCHAR, so a raw ORDER BY put '900' above '10000'.
+
+    pipeline_sql leaves TOTAL_AMT and LOAD_KW as normalised strings (they are
+    absent from MERCADOS_SCHEMA), and every other numeric path in the builder
+    casts explicitly — filters and report aggregates — but ORDER BY did not. The
+    visible symptom was "top N consumers by amount" returning the wrong rows.
+    """
+    payload = QueryPayload(
+        engine="duckdb",
+        table="Master_0626",
+        select=["ACCT_ID", "TOTAL_AMT"],
+        sort=[SortClause(column="TOTAL_AMT", direction="DESC")],
+        limit_rows=100,
+    )
+
+    sql = QueryBuilderService.build_preview_sql(payload)
+
+    assert 'ORDER BY TRY_CAST(t0."TOTAL_AMT" AS DOUBLE) DESC' in sql
+
+
+def test_sorting_by_load_kw_also_casts() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="Master_0626",
+        select=["LOAD_KW"],
+        sort=[SortClause(column="LOAD_KW", direction="ASC")],
+    )
+
+    assert 'TRY_CAST(t0."LOAD_KW" AS DOUBLE) ASC' in QueryBuilderService.build_preview_sql(payload)
+
+
+def test_sorting_by_a_text_column_is_left_alone() -> None:
+    """Casting a genuine text column would collapse every value to NULL."""
+    payload = QueryPayload(
+        engine="duckdb",
+        table="Master_0626",
+        select=["NAME"],
+        sort=[SortClause(column="NAME", direction="ASC")],
+    )
+
+    sql = QueryBuilderService.build_preview_sql(payload)
+
+    assert 'ORDER BY t0."NAME" ASC' in sql
+    assert "TRY_CAST" not in sql
+
+
+def test_sorting_by_a_declared_number_column_needs_no_cast() -> None:
+    """The ~70 MERCADOS_SCHEMA NUMBER columns are real DOUBLEs already."""
+    payload = QueryPayload(
+        engine="duckdb",
+        table="Master_0626",
+        select=["BILLED_AMOUNT"],
+        sort=[SortClause(column="BILLED_AMOUNT", direction="DESC")],
+    )
+
+    sql = QueryBuilderService.build_preview_sql(payload)
+
+    assert 'ORDER BY t0."BILLED_AMOUNT" DESC' in sql
+    assert "TRY_CAST" not in sql
+
+
+def test_oracle_sorting_is_untouched() -> None:
+    """Oracle's master has its own types; this fix is about the DuckDB storage."""
+    payload = QueryPayload(
+        engine="oracle",
+        table="MASTER",
+        select=["TOTAL_AMT"],
+        sort=[SortClause(column="TOTAL_AMT", direction="DESC")],
+    )
+
+    assert "TRY_CAST" not in QueryBuilderService.build_preview_sql(payload)
+
+
 def test_build_count_sql_keeps_join_structure() -> None:
     payload = QueryPayload(
         engine="oracle",

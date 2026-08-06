@@ -3,11 +3,15 @@ import {
   BuildDuckDbJobStatusResponse,
   CsvParquetJobStatusResponse,
   FullPipelineStatusResponse,
+  MaterialiseMonthJobStatusResponse,
   getBuildDuckDbJobStatus,
   getCsvToParquetJobStatus,
   getFullPipelineStatus,
+  getMaterialiseMonthJobStatus,
   startBuildDuckDbJob,
+  startMaterialiseMonthJob,
   stopBuildDuckDbJob,
+  stopMaterialiseMonthJob,
   startCsvToParquetJob,
   stopCsvToParquetJob,
   startFullPipeline,
@@ -15,6 +19,8 @@ import {
 } from "../api/sidebarToolsApi";
 import { pickSystemFile, pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 import { StatusAlert } from "../components/common/StatusAlert";
+import { RowReconciliation } from "../components/sidebar/RowReconciliation";
+import { SkippedFiles } from "../components/sidebar/SkippedFiles";
 
 interface FieldProps {
   label: string;
@@ -24,12 +30,37 @@ interface FieldProps {
 
 const PARQUET_FORM_STORAGE_KEY = "sidebar_tools_parquet_form_v1";
 const PARQUET_JOB_STORAGE_KEY = "sidebar_tools_parquet_job_v1";
-const BUILD_FORM_STORAGE_KEY = "sidebar_tools_build_form_v1";
+// _v2: the default object_type changed from TABLE to VIEW. A stored v1 form would
+// keep pinning TABLE for every existing user, so the key has to move with it.
+const BUILD_FORM_STORAGE_KEY = "sidebar_tools_build_form_v2";
 const BUILD_STATUS_STORAGE_KEY = "sidebar_tools_build_status_v1";
+const MATERIALISE_STATUS_STORAGE_KEY = "sidebar_tools_materialise_status_v1";
 const UPPCL_PRESET_STORAGE_KEY = "sidebar_tools_uppcl_preset_paths_v1";
 const DATA_TOOLS_HISTORY_STORAGE_KEY = "sidebar_tools_job_history_v1";
 const PIPELINE_JOB_STORAGE_KEY = "sidebar_tools_pipeline_job_v1";
-const PIPELINE_FORM_STORAGE_KEY = "sidebar_tools_pipeline_form_v1";
+// _v2 for the same reason as the build form: it persists object_type too.
+const PIPELINE_FORM_STORAGE_KEY = "sidebar_tools_pipeline_form_v2";
+
+/**
+ * Read a form's saved values, falling back to the previous key version.
+ *
+ * The key was bumped to _v2 only to change one field's default (object_type), but
+ * a bare key bump throws away everything else with it — and these forms hold the
+ * operator's real paths. That reset a live install's DuckDB path back to the
+ * shipped "./monthly.duckdb" placeholder, so a build silently landed in a
+ * throwaway database beside the exe instead of the real one. Each reader still
+ * coerces the fields whose defaults changed, so migrating the rest forward is safe.
+ */
+function readVersionedForm(key: string): string | null {
+  const current = window.localStorage.getItem(key);
+  if (current) return current;
+  const previous = key.endsWith("_v2") ? window.localStorage.getItem(key.replace(/_v2$/, "_v1")) : null;
+  if (previous) {
+    // Carry it forward so the old key can be dropped later without another reset.
+    window.localStorage.setItem(key, previous);
+  }
+  return previous;
+}
 
 type UppclPresetPaths = {
   build_db_path: string;
@@ -102,7 +133,7 @@ function readInitialPipelineForm(fallbackParquet: any, fallbackBuild: any) {
     month_label: fallbackBuild.month_label,
   };
   try {
-    const raw = window.localStorage.getItem(PIPELINE_FORM_STORAGE_KEY);
+    const raw = readVersionedForm(PIPELINE_FORM_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
     return {
@@ -114,7 +145,9 @@ function readInitialPipelineForm(fallbackParquet: any, fallbackBuild: any) {
       overwrite_parquet: typeof parsed.overwrite_parquet === "boolean" ? parsed.overwrite_parquet : fallback.overwrite_parquet,
       db_path: typeof parsed.db_path === "string" ? parsed.db_path : fallback.db_path,
       object_name: typeof parsed.object_name === "string" ? parsed.object_name : fallback.object_name,
-      object_type: typeof parsed.object_type === "string" ? parsed.object_type : fallback.object_type,
+      // Validated, not just type-checked: an unrecognised value used to go straight
+      // to the backend and 422 there.
+      object_type: parsed.object_type === "TABLE" ? "TABLE" : "VIEW",
       replace: typeof parsed.replace === "boolean" ? parsed.replace : fallback.replace,
       month_label: typeof parsed.month_label === "string" ? parsed.month_label : fallback.month_label,
     };
@@ -201,19 +234,24 @@ function readInitialBuildForm(): {
     db_path: "./monthly.duckdb",
     input_path: "./data/MAR_2026/*.csv.gz",
     object_name: "MASTER_MAR_2026",
-    object_type: "TABLE",
+    // VIEW by default: ready in ~2s and adds nothing to the .duckdb file, where
+    // materialising the same month costs ~41 minutes and ~11.7 GB. Materialising is
+    // now a separate, explicit action for whichever month needs to be fastest.
+    object_type: "VIEW",
     replace: true,
     month_label: "MAR_2026",
   };
   try {
-    const raw = window.localStorage.getItem(BUILD_FORM_STORAGE_KEY);
+    const raw = readVersionedForm(BUILD_FORM_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<typeof fallback>;
     return {
       db_path: typeof parsed.db_path === "string" ? parsed.db_path : fallback.db_path,
       input_path: typeof parsed.input_path === "string" ? parsed.input_path : fallback.input_path,
       object_name: typeof parsed.object_name === "string" ? parsed.object_name : fallback.object_name,
-      object_type: parsed.object_type === "VIEW" ? "VIEW" : "TABLE",
+      // Defaults to VIEW, matching the fallback above — only an explicit "TABLE"
+      // opts back into materialising on build.
+      object_type: parsed.object_type === "TABLE" ? "TABLE" : "VIEW",
       replace: typeof parsed.replace === "boolean" ? parsed.replace : fallback.replace,
       month_label: typeof parsed.month_label === "string" ? parsed.month_label : fallback.month_label,
     };
@@ -267,6 +305,29 @@ function readInitialBuildStatus(): { jobId: string | null; status: BuildDuckDbJo
     };
   } catch {
     return { jobId: null, status: null, message: "" };
+  }
+}
+
+/** Materialise runs ~41 minutes, so it has to survive a reload or a route change. */
+function readInitialMaterialiseState(): {
+  jobId: string | null;
+  status: MaterialiseMonthJobStatusResponse | null;
+} {
+  try {
+    const raw = window.localStorage.getItem(MATERIALISE_STATUS_STORAGE_KEY);
+    if (!raw) return { jobId: null, status: null };
+    const parsed = JSON.parse(raw) as {
+      jobId?: unknown;
+      status?: MaterialiseMonthJobStatusResponse | null;
+    };
+    const jobId = typeof parsed.jobId === "string" && parsed.jobId.trim() ? parsed.jobId : null;
+    const status = parsed.status ?? null;
+    const finished =
+      status?.status === "completed" || status?.status === "failed" || status?.status === "cancelled";
+    // A finished job keeps its status card but must not restart polling.
+    return { jobId: jobId && !finished ? jobId : null, status };
+  } catch {
+    return { jobId: null, status: null };
   }
 }
 
@@ -343,6 +404,15 @@ export const SidebarToolsPage: React.FC = () => {
   const [buildMessage, setBuildMessage] = useState(initialBuildStatus.message);
   const [buildJobId, setBuildJobId] = useState<string | null>(initialBuildStatus.jobId);
   const [buildStatus, setBuildStatus] = useState<BuildDuckDbJobStatusResponse | null>(initialBuildStatus.status);
+  // Its own message channel: sharing buildMessage rendered a successful materialise
+  // inside the build card's red "Error summary" whenever a build had failed earlier.
+  const [materialiseMessage, setMaterialiseMessage] = useState("");
+  const initialMaterialise = useMemo(() => readInitialMaterialiseState(), []);
+  const [materialiseJobId, setMaterialiseJobId] = useState<string | null>(
+    initialMaterialise.jobId,
+  );
+  const [materialiseStatus, setMaterialiseStatus] =
+    useState<MaterialiseMonthJobStatusResponse | null>(initialMaterialise.status);
   const [parquetMessage, setParquetMessage] = useState(initialParquetJobState.message);
   const [parquetJobId, setParquetJobId] = useState<string | null>(initialParquetJobState.jobId);
   const [parquetStatus, setParquetStatus] = useState<CsvParquetJobStatusResponse | null>(initialParquetJobState.status);
@@ -360,6 +430,13 @@ export const SidebarToolsPage: React.FC = () => {
   const isParquetRunning = parquetStatus?.status === "queued" || parquetStatus?.status === "running" || parquetStatus?.status === "cancelling";
   const isBuildRunning = buildStatus?.status === "queued" || buildStatus?.status === "running" || buildStatus?.status === "cancelling";
   const isPipelineRunning = pipelineStatus?.status === "queued" || pipelineStatus?.status === "running" || pipelineStatus?.status === "cancelling";
+  const isMaterialiseRunning = materialiseStatus?.status === "queued" || materialiseStatus?.status === "running" || materialiseStatus?.status === "cancelling";
+  // A relative db_path resolves against the app's working directory, not the folder
+  // the operator has in mind — a build then lands in a throwaway database beside the
+  // exe and the month never appears on the Home page. Warn rather than block: a
+  // relative path is legitimate for a scratch database.
+  const relativeDbPath = (value: string) =>
+    value.trim().length > 0 && !/^([A-Za-z]:[\\/]|[\\/]{2}|[\\/])/.test(value.trim());
   const showBuildSuccess = buildStatus?.status === "completed" && Boolean(buildMessage.trim());
   const showParquetSuccess = parquetStatus?.status === "completed" && Boolean(parquetMessage.trim());
   const showPipelineSuccess = pipelineStatus?.status === "completed" && Boolean(pipelineMessage.trim());
@@ -387,6 +464,17 @@ export const SidebarToolsPage: React.FC = () => {
     };
     window.localStorage.setItem(BUILD_STATUS_STORAGE_KEY, JSON.stringify(payload));
   }, [buildJobId, buildStatus, buildMessage]);
+
+  useEffect(() => {
+    if (!materialiseJobId && !materialiseStatus) {
+      window.localStorage.removeItem(MATERIALISE_STATUS_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      MATERIALISE_STATUS_STORAGE_KEY,
+      JSON.stringify({ jobId: materialiseJobId, status: materialiseStatus }),
+    );
+  }, [materialiseJobId, materialiseStatus]);
 
   useEffect(() => {
     window.localStorage.setItem(UPPCL_PRESET_STORAGE_KEY, JSON.stringify(uppclPresetPaths));
@@ -539,13 +627,68 @@ export const SidebarToolsPage: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [buildJobId]);
 
+  useEffect(() => {
+    if (!materialiseJobId) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const latest = await getMaterialiseMonthJobStatus(materialiseJobId);
+        setMaterialiseStatus(latest);
+        if (latest.status === "completed" || latest.status === "failed" || latest.status === "cancelled") {
+          setMaterialiseJobId(null);
+          setMaterialiseMessage(latest.message);
+          setToolHistory((current) =>
+            [
+              {
+                id: `${Date.now()}-materialise`,
+                tool: "build" as const,
+                status: latest.status,
+                message: latest.message,
+                timestamp: new Date().toISOString(),
+                run_seconds: calculateRunSeconds(latest.started_at, latest.finished_at),
+              },
+              ...current,
+            ].slice(0, 10),
+          );
+        }
+      } catch (error: any) {
+        if (isTransientPollError(error)) {
+          // A 41-minute job must not be declared dead by a dropped poll.
+          return;
+        }
+        const detail =
+          error?.response?.data?.detail || error?.message || "Failed to fetch materialise status.";
+        setMaterialiseJobId(null);
+        setMaterialiseMessage(detail);
+        // The status must move off "running" too. Clearing only the job id left
+        // isMaterialiseRunning true forever: no Materialise button, a Stop button
+        // for a job that is gone, and a progress bar frozen mid-way.
+        setMaterialiseStatus((previous) =>
+          previous
+            ? {
+                ...previous,
+                status: "failed",
+                message:
+                  error?.response?.status === 404
+                    ? "Materialise job not found. It may have been cleared by an app restart — " +
+                      "check the Home page to see which month is materialised before retrying."
+                    : detail,
+              }
+            : null,
+        );
+      }
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [materialiseJobId]);
+
   const applyUppclPreset = () => {
     const monthLabel = "MAR_2026";
     setBuildForm({
       db_path: uppclPresetPaths.build_db_path,
       input_path: uppclPresetPaths.build_input_path,
       object_name: `MASTER_${normalizeMonthSuffix(monthLabel)}`,
-      object_type: "TABLE",
+      // VIEW, matching the form default. This preset is the normal entry point, so
+      // leaving it on TABLE here would quietly undo the default for everyone.
+      object_type: "VIEW",
       replace: true,
       month_label: monthLabel,
     });
@@ -567,7 +710,7 @@ export const SidebarToolsPage: React.FC = () => {
       overwrite_parquet: false,
       db_path: uppclPresetPaths.build_db_path,
       object_name: `MASTER_${normalizeMonthSuffix(monthLabel)}`,
-      object_type: "TABLE",
+      object_type: "VIEW",
       replace: true,
       month_label: monthLabel,
     });
@@ -624,6 +767,60 @@ export const SidebarToolsPage: React.FC = () => {
       setBuildMessage(stopped.message);
     } catch (error: any) {
       setBuildMessage(error?.response?.data?.detail || error?.message || "Unable to stop build.");
+    }
+  };
+
+  /**
+   * Promote this month to a real TABLE and hand the slot back from the previous one.
+   *
+   * Separate from runBuild rather than a TABLE build with a flag: it also demotes the
+   * month that currently holds the slot, which is what keeps the .duckdb file from
+   * growing ~11.7 GB every cycle.
+   */
+  const runMaterialise = async () => {
+    if (!buildForm.db_path.trim() || !buildForm.input_path.trim() || !buildForm.object_name.trim()) {
+      setMaterialiseMessage("Pre-check failed: db path, input path and object name are required.");
+      return;
+    }
+    const objectName = buildForm.object_name.trim();
+    const confirmed = window.confirm(
+      `Materialising ${objectName} copies every row into the .duckdb file — expect about 41 ` +
+        `minutes and about 11.7 GB.\n\nWhichever month is currently materialised will be ` +
+        `converted back to a view, which needs its parquet folder to still be in place. ` +
+        `Any month whose parquet is missing is left alone.\n\nContinue?`,
+    );
+    if (!confirmed) return;
+
+    setMaterialiseMessage("");
+    try {
+      const started = await startMaterialiseMonthJob({
+        ...buildForm,
+        object_name: objectName,
+        object_type: "TABLE",
+        demote_previous: true,
+      });
+      setMaterialiseJobId(started.job_id);
+      setMaterialiseStatus({
+        job_id: started.job_id,
+        status: "queued",
+        message: started.message,
+        progress_percent: 0,
+      });
+      setMaterialiseMessage(`Materialise job started. Job ID: ${started.job_id}`);
+    } catch (error: any) {
+      const errorMessage =
+        error?.response?.data?.detail || error?.message || "Materialise failed to start.";
+      setMaterialiseMessage(errorMessage);
+    }
+  };
+
+  const stopMaterialise = async () => {
+    if (!materialiseJobId) return;
+    try {
+      const stopped = await stopMaterialiseMonthJob(materialiseJobId);
+      setMaterialiseStatus(stopped);
+    } catch (error: any) {
+      setMaterialiseMessage(error?.response?.data?.detail || error?.message || "Unable to stop.");
     }
   };
 
@@ -708,9 +905,17 @@ export const SidebarToolsPage: React.FC = () => {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      {(isBuildRunning || isParquetRunning || isPipelineRunning) && (
+      {/* Materialise belongs here too: it is the longest job on the page (~41 min),
+          and leaving it out meant an operator who scrolled past the card had no
+          indication anything was running. */}
+      {(isBuildRunning || isParquetRunning || isPipelineRunning || isMaterialiseRunning) && (
         <div className="sticky top-2 z-20 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-800 shadow-sm">
-          Active: {isBuildRunning ? `Build (${buildStatus?.status ?? "running"})` : ""}{isBuildRunning && (isParquetRunning || isPipelineRunning) ? " | " : ""}{isParquetRunning ? `CSV→Parquet (${parquetStatus?.status ?? "running"})` : ""}{isParquetRunning && isPipelineRunning ? " | " : ""}{isPipelineRunning ? `Pipeline (${pipelineStatus?.status ?? "running"})` : ""}
+          Active: {[
+            isBuildRunning ? `Build (${buildStatus?.status ?? "running"})` : "",
+            isParquetRunning ? `CSV→Parquet (${parquetStatus?.status ?? "running"})` : "",
+            isPipelineRunning ? `Pipeline (${pipelineStatus?.status ?? "running"})` : "",
+            isMaterialiseRunning ? `Materialise (${materialiseStatus?.status ?? "running"})` : "",
+          ].filter(Boolean).join(" | ")}
           <p className="mt-1 text-indigo-700">
             Runtime: {isBuildRunning && buildRunSeconds !== null ? `Build ${formatDuration(buildRunSeconds)}` : ""}{isBuildRunning && (isParquetRunning || isPipelineRunning) ? " | " : ""}{isParquetRunning && parquetRunSeconds !== null ? `CSV→Parquet ${formatDuration(parquetRunSeconds)}` : ""}{isParquetRunning && isPipelineRunning ? " | " : ""}{isPipelineRunning && pipelineRunSeconds !== null ? `Pipeline ${formatDuration(pipelineRunSeconds)}` : ""}
           </p>
@@ -813,14 +1018,27 @@ export const SidebarToolsPage: React.FC = () => {
               <input className="w-full rounded border p-2" value={pipelineForm.db_path} onChange={(e) => setPipelineForm((p) => ({ ...p, db_path: e.target.value }))} />
               <button type="button" onClick={async () => { const path = await pickSystemSavePath("monthly.duckdb", ".duckdb"); if (path) setPipelineForm((p) => ({ ...p, db_path: path })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Browse...</button>
             </div>
+            {relativeDbPath(pipelineForm.db_path) && (
+              <p className="mt-1 text-xs font-medium text-amber-700">
+                Relative path — resolves against wherever the app was started, so the
+                month would land in a throwaway database and never appear on the Home
+                page. Use a full path such as <code>C:/Users/aimld/uppcl_latest.duckdb</code>.
+              </p>
+            )}
           </Field>
           <Field label="Object name" help="DuckDB table/view name. Example: MASTER_MAR_2026">
             <input className="w-full rounded border p-2" value={pipelineForm.object_name} onChange={(e) => setPipelineForm((p) => ({ ...p, object_name: e.target.value }))} />
           </Field>
-          <Field label="Object type" help="TABLE or VIEW">
+          <Field
+            label="How to store this month"
+            help={
+              "View: ready in about 2 seconds, adds nothing to the .duckdb file, reads the parquet " +
+              "where it is. Materialise: about 41 minutes and about 11.7 GB for the same month."
+            }
+          >
             <select className="w-full rounded border p-2" value={pipelineForm.object_type} onChange={(e) => setPipelineForm((p) => ({ ...p, object_type: e.target.value as "TABLE" | "VIEW" }))}>
-              <option value="TABLE">TABLE</option>
-              <option value="VIEW">VIEW</option>
+              <option value="VIEW">View over the parquet files (recommended)</option>
+              <option value="TABLE">Materialise a copy inside the .duckdb file</option>
             </select>
           </Field>
           <Field label="Month label" help="Used for naming. Example: MAR_2026">
@@ -855,7 +1073,7 @@ export const SidebarToolsPage: React.FC = () => {
           </Field>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button onClick={runPipeline} disabled={isPipelineRunning} className="rounded bg-violet-700 px-5 py-2 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60">
+          <button onClick={runPipeline} disabled={isPipelineRunning || isMaterialiseRunning} className="rounded bg-violet-700 px-5 py-2 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60">
             {isPipelineRunning ? "Running pipeline..." : "⚡ Run Full Pipeline"}
           </button>
           {isPipelineRunning && (
@@ -895,25 +1113,16 @@ export const SidebarToolsPage: React.FC = () => {
               <div><span className="font-semibold text-slate-800">Skipped:</span> {pipelineStatus.parquet_skipped_files}</div>
               <div><span className="font-semibold text-slate-800">Build:</span> {pipelineStatus.build_progress_percent}%</div>
             </div>
-            {pipelineStatus.parquet_skipped_files > 0 && pipelineStatus.parquet_skipped_details && pipelineStatus.parquet_skipped_details.length > 0 && (() => {
-              const reasonCounts: Record<string, number> = {};
-              for (const detail of pipelineStatus.parquet_skipped_details!) {
-                const match = detail.match(/\(([^)]+)\)\s*$/);
-                const reason = match ? match[1] : "UNKNOWN";
-                reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
-              }
-              return (
-                <p className="mt-1 text-xs text-amber-700">
-                  <span className="font-semibold">Skip reasons:</span>{" "}
-                  {Object.entries(reasonCounts).map(([reason, count], i) => (
-                    <span key={reason}>{i > 0 ? ", " : ""}{reason}: {count}</span>
-                  ))}
-                </p>
-              );
-            })()}
+            <SkippedFiles details={pipelineStatus.parquet_skipped_details} />
             {pipelineStatus.total_output_rows !== undefined && pipelineStatus.total_output_rows > 0 && (
               <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {pipelineStatus.total_output_rows.toLocaleString()}</p>
             )}
+            <RowReconciliation
+              reconciliation={pipelineStatus.reconciliation}
+              dataQuality={pipelineStatus.data_quality}
+              rowAudit={pipelineStatus.row_audit}
+              auditTruncated={pipelineStatus.row_audit_truncated}
+            />
             {pipelineRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(pipelineRunSeconds)}</p>}
             {pipelineStatus.parquet_current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {pipelineStatus.parquet_current_file}</p>}
           </div>
@@ -943,6 +1152,14 @@ export const SidebarToolsPage: React.FC = () => {
                 Browse...
               </button>
             </div>
+            {relativeDbPath(buildForm.db_path) && (
+              <p className="mt-1 text-xs font-medium text-amber-700">
+                This is a relative path, so it resolves against wherever the app was
+                started — not a folder you chose. The month would be built into a
+                throwaway database and would not appear on the Home page. Use a full
+                path such as <code>C:/Users/aimld/uppcl_latest.duckdb</code>.
+              </p>
+            )}
           </Field>
           <Field label="Input parquet/csv path or glob" help="Supports wildcards. Example: G:/MASTER_PARQUET/MAR_2026/**/*.parquet">
             <div className="flex gap-2">
@@ -976,10 +1193,18 @@ export const SidebarToolsPage: React.FC = () => {
           <Field label="Object name in DuckDB" help="Target table/view name. Example: master or master_MAR_2026">
             <input className="w-full rounded border p-2" value={buildForm.object_name} onChange={(e) => setBuildForm((p) => ({ ...p, object_name: e.target.value }))} />
           </Field>
-          <Field label="Object type" help="Choose TABLE for materialized data, VIEW for virtual query object.">
+          <Field
+            label="How to store this month"
+            help={
+              "View: ready in about 2 seconds and adds nothing to the .duckdb file, because it reads " +
+              "the month's parquet files where they are. Queries are slower, and the parquet folder has " +
+              "to stay put. Materialise: copies all ~46 million rows into the .duckdb file — about 41 " +
+              "minutes and about 11.7 GB, which DuckDB will not give back if you delete the object later."
+            }
+          >
             <select className="w-full rounded border p-2" value={buildForm.object_type} onChange={(e) => setBuildForm((p) => ({ ...p, object_type: e.target.value as "TABLE" | "VIEW" }))}>
-              <option value="TABLE">TABLE</option>
-              <option value="VIEW">VIEW</option>
+              <option value="VIEW">View over the parquet files (recommended)</option>
+              <option value="TABLE">Materialise a copy inside the .duckdb file</option>
             </select>
           </Field>
           <Field label="Month label (optional)" help="Used in success message only. Example: MAR_2026">
@@ -993,15 +1218,72 @@ export const SidebarToolsPage: React.FC = () => {
           </Field>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button onClick={runBuild} disabled={isBuildRunning} className="rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
-            {isBuildRunning ? "Running..." : "Run Build DuckDB"}
+          {/* Also blocked during a materialise: it holds the .duckdb exclusively, so
+              a build started underneath it would fail on the handoff. */}
+          <button onClick={runBuild} disabled={isBuildRunning || isMaterialiseRunning} className="rounded bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
+            {isBuildRunning ? "Running..." : isMaterialiseRunning ? "Materialise running..." : "Run Build DuckDB"}
           </button>
           {isBuildRunning && (
             <button onClick={stopBuild} disabled={buildStatus?.status === "cancelling"} className="rounded border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60">
               {buildStatus?.status === "cancelling" ? "Stopping..." : "Stop build"}
             </button>
           )}
+          {!isBuildRunning && !isMaterialiseRunning && (
+            <button
+              onClick={runMaterialise}
+              className="rounded border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-50"
+              title="Copies this month's rows into the .duckdb file and converts the previously materialised month back to a view."
+            >
+              Make this month the fast one (materialise)
+            </button>
+          )}
+          {isMaterialiseRunning && (
+            <button onClick={stopMaterialise} disabled={materialiseStatus?.status === "cancelling"} className="rounded border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60">
+              {materialiseStatus?.status === "cancelling" ? "Stopping..." : "Stop materialise"}
+            </button>
+          )}
         </div>
+        {materialiseStatus && (
+          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-slate-700">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-base font-semibold text-slate-900">Materialise status</p>
+              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
+                {materialiseStatus.status}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-slate-600">
+              {materialiseMessage || materialiseStatus.message}
+            </p>
+            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white">
+              <div className="h-full bg-amber-500 transition-all" style={{ width: `${materialiseStatus.progress_percent ?? 0}%` }} />
+            </div>
+            {materialiseStatus.promoted && materialiseStatus.promoted_rows != null && (
+              <p className="mt-2 text-xs">
+                <span className="font-semibold">{materialiseStatus.promoted}</span> now holds{" "}
+                {materialiseStatus.promoted_rows.toLocaleString()} rows.
+              </p>
+            )}
+            {!!materialiseStatus.demoted?.length && (
+              <p className="mt-1 text-xs">
+                <span className="font-semibold">Converted back to views:</span>{" "}
+                {materialiseStatus.demoted.join(", ")}
+              </p>
+            )}
+            {!!materialiseStatus.demote_warnings?.length && (
+              <div className="mt-2 rounded border border-amber-300 bg-white p-2 text-xs">
+                <p className="font-semibold text-amber-800">
+                  Left materialised ({materialiseStatus.demote_warnings.length}) — each still costs
+                  its ~11.7 GB:
+                </p>
+                <ul className="mt-1 space-y-1 text-slate-700">
+                  {materialiseStatus.demote_warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
         <div className="mt-3 rounded-xl border border-blue-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
@@ -1154,25 +1436,16 @@ export const SidebarToolsPage: React.FC = () => {
               <div><span className="font-semibold text-slate-800">Skipped:</span> {parquetStatus.skipped_files}</div>
               <div><span className="font-semibold text-slate-800">Progress:</span> {parquetProgress}%</div>
             </div>
-            {parquetStatus.skipped_files > 0 && parquetStatus.parquet_skipped_details && parquetStatus.parquet_skipped_details.length > 0 && (() => {
-              const reasonCounts: Record<string, number> = {};
-              for (const detail of parquetStatus.parquet_skipped_details!) {
-                const match = detail.match(/\(([^)]+)\)\s*$/);
-                const reason = match ? match[1] : "UNKNOWN";
-                reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
-              }
-              return (
-                <p className="mt-1 text-xs text-amber-700">
-                  <span className="font-semibold">Skip reasons:</span>{" "}
-                  {Object.entries(reasonCounts).map(([reason, count], i) => (
-                    <span key={reason}>{i > 0 ? ", " : ""}{reason}: {count}</span>
-                  ))}
-                </p>
-              );
-            })()}
+            <SkippedFiles details={parquetStatus.parquet_skipped_details} />
             {parquetStatus.total_output_rows !== undefined && parquetStatus.total_output_rows > 0 && (
               <p className="mt-2 text-xs font-semibold text-emerald-700">Total Rows Processed: {parquetStatus.total_output_rows.toLocaleString()}</p>
             )}
+            <RowReconciliation
+              reconciliation={parquetStatus.reconciliation}
+              dataQuality={parquetStatus.data_quality}
+              rowAudit={parquetStatus.row_audit}
+              auditTruncated={parquetStatus.row_audit_truncated}
+            />
             {parquetRunSeconds !== null && <p className="mt-2 text-xs text-slate-500">Runtime: {formatDuration(parquetRunSeconds)}</p>}
             {parquetStatus.current_file && <p className="mt-2 break-all text-xs text-slate-500">Current file: {parquetStatus.current_file}</p>}
           </div>

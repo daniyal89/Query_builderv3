@@ -44,7 +44,7 @@ async def parse_csv(
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/import-csv", response_model=ImportResult)
-async def import_csv(
+def import_csv(
     payload: CSVMappingPayload,
     db: DuckDBService = Depends(get_connected_db)
 ):

@@ -17,7 +17,7 @@ router = APIRouter()
     response_model=OracleConnectionResponse,
     summary="Connect to the Marcadose Oracle database",
 )
-async def connect_to_oracle(
+def connect_to_oracle(
     payload: OracleConnectionRequest,
     oracle: OracleService = Depends(get_oracle_service),
 ) -> OracleConnectionResponse:
@@ -41,7 +41,7 @@ async def connect_to_oracle(
     response_model=list[TableMetadata],
     summary="List Oracle tables and views for the connected Marcadose schema",
 )
-async def list_oracle_tables(
+def list_oracle_tables(
     oracle: OracleService = Depends(get_connected_oracle),
 ) -> list[TableMetadata]:
     return oracle.list_tables()
@@ -52,7 +52,7 @@ async def list_oracle_tables(
     response_model=list[ColumnDetail],
     summary="Get Oracle column details for a specific Marcadose table or view",
 )
-async def get_oracle_table_columns(
+def get_oracle_table_columns(
     table_name: str,
     oracle: OracleService = Depends(get_connected_oracle),
 ) -> list[ColumnDetail]:

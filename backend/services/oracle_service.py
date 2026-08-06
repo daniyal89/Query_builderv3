@@ -128,6 +128,16 @@ class OracleService:
                     else:
                         cursor.execute(normalized_sql)
                 except Exception as exc:
+                    if self._is_missing_object_error(exc):
+                        # ORA-00942 names nothing. A DISCOM union references five
+                        # monthly tables at once, so the operator otherwise has to
+                        # check each by hand to find which month has not loaded yet.
+                        described = self._describe_missing_objects(cursor, normalized_sql)
+                        if described:
+                            runtime_exc = RuntimeError(described)
+                            self._attach_sql_debug(runtime_exc, sql, normalized_sql)
+                            raise runtime_exc from exc
+                        raise
                     if not self._is_invalid_character_error(exc):
                         raise
 
@@ -174,6 +184,79 @@ class OracleService:
     @staticmethod
     def _is_invalid_character_error(exc: Exception) -> bool:
         return "ORA-00911" in str(exc).upper()
+
+    #: FROM/JOIN targets, optionally schema-qualified and optionally quoted.
+    _OBJECT_REFERENCE_PATTERN = re.compile(
+        r'\b(?:FROM|JOIN)\s+("?[A-Za-z_$#][\w$#]*"?(?:\s*\.\s*"?[A-Za-z_$#][\w$#]*"?)?)',
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _is_missing_object_error(exc: Exception) -> bool:
+        return "ORA-00942" in str(exc).upper()
+
+    @classmethod
+    def _referenced_objects(cls, sql: str) -> list[tuple[str | None, str]]:
+        """(owner, name) for every FROM/JOIN target, in the case Oracle resolves.
+
+        Unquoted identifiers fold to upper case, quoted ones keep theirs — matching
+        how ``all_objects`` stores them.
+        """
+        seen: list[tuple[str | None, str]] = []
+        for match in cls._OBJECT_REFERENCE_PATTERN.finditer(sql):
+            raw = match.group(1)
+            if "(" in raw:
+                continue
+            parts = [part.strip() for part in raw.split(".")]
+            resolved = [
+                part[1:-1] if part.startswith('"') and part.endswith('"') else part.upper()
+                for part in parts
+            ]
+            entry = (resolved[0], resolved[1]) if len(resolved) == 2 else (None, resolved[0])
+            if entry not in seen:
+                seen.append(entry)
+        return seen
+
+    @classmethod
+    def _describe_missing_objects(cls, cursor: Any, sql: str) -> str | None:
+        """Name the objects the statement referenced that do not exist.
+
+        Best effort: if the lookup itself fails, the caller re-raises Oracle's own
+        error rather than replacing it with a worse one.
+        """
+        candidates = cls._referenced_objects(sql)
+        if not candidates:
+            return None
+        names = sorted({name for _owner, name in candidates})
+        placeholders = ", ".join(f":{i + 1}" for i in range(len(names)))
+        try:
+            cursor.execute(
+                "SELECT owner, object_name FROM all_objects "
+                "WHERE object_type IN ('TABLE', 'VIEW', 'SYNONYM', 'MATERIALIZED VIEW') "
+                f"AND object_name IN ({placeholders})",
+                names,
+            )
+            existing = {(row[0], row[1]) for row in cursor.fetchall()}
+        except Exception:
+            return None
+
+        existing_names = {name for _owner, name in existing}
+        missing = [
+            f"{owner}.{name}" if owner else name
+            for owner, name in candidates
+            if (owner, name) not in existing and name not in existing_names
+        ]
+        if not missing:
+            return None
+
+        listed = ", ".join(missing)
+        return (
+            f"ORA-00942: these objects do not exist (or are not visible to this "
+            f"Oracle user): {listed}. "
+            "For a monthly DISCOM report this usually means that month has not been "
+            "loaded into Marcadose yet — check the month tag and deselect any DISCOM "
+            "whose table is not there."
+        )
 
     @staticmethod
     def _sanitize_sql_for_oracle(sql: str) -> str:

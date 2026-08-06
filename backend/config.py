@@ -48,6 +48,11 @@ def _read_env_value(env_path: Path, key: str) -> str | None:
     return None
 
 
+# Records which .env file supplied each fallback value, keyed by the primary
+# variable name. Populated during Settings initialisation and reported at startup.
+ENV_FILE_SOURCES: dict[str, str] = {}
+
+
 class Settings(BaseSettings):
     """Application-wide configuration constants."""
 
@@ -97,13 +102,21 @@ class Settings(BaseSettings):
                 return None
             return cleaned
         
-        env_paths = _candidate_env_paths()
+        # Deduplicate while preserving precedence: a CWD-local .env is only consulted
+        # last, and when it wins we record where the value came from so an unexpected
+        # proxy setting can be traced back to the file that supplied it.
+        env_paths: list[Path] = []
+        for candidate in _candidate_env_paths():
+            resolved_candidate = candidate.expanduser()
+            if resolved_candidate not in env_paths:
+                env_paths.append(resolved_candidate)
 
         def _from_env_files(*keys: str) -> str | None:
             for env_path in env_paths:
                 for key in keys:
                     value = _read_env_value(env_path, key)
                     if value:
+                        ENV_FILE_SOURCES[keys[0]] = str(env_path)
                         return value
             return None
 

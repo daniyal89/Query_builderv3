@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.api.endpoints.sidebar_tools import _resolve_existing_input_glob
+from backend.services.sidebar_tools_service import _resolve_existing_input_glob
 from backend.app import app
 from backend.utils.rate_limits import DEFAULT_RATE_LIMIT_POLICIES, RateLimitPolicy, rate_limiter
 

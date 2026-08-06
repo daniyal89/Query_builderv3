@@ -34,11 +34,17 @@ export interface MergeProgressEvent {
   total: number;
 }
 
+/** Absolute URL for raw `fetch` calls — relative paths are rejected outside a browser. */
+function apiUrl(path: string): string {
+  const origin = typeof window !== "undefined" ? window.location?.origin : undefined;
+  return origin ? new URL(path, origin).toString() : path;
+}
+
 export async function mergeFolderWithProgress(
   payload: FolderMergeRequest,
   onProgress?: (event: MergeProgressEvent) => void,
 ): Promise<FolderMergeResponse> {
-  const response = await fetch("/api/merge-folder", {
+  const response = await fetch(apiUrl("/api/merge-folder"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

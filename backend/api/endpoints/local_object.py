@@ -19,7 +19,7 @@ router = APIRouter()
     response_model=FileObjectResponse,
     summary="Create a local DuckDB table or view from a CSV/TSV/XLSX file",
 )
-async def create_file_object(
+def create_file_object(
     payload: FileObjectRequest,
     db: DuckDBService = Depends(get_connected_db),
 ) -> FileObjectResponse:
@@ -44,7 +44,7 @@ async def create_file_object(
     response_model=FilePreviewResponse,
     summary="Preview top rows from a CSV/TSV/XLSX file before creating object",
 )
-async def preview_file_object_source(
+def preview_file_object_source(
     payload: FilePreviewRequest,
     db: DuckDBService = Depends(get_connected_db),
 ) -> FilePreviewResponse:
@@ -60,7 +60,7 @@ async def preview_file_object_source(
     "/duckdb/objects/{object_name}",
     summary="Delete a local DuckDB table/view by name",
 )
-async def delete_local_object(
+def delete_local_object(
     object_name: str,
     db: DuckDBService = Depends(get_connected_db),
 ) -> dict[str, str]:

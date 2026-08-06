@@ -706,9 +706,24 @@ export const FtpDownloadPage: React.FC = () => {
       {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 shadow-sm"><span className="font-semibold">Error:</span> {error}</div>}
 
       {status && (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 shadow-sm">
-          <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">FTP job status</p>
-          <h2 className="mt-2 text-2xl font-bold text-emerald-900">{status.status === "completed" ? "Download complete" : status.status === "failed" ? "Download failed" : status.status === "cancelled" ? "Download stopped" : "Download in progress"}</h2>
+        <div
+          className={`rounded-2xl border p-6 shadow-sm ${
+            status.status === "failed"
+              ? "border-red-200 bg-red-50"
+              : status.status === "cancelled"
+                ? "border-amber-200 bg-amber-50"
+                : "border-emerald-200 bg-emerald-50"
+          }`}
+        >
+          <p className={`text-sm font-semibold uppercase tracking-wide ${status.status === "failed" ? "text-red-700" : status.status === "cancelled" ? "text-amber-700" : "text-emerald-700"}`}>FTP job status</p>
+          <h2 className={`mt-2 text-2xl font-bold ${status.status === "failed" ? "text-red-900" : status.status === "cancelled" ? "text-amber-900" : "text-emerald-900"}`}>{status.status === "completed" ? "Download complete" : status.status === "failed" ? "Download failed" : status.status === "cancelled" ? "Download stopped" : "Download in progress"}</h2>
+          {/* The backend records exactly why a job failed; showing only
+              "Download failed" left the operator with nothing to act on. */}
+          {status.error_message && (
+            <p className="mt-2 break-words rounded-lg bg-white/70 p-3 text-sm font-medium text-red-800">
+              <span className="font-semibold">Reason:</span> {status.error_message}
+            </p>
+          )}
           <p className="mt-2 text-sm text-gray-600">Current profile: {status.current_profile || "Waiting"}</p>
           {runSeconds(status.started_at, status.finished_at, nowMs) !== null && (
             <p className="mt-1 text-xs text-gray-600">Runtime: {formatDuration(runSeconds(status.started_at, status.finished_at, nowMs) ?? 0)}</p>
