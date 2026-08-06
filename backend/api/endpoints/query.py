@@ -78,7 +78,7 @@ def _select_engine_service(
     response_model=QueryPreview,
     summary="Preview SQL for the selected engine and query workflow",
 )
-async def preview_query(
+def preview_query(
     request: Request,
     payload: QueryPayload,
     oracle: OracleService = Depends(get_oracle_service),
@@ -123,7 +123,7 @@ async def preview_query(
     response_model=QueryResult,
     summary="Execute a structured query against the selected engine",
 )
-async def execute_query(
+def execute_query(
     request: Request,
     payload: QueryPayload,
     duckdb: DuckDBService = Depends(get_db_service),
@@ -199,9 +199,9 @@ async def execute_query(
             )
 
         data_sql, params = QueryBuilderService.build_sql(payload)
-        count_sql, count_params = QueryBuilderService.build_count_sql(payload)
 
         if payload.engine == "oracle":
+            count_sql, count_params = QueryBuilderService.build_count_sql(payload)
             executed_sql = MarcadoseUnionService.apply(
                 QueryBuilderService.normalize_manual_sql(
                     QueryBuilderService.render_sql(data_sql, params, payload.engine),
@@ -220,13 +220,27 @@ async def execute_query(
             _, count_rows, _ = service.execute(executed_count_sql)
             attempted_sql = executed_sql
             columns, rows, _ = service.execute(executed_sql)
+            total = int(count_rows[0][0]) if count_rows else 0
         else:
             columns, rows, _ = service.execute(data_sql, params)
-            _, count_rows, _ = service.execute(count_sql, count_params)
             executed_sql = QueryBuilderService.render_sql(data_sql, params, payload.engine)
             attempted_sql = executed_sql
-
-        total = count_rows[0][0] if count_rows else 0
+            # Only a full page can be hiding further rows, and only then is a COUNT
+            # needed. A short page already *is* the whole answer, so counting it ran
+            # a second unbounded scan of the same rows on every query — and the
+            # builder wraps filtered columns in TRIM/TRY_CAST, so that scan cannot
+            # be pruned down by the parquet reader.
+            page_is_full = payload.limit_rows > 0 and len(rows) == payload.limit_rows
+            # An empty page past a non-zero offset says nothing about the total —
+            # `offset + 0` would report the offset itself as the row count, inventing
+            # rows that do not exist. Only a page that actually returned rows proves
+            # where the result set ends.
+            if page_is_full or (not rows and payload.offset > 0):
+                count_sql, count_params = QueryBuilderService.build_count_sql(payload)
+                _, count_rows, _ = service.execute(count_sql, count_params)
+                total = int(count_rows[0][0]) if count_rows else 0
+            else:
+                total = payload.offset + len(rows)
 
         return QueryResult(
             columns=columns,
