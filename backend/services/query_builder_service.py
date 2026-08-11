@@ -74,9 +74,11 @@ class QueryBuilderService:
 
     # Columns in the UPPCL master data that hold dates but whose names do not
     # say so, so the pattern below cannot find them. Verified against the July
-    # 2026 export: DOC is the date of connection ("26-MAR-2025") and
-    # BILL_CRE_DTTM is a bill creation timestamp ("03-JUL-2026 16:31:59").
-    EXPLICIT_DATE_COLUMNS = frozenset({"DOC", "BILL_CRE_DTTM"})
+    # 2026 export: DOC is the date of connection ("26-MAR-2025"),
+    # BILL_CRE_DTTM is a bill creation timestamp ("03-JUL-2026 16:31:59"), and
+    # LAST_OK_STATUS is a date despite reading like a status -- all 41,343,598
+    # of its non-empty values across the five DISCOMs parse, none fail.
+    EXPLICIT_DATE_COLUMNS = frozenset({"DOC", "BILL_CRE_DTTM", "LAST_OK_STATUS"})
 
     # Columns whose names contain DATE but which hold something else.
     # DUE_DATE_REBATE is a rupee amount (-203,474.07 to -0.28); treating it as a

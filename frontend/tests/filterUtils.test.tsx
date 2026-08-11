@@ -81,6 +81,7 @@ describe("getColumnFamily", () => {
     expect(getColumnFamily("VARCHAR2", "DOC")).toBe("date");
     expect(getColumnFamily("VARCHAR2", "MERCADOS.CM_MASTER_DATA_JUL_2026_DVVNL.DOC")).toBe("date");
     expect(getColumnFamily("VARCHAR2", "BILL_CRE_DTTM")).toBe("date");
+    expect(getColumnFamily("VARCHAR2", "LAST_OK_STATUS")).toBe("date");
   });
 
   it("offers date and text operators on DOC", () => {

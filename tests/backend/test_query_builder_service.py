@@ -461,6 +461,9 @@ def test_doc_is_recognised_as_a_date_column() -> None:
     assert QueryBuilderService._is_date_like_column("DOC")
     assert QueryBuilderService._is_date_like_column("MERCADOS.CM_MASTER_DATA_JUL_2026_DVVNL.DOC")
     assert QueryBuilderService._is_date_like_column("BILL_CRE_DTTM")
+    # Reads like a status, holds a date: all 41,343,598 non-empty values across
+    # the five DISCOMs parse as dates and none fail.
+    assert QueryBuilderService._is_date_like_column("LAST_OK_STATUS")
 
 
 def test_due_date_rebate_is_not_treated_as_a_date() -> None:

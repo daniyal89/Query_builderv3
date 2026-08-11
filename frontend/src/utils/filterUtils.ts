@@ -49,7 +49,7 @@ export const DATE_TEXT_OPERATORS: FilterOperator[] = [
  * two disagree, the UI offers operators the backend then refuses, or hides ones
  * it would have accepted.
  */
-export const EXPLICIT_DATE_COLUMNS = new Set(["DOC", "BILL_CRE_DTTM"]);
+export const EXPLICIT_DATE_COLUMNS = new Set(["DOC", "BILL_CRE_DTTM", "LAST_OK_STATUS"]);
 
 /** Columns whose names contain DATE but hold something else (see the backend). */
 export const EXPLICIT_NON_DATE_COLUMNS = new Set(["DUE_DATE_REBATE"]);
