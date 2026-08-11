@@ -75,6 +75,29 @@ describe("getColumnFamily", () => {
     expect(getColumnFamily("BIGINT", "TOTAL_AMT")).toBe("number");
   });
 
+  it("treats DOC as a date even though its name says nothing", () => {
+    // Date of connection, stored as "26-MAR-2025". Kept in step with
+    // EXPLICIT_DATE_COLUMNS in query_builder_service.py.
+    expect(getColumnFamily("VARCHAR2", "DOC")).toBe("date");
+    expect(getColumnFamily("VARCHAR2", "MERCADOS.CM_MASTER_DATA_JUL_2026_DVVNL.DOC")).toBe("date");
+    expect(getColumnFamily("VARCHAR2", "BILL_CRE_DTTM")).toBe("date");
+  });
+
+  it("offers date and text operators on DOC", () => {
+    const operators = getOperatorsForColumn(column("DOC", "VARCHAR2"));
+    expect(operators).toContain("BETWEEN");
+    expect(operators).toContain(">=");
+    expect(operators).toContain("CONTAINS");
+  });
+
+  it("keeps DUE_DATE_REBATE numeric despite the DATE in its name", () => {
+    // It holds a rupee amount, so it needs numeric comparison, not a date picker.
+    expect(getColumnFamily("NUMBER", "DUE_DATE_REBATE")).toBe("number");
+    const operators = getOperatorsForColumn(column("DUE_DATE_REBATE", "NUMBER"));
+    expect(operators).toContain("BETWEEN");
+    expect(operators).toContain("<");
+  });
+
   it("does not recognise Oracle's NUMBER type", () => {
     // Documenting a known gap rather than asserting it is correct: the numeric
     // regex matches NUMERIC but not NUMBER, so every Oracle number column lands

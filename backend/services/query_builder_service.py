@@ -72,9 +72,26 @@ class QueryBuilderService:
             return "LIKE", f"%{escaped}"
         raise ValueError(f"Unsupported friendly text operator: {operator}")
 
+    # Columns in the UPPCL master data that hold dates but whose names do not
+    # say so, so the pattern below cannot find them. Verified against the July
+    # 2026 export: DOC is the date of connection ("26-MAR-2025") and
+    # BILL_CRE_DTTM is a bill creation timestamp ("03-JUL-2026 16:31:59").
+    EXPLICIT_DATE_COLUMNS = frozenset({"DOC", "BILL_CRE_DTTM"})
+
+    # Columns whose names contain DATE but which hold something else.
+    # DUE_DATE_REBATE is a rupee amount (-203,474.07 to -0.28); treating it as a
+    # date forced a date picker onto it and blocked numeric comparison, so there
+    # was no way to filter by rebate value at all.
+    EXPLICIT_NON_DATE_COLUMNS = frozenset({"DUE_DATE_REBATE"})
+
     @staticmethod
     def _is_date_like_column(column_name: str) -> bool:
-        return bool(re.search(r"(DATE|TIME|TIMESTAMP)", column_name.upper()))
+        bare = column_name.upper().rpartition(".")[2].strip('"')
+        if bare in QueryBuilderService.EXPLICIT_NON_DATE_COLUMNS:
+            return False
+        if bare in QueryBuilderService.EXPLICIT_DATE_COLUMNS:
+            return True
+        return bool(re.search(r"(DATE|TIME|TIMESTAMP)", bare))
 
     @staticmethod
     def _normalize_date_literal_value(value: Any) -> str:
@@ -96,13 +113,21 @@ class QueryBuilderService:
 
     @staticmethod
     def _duckdb_date_expression(column_expr: str) -> str:
+        text = f"CAST({column_expr} AS VARCHAR)"
         return (
             "COALESCE("
             f"TRY_CAST({column_expr} AS DATE), "
-            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%b-%Y') AS DATE), "
-            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%B-%Y') AS DATE), "
-            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%d-%m-%Y') AS DATE), "
-            f"TRY_CAST(TRY_STRPTIME(CAST({column_expr} AS VARCHAR), '%Y-%m-%d') AS DATE)"
+            # Two-digit years must be tried before %Y. Oracle exports the reading
+            # dates as "18-JUN-26", and %Y reads that as year 26, so the filter
+            # silently matched nothing instead of failing. %y rejects a 4-digit
+            # year outright, so it cannot hijack the ordinary values.
+            f"TRY_CAST(TRY_STRPTIME({text}, '%d-%b-%y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME({text}, '%d-%b-%Y') AS DATE), "
+            # Bill creation carries a time of day.
+            f"TRY_CAST(TRY_STRPTIME({text}, '%d-%b-%Y %H:%M:%S') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME({text}, '%d-%B-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME({text}, '%d-%m-%Y') AS DATE), "
+            f"TRY_CAST(TRY_STRPTIME({text}, '%Y-%m-%d') AS DATE)"
             ")"
         )
 

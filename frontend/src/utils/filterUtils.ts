@@ -42,10 +42,27 @@ export const DATE_TEXT_OPERATORS: FilterOperator[] = [
   "ENDS WITH",
 ];
 
+/**
+ * Columns that hold dates but whose names do not say so.
+ *
+ * Kept in step with EXPLICIT_DATE_COLUMNS in query_builder_service.py -- if the
+ * two disagree, the UI offers operators the backend then refuses, or hides ones
+ * it would have accepted.
+ */
+export const EXPLICIT_DATE_COLUMNS = new Set(["DOC", "BILL_CRE_DTTM"]);
+
+/** Columns whose names contain DATE but hold something else (see the backend). */
+export const EXPLICIT_NON_DATE_COLUMNS = new Set(["DUE_DATE_REBATE"]);
+
 export function getColumnFamily(dtype?: string, columnName?: string): "text" | "number" | "date" | "boolean" | "other" {
   const normalizedType = dtype?.toUpperCase() ?? "";
   const normalizedName = columnName?.toUpperCase() ?? "";
+  const bareName = normalizedName.split(".").pop() ?? "";
 
+  if (EXPLICIT_NON_DATE_COLUMNS.has(bareName)) {
+    return /(INT|DECIMAL|NUMERIC|NUMBER|DOUBLE|FLOAT|REAL)/.test(normalizedType) ? "number" : "text";
+  }
+  if (EXPLICIT_DATE_COLUMNS.has(bareName)) return "date";
   if (/(DATE|TIME|TIMESTAMP)/.test(normalizedName)) return "date";
 
   if (!normalizedType) return "other";

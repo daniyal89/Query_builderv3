@@ -431,6 +431,70 @@ def test_duckdb_date_like_column_uses_flexible_date_parsing_expression() -> None
     assert params == []
 
 
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        ("25-OCT-1989", "1989-10-25"),   # DOC, date of connection
+        ("03-JUL-2026", "2026-07-03"),   # LAST_BILL_DATE
+        ("18-JUN-26", "2026-06-18"),     # OPENING_READING_DATE, two-digit year
+        ("01-JUL-24", "2024-07-01"),
+        ("03-JUL-2026 16:31:59", "2026-07-03"),  # BILL_CRE_DTTM, carries a time
+        ("12-DEC-3333", "3333-12-12"),   # BILL_AFTER_DATE sentinel, must survive
+        ("2026-07-03", "2026-07-03"),
+        ("25-10-1989", "1989-10-25"),
+    ],
+)
+def test_date_expression_parses_every_format_in_the_master_data(stored: str, expected: str) -> None:
+    # "18-JUN-26" used to parse as year 26, so filters on the reading dates
+    # matched nothing at all -- silently, with no error for the operator to see.
+    duckdb = pytest.importorskip("duckdb")
+    expression = QueryBuilderService._duckdb_date_expression("v")
+    with duckdb.connect() as con:
+        parsed = con.execute(
+            f"SELECT {expression} FROM (SELECT ? AS v)", [stored]
+        ).fetchone()[0]
+    assert parsed.isoformat() == expected
+
+
+def test_doc_is_recognised_as_a_date_column() -> None:
+    # Date of connection: a real date whose name contains neither DATE nor TIME.
+    assert QueryBuilderService._is_date_like_column("DOC")
+    assert QueryBuilderService._is_date_like_column("MERCADOS.CM_MASTER_DATA_JUL_2026_DVVNL.DOC")
+    assert QueryBuilderService._is_date_like_column("BILL_CRE_DTTM")
+
+
+def test_due_date_rebate_is_not_treated_as_a_date() -> None:
+    # It is a rupee amount. Treating it as a date blocked numeric filtering.
+    assert not QueryBuilderService._is_date_like_column("DUE_DATE_REBATE")
+
+
+def test_due_date_rebate_filters_numerically() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="DUE_DATE_REBATE", operator="<", value="-1000")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRY_CAST(t0.\"DUE_DATE_REBATE\" AS DOUBLE) < ?" in sql
+    assert params == [-1000.0]
+
+
+def test_doc_filter_uses_the_date_path() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="DOC", operator=">=", value="2020-01-01")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "COALESCE(" in sql
+    assert ">= DATE '2020-01-01'" in sql
+    assert params == []
+
+
 def test_contains_on_a_date_column_matches_the_raw_text() -> None:
     # Marcadose keeps most dates in VARCHAR2, so operators search them by
     # substring ("every bill in 07/2026"). CONTAINS must pattern against the
