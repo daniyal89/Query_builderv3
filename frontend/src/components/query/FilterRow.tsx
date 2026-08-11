@@ -9,6 +9,7 @@ import React, { useMemo } from "react";
 import type { FilterCondition, FilterOperator, QueryColumnOption } from "../../types/query.types";
 import { SearchableSelect } from "./SearchableSelect";
 import {
+  DATE_TEXT_OPERATORS,
   NO_VALUE_OPERATORS,
   getColumnFamily,
   getOperatorsForColumn,
@@ -47,7 +48,11 @@ export const FilterRow: React.FC<FilterRowProps> = ({ condition, columns, onChan
 
   const isDate = getColumnFamily(selectedColumn?.dtype, selectedColumn?.columnName || selectedColumn?.label || selectedColumn?.key) === "date";
   const isSingleValue = !operator.includes("BETWEEN") && !operator.includes("IN");
-  const inputType = isDate && isSingleValue ? "date" : "text";
+  // Text matching needs a free-text box even on a date column, because the
+  // operator searches the stored text rather than a parsed date -- a date
+  // picker cannot express a partial value like "07/2026".
+  const isTextMatch = DATE_TEXT_OPERATORS.includes(operator);
+  const inputType = isDate && isSingleValue && !isTextMatch ? "date" : "text";
 
   const handleColumnChange = (columnName: string) => {
     const nextColumn = columns.find((column) => column.key === columnName);

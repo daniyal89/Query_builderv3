@@ -22,6 +22,25 @@ export const RANGE_OPERATORS: FilterOperator[] = [
   "IN",
   "NOT IN",
 ];
+/**
+ * Text matching that also works on a date-like column.
+ *
+ * Marcadose stores most of its dates as VARCHAR2, so substring matching on them
+ * is genuinely useful ("every bill in 07/2026"). The backend handles these four
+ * in its FRIENDLY_TEXT_OPERATORS branch, which patterns against the raw column
+ * and never consults the date parsing, so they behave the same on a date column
+ * as on any other.
+ *
+ * LIKE/NOT LIKE are deliberately absent: for a date-like column the backend
+ * routes them through the date-literal path instead, which demands a YYYY-MM-DD
+ * value and cannot express a pattern.
+ */
+export const DATE_TEXT_OPERATORS: FilterOperator[] = [
+  "CONTAINS",
+  "NOT CONTAINS",
+  "STARTS WITH",
+  "ENDS WITH",
+];
 
 export function getColumnFamily(dtype?: string, columnName?: string): "text" | "number" | "date" | "boolean" | "other" {
   const normalizedType = dtype?.toUpperCase() ?? "";
@@ -40,7 +59,8 @@ export function getColumnFamily(dtype?: string, columnName?: string): "text" | "
 export function getOperatorsForColumn(column?: QueryColumnOption): FilterOperator[] {
   const family = getColumnFamily(column?.dtype, column?.columnName || column?.label || column?.key);
   if (family === "text") return [...COMMON_OPERATORS, ...TEXT_OPERATORS];
-  if (family === "number" || family === "date") return [...COMMON_OPERATORS, ...RANGE_OPERATORS];
+  if (family === "date") return [...COMMON_OPERATORS, ...RANGE_OPERATORS, ...DATE_TEXT_OPERATORS];
+  if (family === "number") return [...COMMON_OPERATORS, ...RANGE_OPERATORS];
   if (family === "boolean") return [...COMMON_OPERATORS, "IN", "NOT IN"];
   return [...COMMON_OPERATORS, ...RANGE_OPERATORS];
 }

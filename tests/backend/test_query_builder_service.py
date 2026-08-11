@@ -431,6 +431,38 @@ def test_duckdb_date_like_column_uses_flexible_date_parsing_expression() -> None
     assert params == []
 
 
+def test_contains_on_a_date_column_matches_the_raw_text() -> None:
+    # Marcadose keeps most dates in VARCHAR2, so operators search them by
+    # substring ("every bill in 07/2026"). CONTAINS must pattern against the
+    # stored text rather than being pushed through the date-literal path, which
+    # would reject anything that is not YYYY-MM-DD.
+    payload = QueryPayload(
+        engine="oracle",
+        table="MERCADOS.CM_MASTER_DATA_JUL_2026_DVVNL",
+        filters=[FilterCondition(column="LAST_BILL_DATE", operator="CONTAINS", value="07/2026")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRIM(t0.\"LAST_BILL_DATE\") LIKE" in sql
+    assert "COALESCE(" not in sql
+    assert "DATE '" not in sql
+    assert params == ["%07/2026%"]
+
+
+def test_starts_with_on_a_date_column_escapes_wildcards_in_the_value() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="BILL_DATE", operator="STARTS WITH", value="01%")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert "TRIM(t0.\"BILL_DATE\") LIKE ? ESCAPE '\\'" in sql
+    assert params == ["01\\%%"]
+
+
 def test_duckdb_numeric_comparison_casts_varchar_like_column() -> None:
     payload = QueryPayload(
         engine="duckdb",
