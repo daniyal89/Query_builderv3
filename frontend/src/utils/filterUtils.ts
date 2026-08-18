@@ -54,6 +54,29 @@ export const EXPLICIT_DATE_COLUMNS = new Set(["DOC", "BILL_CRE_DTTM", "LAST_OK_S
 /** Columns whose names contain DATE but hold something else (see the backend). */
 export const EXPLICIT_NON_DATE_COLUMNS = new Set(["DUE_DATE_REBATE"]);
 
+/**
+ * Columns exported as VARCHAR that actually hold numbers.
+ *
+ * Without this they classify as text, which offers no >, <, >=, <= or BETWEEN,
+ * so a load or amount range cannot be expressed at all -- even though the
+ * backend has always handled those numerically on DuckDB.
+ *
+ * Kept in step with NUMERIC_TEXT_COLUMNS in query_builder_service.py.
+ */
+export const NUMERIC_TEXT_COLUMNS = new Set([
+  "TOTAL_AMT",
+  "LOAD_KW",
+  "CONSUMPTION_PREV_MNTH",
+  "CONSUMPTION_PREV_TO_PREV_MNTH",
+  "LOOMS_GRTRTHN_60",
+  "LOOMS_LESSTHN_60",
+  "MET_FAULTY_CNT",
+  "NO_OF_AC",
+  "METER_VOLTAGE",
+  "LAT",
+  "LON",
+]);
+
 export function getColumnFamily(dtype?: string, columnName?: string): "text" | "number" | "date" | "boolean" | "other" {
   const normalizedType = dtype?.toUpperCase() ?? "";
   const normalizedName = columnName?.toUpperCase() ?? "";
@@ -63,6 +86,7 @@ export function getColumnFamily(dtype?: string, columnName?: string): "text" | "
     return /(INT|DECIMAL|NUMERIC|NUMBER|DOUBLE|FLOAT|REAL)/.test(normalizedType) ? "number" : "text";
   }
   if (EXPLICIT_DATE_COLUMNS.has(bareName)) return "date";
+  if (NUMERIC_TEXT_COLUMNS.has(bareName)) return "number";
   if (/(DATE|TIME|TIMESTAMP)/.test(normalizedName)) return "date";
 
   if (!normalizedType) return "other";

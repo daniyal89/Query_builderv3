@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -528,6 +531,56 @@ def test_starts_with_on_a_date_column_escapes_wildcards_in_the_value() -> None:
 
     assert "TRIM(t0.\"BILL_DATE\") LIKE ? ESCAPE '\\'" in sql
     assert params == ["01\\%%"]
+
+
+def test_supply_type_is_not_numeric_despite_looking_it() -> None:
+    # 99.756% of SUPPLY_TYPE casts to a number, but the other 112,806 rows hold
+    # codes like '62TA' and 'H12'. Casting would turn those into NULL and drop
+    # them from every filter without a word.
+    assert not QueryBuilderService._is_numeric_text_column("SUPPLY_TYPE")
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["ACCT_ID", "KNO", "MOBILE_NO", "GOVT_CODE", "VILLAGE_CODE", "MTR_EXCEP_CD"],
+)
+def test_identifier_columns_are_not_numeric(column: str) -> None:
+    # Fully numeric, but they are identities rather than measures: comparing
+    # them as numbers would make '05004' equal 5004.
+    assert not QueryBuilderService._is_numeric_text_column(column)
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "LOAD_KW", "TOTAL_AMT", "CONSUMPTION_PREV_MNTH",
+        "CONSUMPTION_PREV_TO_PREV_MNTH", "METER_VOLTAGE", "NO_OF_AC", "LAT", "LON",
+    ],
+)
+def test_measure_columns_are_numeric(column: str) -> None:
+    assert QueryBuilderService._is_numeric_text_column(column)
+    assert QueryBuilderService._is_numeric_text_column(f"MERCADOS.CM_MASTER.{column}")
+
+
+def test_frontend_and_backend_column_lists_agree() -> None:
+    """The same three lists exist in TypeScript; drift breaks the UI silently.
+
+    If the frontend thinks a column is text while the backend treats it as a
+    number, the filter panel hides operators the backend would have accepted --
+    exactly the LOAD_KW bug this fixes.
+    """
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "utils" / "filterUtils.ts"
+    ).read_text(encoding="utf-8")
+
+    def ts_set(name: str) -> set[str]:
+        match = re.search(rf"export const {name} = new Set\(\[(.*?)\]\)", source, re.S)
+        assert match, f"{name} not found in filterUtils.ts"
+        return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+    assert ts_set("NUMERIC_TEXT_COLUMNS") == set(QueryBuilderService.NUMERIC_TEXT_COLUMNS)
+    assert ts_set("EXPLICIT_DATE_COLUMNS") == set(QueryBuilderService.EXPLICIT_DATE_COLUMNS)
+    assert ts_set("EXPLICIT_NON_DATE_COLUMNS") == set(QueryBuilderService.EXPLICIT_NON_DATE_COLUMNS)
 
 
 def test_equality_on_a_numeric_text_column_compares_numbers() -> None:

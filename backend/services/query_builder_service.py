@@ -28,7 +28,28 @@ class QueryBuilderService:
     #: sorting by amount compared '900' against '10000' as text and returned the
     #: wrong top rows. The ~70 MERCADOS_SCHEMA NUMBER columns are real DOUBLEs and
     #: need no help.
-    NUMERIC_TEXT_COLUMNS = frozenset({"TOTAL_AMT", "LOAD_KW"})
+    #:
+    #: Every entry was measured over all 522 parquet files of the July 2026
+    #: export (46.4M rows) and is 100% castable. That bar matters: a column that
+    #: is merely *mostly* numeric would have its remaining values cast to NULL
+    #: and silently disappear from every filter. SUPPLY_TYPE is the cautionary
+    #: case -- 99.756% numeric, but the other 112,806 rows hold codes like
+    #: '62TA' and 'H12', so it stays text. Identifiers (ACCT_ID, KNO, MOBILE_NO,
+    #: GOVT_CODE, VILLAGE_CODE) are excluded on purpose: they are fully numeric
+    #: but comparing them as numbers would make '05004' match 5004.
+    NUMERIC_TEXT_COLUMNS = frozenset({
+        "TOTAL_AMT",
+        "LOAD_KW",
+        "CONSUMPTION_PREV_MNTH",
+        "CONSUMPTION_PREV_TO_PREV_MNTH",
+        "LOOMS_GRTRTHN_60",
+        "LOOMS_LESSTHN_60",
+        "MET_FAULTY_CNT",
+        "NO_OF_AC",
+        "METER_VOLTAGE",
+        "LAT",
+        "LON",
+    })
     REPORT_VALUE_ALIAS = "__REPORT_VALUE__"
     AI_HELPER_COMMENT_START = "/* AI_CONTEXT"
     AI_HELPER_COMMENT_END = "*/"

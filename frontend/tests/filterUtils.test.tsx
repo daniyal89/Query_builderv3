@@ -99,15 +99,45 @@ describe("getColumnFamily", () => {
     expect(operators).toContain("<");
   });
 
+  it("offers range operators on LOAD_KW even though it is VARCHAR", () => {
+    // LOAD_KW holds numbers in a text column. Classified as text it offered no
+    // >, <, >= or BETWEEN at all, so a load range could not be expressed --
+    // even though the backend had always handled those numerically.
+    const operators = getOperatorsForColumn(column("LOAD_KW", "VARCHAR2"));
+    expect(operators).toContain(">");
+    expect(operators).toContain("<=");
+    expect(operators).toContain("BETWEEN");
+  });
+
+  it.each(["TOTAL_AMT", "CONSUMPTION_PREV_MNTH", "METER_VOLTAGE", "LAT", "LON"])(
+    "treats %s as numeric",
+    (name) => {
+      expect(getColumnFamily("VARCHAR", name)).toBe("number");
+    }
+  );
+
+  it("leaves SUPPLY_TYPE as text", () => {
+    // 99.756% of its values are numeric, but 112,806 rows hold codes like
+    // '62TA'. Numeric handling would drop those rows silently.
+    expect(getColumnFamily("VARCHAR", "SUPPLY_TYPE")).toBe("text");
+  });
+
+  it("leaves identifier columns as text", () => {
+    expect(getColumnFamily("VARCHAR", "ACCT_ID")).toBe("text");
+    expect(getColumnFamily("VARCHAR", "MOBILE_NO")).toBe("text");
+  });
+
   it("does not recognise Oracle's NUMBER type", () => {
     // Documenting a known gap rather than asserting it is correct: the numeric
     // regex matches NUMERIC but not NUMBER, so every Oracle number column lands
     // in "other". Harmless today because "other" and "number" yield the same
     // operators and no caller distinguishes them -- but it will bite anyone who
     // starts branching on "number".
-    expect(getColumnFamily("NUMBER", "TOTAL_AMT")).toBe("other");
-    expect(getOperatorsForColumn(column("TOTAL_AMT", "NUMBER"))).toEqual(
-      getOperatorsForColumn(column("TOTAL_AMT", "BIGINT"))
+    // BILLED_AMOUNT is a real Oracle NUMBER column and is in none of the
+    // explicit lists, so it exercises the type regex on its own.
+    expect(getColumnFamily("NUMBER", "BILLED_AMOUNT")).toBe("other");
+    expect(getOperatorsForColumn(column("BILLED_AMOUNT", "NUMBER"))).toEqual(
+      getOperatorsForColumn(column("BILLED_AMOUNT", "BIGINT"))
     );
   });
 });
