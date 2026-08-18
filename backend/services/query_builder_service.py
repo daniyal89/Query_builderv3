@@ -87,8 +87,24 @@ class QueryBuilderService:
     EXPLICIT_NON_DATE_COLUMNS = frozenset({"DUE_DATE_REBATE"})
 
     @staticmethod
+    def _bare_column_name(column_name: str) -> str:
+        return column_name.upper().rpartition(".")[2].strip('"')
+
+    @staticmethod
+    def _is_numeric_text_column(column_name: str) -> bool:
+        """Does this column hold numbers in a VARCHAR?
+
+        LOAD_KW and TOTAL_AMT are exported as text, so comparing them as text
+        silently answers the wrong question: '10' sorts below '5', and '5' does
+        not equal '5.0'. The check is by column rather than by the value the
+        operator typed, because casting any column whose value merely looks
+        numeric would break identifiers -- ACCT_ID = '0123' must not match 123.
+        """
+        return QueryBuilderService._bare_column_name(column_name) in QueryBuilderService.NUMERIC_TEXT_COLUMNS
+
+    @staticmethod
     def _is_date_like_column(column_name: str) -> bool:
-        bare = column_name.upper().rpartition(".")[2].strip('"')
+        bare = QueryBuilderService._bare_column_name(column_name)
         if bare in QueryBuilderService.EXPLICIT_NON_DATE_COLUMNS:
             return False
         if bare in QueryBuilderService.EXPLICIT_DATE_COLUMNS:
@@ -461,12 +477,18 @@ class QueryBuilderService:
                 operator = "IN" if operator == "=" else "NOT IN"
 
         use_date_literals = QueryBuilderService._is_date_like_column(column_name)
+        is_numeric_text = QueryBuilderService._is_numeric_text_column(column_name)
         numeric_value = QueryBuilderService._to_float_if_numeric(filter_condition.value)
         should_use_numeric_cast = (
             engine == "duckdb"
             and not use_date_literals
-            and operator in QueryBuilderService.NUMERIC_COMPARISON_OPERATORS
             and numeric_value is not None
+            and (
+                operator in QueryBuilderService.NUMERIC_COMPARISON_OPERATORS
+                # Equality on a numeric column has to compare numbers too, or
+                # LOAD_KW = 5 misses every row stored as "5.0".
+                or (is_numeric_text and operator in ("=", "!="))
+            )
         )
         filter_column_expr = (
             f"TRY_CAST({column_expr} AS DOUBLE)" if should_use_numeric_cast else f"TRIM({column_expr})"
@@ -487,6 +509,23 @@ class QueryBuilderService:
             if use_date_literals:
                 literals = ", ".join(QueryBuilderService._date_literal(value) for value in values)
                 return f"{date_filter_expr} {operator} ({literals})", []
+            numeric_values = [QueryBuilderService._to_float_if_numeric(v) for v in values]
+            if (
+                engine == "duckdb"
+                and is_numeric_text
+                and all(n is not None for n in numeric_values)
+            ):
+                # Same reasoning as equality: an IN list on a numeric column has
+                # to match numbers, not their spelling.
+                numeric_col = f"TRY_CAST({column_expr} AS DOUBLE)"
+                if start_param_index == -1:
+                    placeholders = ", ".join(str(n) for n in numeric_values)
+                else:
+                    placeholders = ", ".join(
+                        QueryBuilderService._build_placeholders(engine, len(numeric_values), start_param_index)
+                    )
+                    params.extend(numeric_values)
+                return f"{numeric_col} {operator} ({placeholders})", params
             else:
                 # Wrap column with UPPER(TRIM(CAST(... AS VARCHAR(255)))) and uppercase
                 # the values for robust case-insensitive matching.

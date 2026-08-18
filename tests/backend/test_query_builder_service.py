@@ -530,6 +530,65 @@ def test_starts_with_on_a_date_column_escapes_wildcards_in_the_value() -> None:
     assert params == ["01\\%%"]
 
 
+def test_equality_on_a_numeric_text_column_compares_numbers() -> None:
+    # LOAD_KW is exported as VARCHAR. Compared as text, "5" does not equal
+    # "5.0", so the operator silently loses rows.
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="LOAD_KW", operator="=", value="5")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert 'TRY_CAST(t0."LOAD_KW" AS DOUBLE) = ?' in sql
+    assert params == [5.0]
+
+
+def test_in_list_on_a_numeric_text_column_compares_numbers() -> None:
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="LOAD_KW", operator="IN", value="5, 10")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert 'TRY_CAST(t0."LOAD_KW" AS DOUBLE) IN (?, ?)' in sql
+    assert params == [5.0, 10.0]
+
+
+def test_equality_on_an_identifier_column_stays_textual() -> None:
+    # The guard that keeps the fix safe: casting any column whose value merely
+    # looks numeric would make ACCT_ID = '0123' match 123, silently widening
+    # an exact-identifier lookup.
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="ACCT_ID", operator="=", value="0123")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert 'TRIM(t0."ACCT_ID") = ?' in sql
+    assert "AS DOUBLE" not in sql
+    assert params == ["0123"]
+
+
+def test_contains_on_a_numeric_text_column_still_matches_text() -> None:
+    # Substring search is a text question even on a numeric column.
+    payload = QueryPayload(
+        engine="duckdb",
+        table="master",
+        filters=[FilterCondition(column="LOAD_KW", operator="CONTAINS", value="5")],
+    )
+
+    sql, params = QueryBuilderService.build_sql(payload)
+
+    assert 'TRIM(t0."LOAD_KW") LIKE ?' in sql
+    assert params == ["%5%"]
+
+
 def test_duckdb_numeric_comparison_casts_varchar_like_column() -> None:
     payload = QueryPayload(
         engine="duckdb",
