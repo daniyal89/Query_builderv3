@@ -5,11 +5,25 @@ from backend.models.ftp_download import (
     FTPDownloadRequest,
     FTPDownloadStartResponse,
     FTPDownloadStatusResponse,
+    FTPProfilesSummaryResponse,
 )
 from backend.services.ftp_download_service import FTPDownloadService
+from backend.services.ftp_profiles import configured_profile_summary, resolve_profile_passwords
 from backend.utils.rate_limits import enforce_rate_limit
 
 router = APIRouter()
+
+
+@router.get(
+    "/ftp-download/profiles",
+    response_model=FTPProfilesSummaryResponse,
+    summary="Which FTP profiles have a server-side password configured",
+)
+def get_ftp_profiles() -> FTPProfilesSummaryResponse:
+    try:
+        return FTPProfilesSummaryResponse(**configured_profile_summary())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(
@@ -20,6 +34,9 @@ router = APIRouter()
 def start_ftp_download(request: Request, payload: FTPDownloadRequest) -> FTPDownloadStartResponse:
     try:
         enforce_rate_limit(request, "ftp_download_start")
+        # A blank password means "use the one configured on the server". Resolved
+        # here, after validation, so the browser never has to hold a password.
+        profiles = resolve_profile_passwords(payload.profiles)
         result = FTPDownloadService.start_download(
             host=payload.host,
             port=payload.port,
@@ -31,7 +48,7 @@ def start_ftp_download(request: Request, payload: FTPDownloadRequest) -> FTPDown
             timeout_seconds=payload.timeout_seconds,
             passive_mode=payload.passive_mode,
             skip_existing=payload.skip_existing,
-            profiles=payload.profiles,
+            profiles=profiles,
         )
         return FTPDownloadStartResponse(**result)
     except (HTTPException, StarletteHTTPException):

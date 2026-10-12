@@ -1,7 +1,8 @@
 export interface FTPDownloadProfile {
   name: string;
   username: string;
-  password: string;
+  /** Blank means "use the password configured on the server". */
+  password?: string;
   remote_dir: string;
   local_subfolder?: string | null;
 }

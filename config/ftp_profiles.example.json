@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to ftp_profiles.json (gitignored) and fill in the real passwords. Read only by the backend; never returned by the API or stored in the job store.",
+  "host": "ftp.uppclonline.com",
+  "port": 21,
+  "profiles": {
+    "MVVNL": { "username": "mvftpreport", "password": "CHANGE-ME" },
+    "DVVNL": { "username": "dvftpreport", "password": "CHANGE-ME" },
+    "PVVNL": { "username": "pvftpreport", "password": "CHANGE-ME" },
+    "PuVNL": { "username": "puftpreport", "password": "CHANGE-ME" },
+    "KESCO": { "username": "ksftpreport", "password": "CHANGE-ME" }
+  }
+}

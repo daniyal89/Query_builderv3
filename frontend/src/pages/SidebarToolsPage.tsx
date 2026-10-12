@@ -19,6 +19,7 @@ import {
 } from "../api/sidebarToolsApi";
 import { pickSystemFile, pickSystemFolder, pickSystemSavePath } from "../api/systemApi";
 import { StatusAlert } from "../components/common/StatusAlert";
+import { MonthlyRunCard } from "../components/sidebar/MonthlyRunCard";
 import { RowReconciliation } from "../components/sidebar/RowReconciliation";
 import { SkippedFiles } from "../components/sidebar/SkippedFiles";
 
@@ -952,6 +953,9 @@ export const SidebarToolsPage: React.FC = () => {
           <span className="inline-flex items-center rounded bg-blue-50 px-3 py-1.5 text-xs text-blue-700">
             {statusNote}
           </span>
+        </div>
+        <div className="mt-4">
+          <MonthlyRunCard />
         </div>
         <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-sm font-semibold text-slate-800">UPPCL preset path settings</p>

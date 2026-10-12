@@ -98,7 +98,7 @@ class FTPDownloadService:
                 "timeout_seconds": timeout_seconds,
                 "passive_mode": passive_mode,
                 "skip_existing": skip_existing,
-                "profiles": [profile.model_dump(mode="json") for profile in profiles],
+                "profiles": [profile.model_dump(mode="json", exclude={"password"}) for profile in profiles],
             },
             policy=cls.JOB_POLICY,
             worker=lambda running_job_id: cls._run_download_job(
@@ -398,7 +398,7 @@ class FTPDownloadService:
             raise ValueError("Each FTP profile must have a name.")
         if not profile.username.strip():
             raise ValueError(f"FTP username is required for profile '{profile_name}'.")
-        if not profile.password.strip():
+        if not (profile.password or "").strip():
             raise ValueError(f"FTP password is required for profile '{profile_name}'.")
         if not profile.remote_dir.strip():
             raise ValueError(f"Remote folder is required for profile '{profile_name}'.")

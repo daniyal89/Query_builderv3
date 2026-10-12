@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { getFtpDownloadStatus, startFtpDownload, stopFtpDownload } from "../api/ftpApi";
+import { getFtpDownloadStatus, getFtpProfiles, startFtpDownload, stopFtpDownload } from "../api/ftpApi";
 import { pickSystemFolder } from "../api/systemApi";
 import type {
   FTPDownloadProfile,
@@ -56,14 +56,6 @@ const DEFAULT_PRESET_USERS: Record<string, string> = {
   PVVNL: "pvftpreport",
   PuVNL: "puftpreport",
   KESCO: "ksftpreport",
-};
-
-const DEFAULT_PRESET_PASSWORDS: Record<string, string> = {
-  MVVNL: "Mvftp@321",
-  DVVNL: "Dvftp@321",
-  PVVNL: "Pvftp@321",
-  PuVNL: "Puftp@321",
-  KESCO: "Ksftp@321",
 };
 
 const DISCOM_ORDER = ["MVVNL", "DVVNL", "PVVNL", "PuVNL", "KESCO"];
@@ -137,7 +129,7 @@ function buildPeriodProfiles(presetKind: PresetKind, masterMonthInput: string, b
     return DISCOM_ORDER.map((name) => ({
       name,
       username: DEFAULT_PRESET_USERS[name],
-      password: DEFAULT_PRESET_PASSWORDS[name],
+      password: "",
       remote_dir: `/01-MASTER_DATA/${monthToken}/`,
       local_subfolder: `${monthToken}/${name}`,
     }));
@@ -148,7 +140,7 @@ function buildPeriodProfiles(presetKind: PresetKind, masterMonthInput: string, b
   return DISCOM_ORDER.map((name) => ({
     name,
     username: DEFAULT_PRESET_USERS[name],
-    password: DEFAULT_PRESET_PASSWORDS[name],
+    password: "",
     remote_dir: `/03_CSV_BILLED/${dateToken}/`,
     local_subfolder: `${localMonthToken}/${dateToken}/${name}`,
   }));
@@ -317,6 +309,28 @@ export const FtpDownloadPage: React.FC = () => {
   const [jobId, setJobId] = useState<string | null>(initialJobState.jobId);
   const [status, setStatus] = useState<FTPDownloadStatusResponse | null>(initialJobState.status);
   const [nowMs, setNowMs] = useState<number>(Date.now());
+  // Profiles whose password lives in config/ftp_profiles.json on the server. For
+  // those the form may leave the password blank; the backend fills it in.
+  const [serverProfileNames, setServerProfileNames] = useState<Set<string>>(new Set());
+  const [serverProfilesPath, setServerProfilesPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getFtpProfiles()
+      .then((summary) => {
+        if (cancelled) return;
+        setServerProfileNames(new Set(summary.profiles.map((item) => item.name.trim().toUpperCase())));
+        setServerProfilesPath(summary.path);
+      })
+      .catch(() => {
+        if (!cancelled) setServerProfileNames(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const hasServerPassword = (profile: FTPDownloadProfile) => serverProfileNames.has(profile.name.trim().toUpperCase());
 
   useEffect(() => {
     const formState: PageFormState = {
@@ -334,7 +348,9 @@ export const FtpDownloadPage: React.FC = () => {
       masterMonthInput,
       billedDateInput,
       billedLocalMonthInput,
-      profiles,
+      // Never persist a password: the five DISCOM ones live on the server now,
+      // and localStorage is readable by anything that can open the profile.
+      profiles: profiles.map((profile) => ({ ...profile, password: "" })),
     };
     window.localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(formState));
   }, [host, port, outputRoot, fileSuffix, maxWorkers, maxRetries, retryDelaySeconds, timeoutSeconds, passiveMode, skipExisting, selectedPresetKind, masterMonthInput, billedDateInput, billedLocalMonthInput, profiles]);
@@ -398,10 +414,14 @@ export const FtpDownloadPage: React.FC = () => {
     const hasHost = host.trim() !== "";
     const hasOutput = outputRoot.trim() !== "";
     const hasValidProfiles = profiles.every(
-      (profile) => profile.name.trim() !== "" && profile.username.trim() !== "" && profile.password.trim() !== "" && profile.remote_dir.trim() !== "",
+      (profile) =>
+        profile.name.trim() !== "" &&
+        profile.remote_dir.trim() !== "" &&
+        ((profile.password ?? "").trim() !== "" ? profile.username.trim() !== "" : hasServerPassword(profile)),
     );
     return hasHost && hasOutput && hasValidProfiles && !isLoading;
-  }, [host, outputRoot, profiles, isLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [host, outputRoot, profiles, isLoading, serverProfileNames]);
 
   const updateProfile = (index: number, field: keyof FTPDownloadProfile, value: string) => {
     setProfiles((current) => current.map((profile, currentIndex) => (currentIndex === index ? { ...profile, [field]: value } : profile)));
@@ -683,7 +703,7 @@ export const FtpDownloadPage: React.FC = () => {
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Profile name</label><input type="text" value={profile.name} onChange={(event) => updateProfile(index, "name", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Username</label><input type="text" value={profile.username} onChange={(event) => updateProfile(index, "username", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
-                  <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Password</label><input type="password" value={profile.password} onChange={(event) => updateProfile(index, "password", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
+                  <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Password</label><input type="password" value={profile.password ?? ""} placeholder={hasServerPassword(profile) ? "configured on the server" : ""} onChange={(event) => updateProfile(index, "password", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" />{hasServerPassword(profile) && (profile.password ?? "") === "" && <p className="mt-1 text-xs text-emerald-700">Password is configured on the server{serverProfilesPath ? ` (${serverProfilesPath})` : ""}.</p>}</div>
                   <div className="xl:col-span-2"><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Remote folder</label><input type="text" value={profile.remote_dir} onChange={(event) => updateProfile(index, "remote_dir", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                   <div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">Local subfolder</label><input type="text" value={profile.local_subfolder ?? ""} onChange={(event) => updateProfile(index, "local_subfolder", event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
                 </div>

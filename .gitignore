@@ -52,3 +52,5 @@ csv_to_prequat.py
 .pytest_tmp/
 test-tmp/
 runtime/
+config/ftp_profiles.json
+config/monthly_automation.json

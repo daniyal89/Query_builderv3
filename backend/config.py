@@ -28,6 +28,18 @@ def _resolve_runtime_dir() -> Path:
     return _resolve_base_dir() / "runtime"
 
 
+def _resolve_config_dir() -> Path:
+    """Where operator-supplied files live: OAuth client JSON, FTP profiles, automation settings.
+
+    Beside the exe when frozen, so a rebuilt exe keeps its configuration; the
+    repo's ``config/`` folder in dev. Never inside ``_MEIPASS``, which is
+    recreated on every launch.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "config"
+    return _resolve_base_dir() / "config"
+
+
 def _candidate_env_paths() -> list[Path]:
     base = _resolve_base_dir()
     return [base / ".env", base / "backend" / ".env", Path.cwd() / ".env"]
@@ -67,6 +79,10 @@ class Settings(BaseSettings):
     RUNTIME_DIR: Path = _resolve_runtime_dir()
     JOB_STORE_PATH: Path = RUNTIME_DIR / "job_store.sqlite3"
     JOB_RECOVER_INTERRUPTED: bool = True
+    CONFIG_DIR: Path = _resolve_config_dir()
+    #: One JSON marker per month recording which monthly-run steps completed,
+    #: so a re-run resumes instead of repeating a 9 GB upload.
+    MONTHLY_RUNS_DIR: Path = RUNTIME_DIR / "monthly_runs"
 
     model_config = SettingsConfigDict(
         env_prefix="DASHBOARD_",

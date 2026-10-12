@@ -1,0 +1,16 @@
+{
+  "_comment": "Copy to monthly_automation.json (gitignored), or edit from Data Tools > Monthly master run > Settings. Every month folder is derived: <csv_root>/JUL_2026, <parquet_root>/JUL_2026, Master_0726, MASTER_DATA_2026_07.",
+  "ftp_host": "ftp.uppclonline.com",
+  "ftp_port": 21,
+  "ftp_remote_template": "/01-MASTER_DATA/{MON}_{YYYY}/",
+  "discoms": ["MVVNL", "DVVNL", "PVVNL", "PuVNL", "KESCO"],
+  "csv_root": "G:/MASTER",
+  "parquet_root": "G:/MASTER_PARQUET",
+  "db_path": "G:/MASTER/uppcl_latest.duckdb",
+  "object_type": "VIEW",
+  "compression": "snappy",
+  "drive_parent_folder_id": "1fJFN1orOrMaKtjDTX6oWdT0FGYX2Gvng",
+  "drive_root_name_template": "MASTER_DATA_{YYYY}_{MM}",
+  "drive_max_workers": 3,
+  "ftp_max_workers": 3
+}

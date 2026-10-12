@@ -15,6 +15,7 @@ from backend.api.endpoints import (
     importer,
     local_object,
     merge,
+    monthly_run,
     oracle,
     query,
     schema,
@@ -38,3 +39,4 @@ api_router.include_router(ftp_download.router, tags=["FTP Download"])
 api_router.include_router(google_drive.router, tags=["Google Drive"])
 api_router.include_router(sidebar_tools.router, tags=["Sidebar Tools"])
 api_router.include_router(alter_db.router, tags=["Alter DB"])
+api_router.include_router(monthly_run.router, tags=["Automation"])

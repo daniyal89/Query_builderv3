@@ -314,6 +314,33 @@ class PersistentJobStore:
             for row in rows
         ]
 
+    def list_jobs(
+        self,
+        job_type: str | None = None,
+        statuses: list[str] | tuple[str, ...] | frozenset[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Raw records, payload included, newest first."""
+        self.ensure_schema()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if job_type:
+            clauses.append("job_type = ?")
+            params.append(job_type)
+        if statuses:
+            wanted = tuple(statuses)
+            clauses.append(f"status IN ({', '.join('?' for _ in wanted)})")
+            params.extend(wanted)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            db_path = self._resolve_path()
+            with self._connect_locked(db_path) as conn:
+                rows = conn.execute(
+                    f"SELECT * FROM jobs {where} ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    (*params, max(1, int(limit))),
+                ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     def recover_interrupted_jobs(self) -> int:
         self.ensure_schema()
         recovery_message = "Application restarted before the background job finished. Re-run the job manually."
@@ -581,6 +608,25 @@ class PersistentJobRuntime:
     def list_dead_letters(self, limit: int = 50) -> list[dict[str, Any]]:
         self.initialize()
         return self._store.list_dead_letters(limit=limit)
+
+    def list_jobs(
+        self,
+        job_type: str | None = None,
+        statuses: list[str] | tuple[str, ...] | frozenset[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        self.initialize()
+        return self._store.list_jobs(job_type=job_type, statuses=statuses, limit=limit)
+
+    def active_jobs(self, job_type: str) -> list[dict[str, Any]]:
+        """Jobs of this type that are queued, running or cancelling, newest first.
+
+        The single-instance guard: a second monthly run must not start while one
+        is in flight, and the scheduler must not pile a run on top of a manual one.
+        """
+        self.initialize()
+        records = self._store.list_jobs(job_type=job_type, statuses=RECOVERABLE_JOB_STATUSES)
+        return [self._store._combine_record(record) for record in records]
 
     def _run_job(self, job_id: str, worker: Worker, policy: BackgroundJobPolicy) -> None:
         try:

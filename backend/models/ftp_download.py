@@ -8,7 +8,10 @@ from backend.utils.path_safety import sanitize_local_path_input, validate_relati
 class FTPDownloadProfile(BaseModel):
     name: str = Field(..., description="Friendly label for the FTP profile, for example KESCO.")
     username: str = Field(..., description="FTP username.")
-    password: str = Field(..., description="FTP password.")
+    password: Optional[str] = Field(
+        default=None,
+        description="FTP password. Leave blank to use the one configured server-side in config/ftp_profiles.json.",
+    )
     remote_dir: str = Field(..., description="Remote FTP folder. Supports {DATE}, {MONTH}, {PROFILE}.")
     local_subfolder: Optional[str] = Field(
         default=None,
@@ -79,3 +82,18 @@ class FTPDownloadStatusResponse(BaseModel):
     error_message: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+
+
+class FTPConfiguredProfile(BaseModel):
+    name: str
+    username: str
+
+
+class FTPProfilesSummaryResponse(BaseModel):
+    """Which profiles have server-side passwords. Never carries a password."""
+
+    configured: bool
+    path: str
+    host: Optional[str] = None
+    port: Optional[int] = None
+    profiles: list[FTPConfiguredProfile] = Field(default_factory=list)

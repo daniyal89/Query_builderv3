@@ -26,3 +26,17 @@ export async function stopFtpDownload(jobId: string): Promise<FTPDownloadStatusR
   });
   return response.data;
 }
+
+export interface FTPProfilesSummary {
+  configured: boolean;
+  path: string;
+  host?: string | null;
+  port?: number | null;
+  profiles: { name: string; username: string }[];
+}
+
+/** Which profiles have a server-side password. Never returns a password. */
+export async function getFtpProfiles(): Promise<FTPProfilesSummary> {
+  const response = await apiClient.get<FTPProfilesSummary>("/ftp-download/profiles");
+  return response.data;
+}

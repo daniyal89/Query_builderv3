@@ -66,6 +66,16 @@ class _DriveJobCancelled(Exception):
     pass
 
 
+class DriveLoginRequiredError(ValueError):
+    """Raised instead of opening a browser when a run is unattended.
+
+    ``InstalledAppFlow.run_local_server`` blocks until someone completes the
+    consent screen. In a scheduled run nobody will, so the job would hang
+    forever with no error. Failing fast with a message that says what to do is
+    the only useful outcome.
+    """
+
+
 class GoogleDriveService:
     _logger = logging.getLogger("duckdb_dashboard")
     UPLOAD_JOB_TYPE = "google_drive.upload"
@@ -83,6 +93,7 @@ class GoogleDriveService:
         root_folder_name: Optional[str],
         skip_existing: bool,
         max_workers: int,
+        interactive: bool = True,
     ) -> dict[str, str]:
         source = Path(local_folder).expanduser()
         if not source.is_dir():
@@ -119,6 +130,7 @@ class GoogleDriveService:
                 root_folder_name,
                 skip_existing,
                 max_workers,
+                interactive,
             ),
         )
         return {"job_id": job_id, "status": "queued"}
@@ -535,8 +547,14 @@ class GoogleDriveService:
         service._rootDesc["rootUrl"] = normalized  # type: ignore[index]
         return service
 
+    LOGIN_REQUIRED_MESSAGE = (
+        "Google login is missing or has expired and this run is unattended, so it cannot open "
+        "the sign-in page. Open 'Upload master in Drive' once, click Sign in with Google, then "
+        "re-run."
+    )
+
     @classmethod
-    def _get_drive_service(cls, auth: DriveAuthConfig, *, apply_base_url: bool = True):
+    def _get_drive_service(cls, auth: DriveAuthConfig, *, apply_base_url: bool = True, interactive: bool = True):
         if auth.mode == "service_account":
             path = Path(auth.service_account_json_path or "").expanduser()
             if not path.is_file():
@@ -552,7 +570,14 @@ class GoogleDriveService:
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                try:
+                    creds.refresh(Request())
+                except Exception as exc:
+                    if not interactive:
+                        raise DriveLoginRequiredError(f"{cls.LOGIN_REQUIRED_MESSAGE} ({exc})") from exc
+                    raise
+            elif not interactive:
+                raise DriveLoginRequiredError(cls.LOGIN_REQUIRED_MESSAGE)
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(str(client_path), SCOPES)
                 creds = flow.run_local_server(port=0, prompt="consent")
@@ -623,11 +648,16 @@ class GoogleDriveService:
         root_folder_name: Optional[str],
         skip_existing: bool,
         max_workers: int,
+        interactive: bool = True,
     ) -> None:
         try:
             cls._raise_if_cancelled(job_id)
-            cls._update_job(job_id, status="running", message="Opening Google login if needed...")
-            service = cls._get_drive_service(auth)
+            cls._update_job(
+                job_id,
+                status="running",
+                message="Opening Google login if needed..." if interactive else "Checking Google login...",
+            )
+            service = cls._get_drive_service(auth, interactive=interactive)
             cls._raise_if_cancelled(job_id)
             root_name = root_folder_name.strip() if root_folder_name and root_folder_name.strip() else source.name
             root_drive_id = cls._create_or_get_folder(service, root_name, parent_folder_id)
@@ -669,7 +699,7 @@ class GoogleDriveService:
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 local_file, parent_id = item
-                worker_service = cls._get_drive_service(auth, apply_base_url=False)
+                worker_service = cls._get_drive_service(auth, apply_base_url=False, interactive=interactive)
                 if cls._is_cancelled(job_id):
                     raise _DriveJobCancelled()
                 mime_type, _ = mimetypes.guess_type(str(local_file))
