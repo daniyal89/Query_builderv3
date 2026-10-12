@@ -484,9 +484,16 @@ class MonthlyRunService:
         cls._set_step(job_id, "download", status="running", message="Checking the FTP server...", started_at=_now_iso())
         job_runtime.update_job(job_id, current_step="download")
 
+        # The credentials file may name the server too (an internal IP rather
+        # than the public hostname). When it does, it wins: whoever maintains
+        # the passwords knows which server they are for.
+        loaded = ftp_profiles.load_ftp_profiles()
+        host = loaded.host if loaded and loaded.host else config.ftp_host
+        port = loaded.port if loaded and loaded.port else config.ftp_port
+
         started = FTPDownloadService.start_download(
-            host=config.ftp_host,
-            port=config.ftp_port,
+            host=host,
+            port=port,
             output_root=config.csv_root,
             file_suffix=".gz",
             max_workers=config.ftp_max_workers,

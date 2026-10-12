@@ -291,18 +291,34 @@ def test_second_start_while_one_is_running_is_refused(harness: dict[str, Any]) -
         _wait_final(first["job_id"])
 
 
+def _wait_for_child(run_id: str, step: str, timeout: float = 5.0) -> str:
+    """Block until the run has started *step*'s child job and recorded its id.
+
+    Stopping before that point is a different (also valid) path -- the runtime
+    cancels the run before the worker ever starts -- but it is not the one this
+    test is about.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = job_runtime.get_job(run_id) or {}
+        child_id = ((job.get("steps") or {}).get(step) or {}).get("job_id")
+        if child_id:
+            return child_id
+        time.sleep(0.01)
+    raise AssertionError(f"{step} child never started: {job_runtime.get_job(run_id)}")
+
+
 def test_stop_cancels_the_run_and_its_children(harness: dict[str, Any]) -> None:
     hold = threading.Event()
     harness["state"]["hold"] = hold
     started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07"))
-    time.sleep(0.05)
+    child_id = _wait_for_child(started["job_id"], "download")
 
     svc.MonthlyRunService.stop(started["job_id"])
     final = _wait_final(started["job_id"])
 
     assert final["status"] == "cancelled"
-    child_id = final["steps"]["download"]["job_id"]
-    assert child_id
+    assert final["steps"]["download"]["job_id"] == child_id
     child = _wait_final(child_id)
     assert child["status"] == "cancelled"
     hold.set()
@@ -321,6 +337,31 @@ def test_preflight_names_every_missing_prerequisite(tmp_path: Path, monkeypatch:
     assert "DVVNL" in text and "KESCO" in text
     assert "parent folder" in text
     assert "sign in" in text.lower()
+
+
+def test_host_in_the_credentials_file_wins_over_settings(harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    # The operator keeps the server address next to the passwords (an internal
+    # IP rather than the public name). That must be what the download uses.
+    profiles = FtpProfilesFile(
+        host="10.101.4.22",
+        port=2121,
+        profiles={name: FtpProfileCredential(username=name.lower(), password="pw") for name in DISCOMS},
+    )
+    monkeypatch.setattr(ftp_profiles, "load_ftp_profiles", lambda: profiles)
+
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07"))
+    _wait_final(started["job_id"])
+
+    ftp = harness["calls"]["ftp"][0]
+    assert ftp["host"] == "10.101.4.22"
+    assert ftp["port"] == 2121
+
+
+def test_settings_host_is_used_when_the_file_names_none(harness: dict[str, Any]) -> None:
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07"))
+    _wait_final(started["job_id"])
+
+    assert harness["calls"]["ftp"][0]["host"] == harness["config"].ftp_host
 
 
 # ── job runtime support ────────────────────────────────────────────────────────

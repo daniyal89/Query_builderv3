@@ -23,7 +23,10 @@ class MonthlyAutomationConfig(BaseModel):
     Google token in its own file.
     """
 
-    ftp_host: str = Field(default="ftp.uppclonline.com")
+    ftp_host: str = Field(
+        default="ftp.uppclonline.com",
+        description="Used unless config/ftp_profiles.json names a host, which then wins.",
+    )
     ftp_port: int = Field(default=21, ge=1, le=65535)
     ftp_remote_template: str = Field(
         default="/01-MASTER_DATA/{MON}_{YYYY}/",
