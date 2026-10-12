@@ -16,6 +16,7 @@ import {
 
 const JOB_STORAGE_KEY = "monthly_run_job_v1";
 const POLL_MS = 2000;
+const CONFIG_RETRY_MS = 5000;
 const STEP_LABELS: Record<string, string> = {
   download: "1 · Download from FTP",
   upload: "2 · Upload to Google Drive",
@@ -93,17 +94,37 @@ export const MonthlyRunCard: React.FC = () => {
   const running = isActive(status);
 
   // Settings and whatever run is already in flight (another tab, or before a reload).
+  // Keeps retrying while the backend is unreachable: the page is often opened
+  // before the server has finished starting, and a card that gave up on its
+  // first attempt would stay dead until someone thought to reload.
+  const [configAttempt, setConfigAttempt] = useState(0);
   useEffect(() => {
-    getAutomationConfig().then(setConfig).catch((err) => setError(errorText(err)));
-    getActiveMonthlyRun()
-      .then((active) => {
-        if (active) {
-          setJobId(active.job_id);
-          setStatus(active);
-        }
-      })
-      .catch(() => undefined);
-  }, []);
+    let cancelled = false;
+    let timer: number | undefined;
+    const load = () => {
+      getAutomationConfig()
+        .then((loaded) => {
+          if (cancelled) return;
+          setConfig(loaded);
+          setError(null);
+          return getActiveMonthlyRun().then((active) => {
+            if (cancelled || !active) return;
+            setJobId(active.job_id);
+            setStatus(active);
+          });
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setError(`${errorText(err)} — is the backend running? Retrying every ${CONFIG_RETRY_MS / 1000}s.`);
+          timer = window.setTimeout(load, CONFIG_RETRY_MS);
+        });
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [configAttempt]);
 
   const refreshPlan = useCallback(() => {
     getMonthlyRunPlan(month).then(setPlan).catch(() => setPlan(null));
@@ -111,8 +132,10 @@ export const MonthlyRunCard: React.FC = () => {
   }, [month]);
 
   useEffect(() => {
+    // Re-fetched when the settings arrive too, so a backend that came up late
+    // still gets its plan and marker shown.
     if (!configDirty) refreshPlan();
-  }, [refreshPlan, configDirty]);
+  }, [refreshPlan, configDirty, config]);
 
   useEffect(() => {
     try {
@@ -355,7 +378,19 @@ export const MonthlyRunCard: React.FC = () => {
       )}
       {status && !running && status.outcome === "completed" && <p className="mt-3 text-sm text-emerald-700">{status.message}</p>}
       {message && !status && <p className="mt-3 text-sm text-slate-700">{message}</p>}
-      {error && <p className="mt-3 text-sm text-rose-700">{error}</p>}
+      {error && (
+        <p className="mt-3 text-sm text-rose-700">
+          {error}
+          {!config && (
+            <>
+              {" "}
+              <button type="button" onClick={() => setConfigAttempt((n) => n + 1)} className="font-semibold underline">
+                Retry now
+              </button>
+            </>
+          )}
+        </p>
+      )}
     </section>
   );
 };

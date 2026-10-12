@@ -91,6 +91,35 @@ describe("MonthlyRunCard", () => {
     expect(screen.getAllByText("completed")).toHaveLength(3);
   }, 15000);
 
+  it("recovers once the backend comes up instead of staying dead", async () => {
+    // The page is often opened before the server has finished starting. The
+    // first settings fetch fails; the card must not need a page reload.
+    let configCalls = 0;
+    server.use(
+      rest.get("*/api/automation/config", (_req, res, ctx) => {
+        configCalls += 1;
+        return configCalls === 1 ? res.networkError("backend not up yet") : res(ctx.json(config));
+      }),
+      rest.get("*/api/automation/monthly-run/active", (_req, res, ctx) => res(ctx.json(null))),
+      rest.get("*/api/automation/monthly-run/plan", (_req, res, ctx) =>
+        res(ctx.json({ default_month: "2026-09", month: "2026-09", token: "SEP_2026", object_name: "Master_0926", remote_dir: "", csv_dir: "", csv_glob: "", parquet_dir: "", drive_root_name: "" })),
+      ),
+      rest.get("*/api/automation/monthly-run/marker", (_req, res, ctx) => res(ctx.json({ month: "SEP_2026", exists: false, steps: {} }))),
+    );
+
+    const user = userEvent.setup();
+    renderWithAppContext(<MonthlyRunCard />, { route: "/sidebar-tools" });
+
+    expect(await screen.findByText(/is the backend running/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /run monthly master/i })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /retry now/i }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /run monthly master/i })).toBeEnabled());
+    expect(screen.queryByText(/is the backend running/i)).not.toBeInTheDocument();
+    expect(configCalls).toBe(2);
+  });
+
   it("offers to resume when the month already has completed steps", async () => {
     server.use(
       rest.get("*/api/automation/config", (_req, res, ctx) => res(ctx.json(config))),

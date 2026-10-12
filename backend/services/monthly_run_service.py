@@ -460,9 +460,11 @@ class MonthlyRunService:
             for child_id in children.values():
                 if child_id:
                     job_runtime.stop_job(child_id, "Monthly run stopped.")
+            cls._close_unfinished_steps(job_id, "cancelled", "Stopped with the run.")
             cls._finish(job_id, status="cancelled", outcome="cancelled", message="Monthly run stopped.")
         except Exception as exc:
             logger.exception("Monthly run %s failed", job_id)
+            cls._close_unfinished_steps(job_id, "failed", str(exc))
             cls._finish(job_id, status="failed", outcome="failed", message=f"Monthly run failed: {exc}")
 
     # — steps —
@@ -601,6 +603,19 @@ class MonthlyRunService:
                     continue
                 cls._set_step(job_id, step, message=str(child.get("message") or ""), detail=cls._progress_detail(step, child))
                 if child.get("status") in FINAL_JOB_STATUSES:
+                    # Reflect the child's own ending straight away. The gate may
+                    # refine this later, but a run that is stopped while another
+                    # step is still going must not leave this one shown as
+                    # "running" with a failure message underneath it.
+                    child_status = str(child.get("status"))
+                    cls._set_step(
+                        job_id,
+                        step,
+                        status=child_status if child_status in {"completed", "failed", "cancelled"} else "failed",
+                        message=str(child.get("message") or child.get("error_message") or ""),
+                        finished_at=_now_iso(),
+                        detail=cls._progress_detail(step, child),
+                    )
                     results[step] = child
                     pending.pop(step)
             if pending:
@@ -663,6 +678,21 @@ class MonthlyRunService:
             current = dict(steps.get(step) or {})
             current.update(fields)
             steps[step] = current
+            snapshot["steps"] = steps
+
+        job_runtime.mutate_job(run_id, mutate)
+
+    @staticmethod
+    def _close_unfinished_steps(run_id: str, status: str, message: str) -> None:
+        """Any step still 'running' when the run ends takes the run's ending."""
+
+        def mutate(snapshot: dict[str, Any]) -> None:
+            steps = dict(snapshot.get("steps") or {})
+            for name, state in steps.items():
+                if isinstance(state, dict) and state.get("status") == "running":
+                    closed = dict(state)
+                    closed.update(status=status, message=message, finished_at=_now_iso())
+                    steps[name] = closed
             snapshot["steps"] = steps
 
         job_runtime.mutate_job(run_id, mutate)

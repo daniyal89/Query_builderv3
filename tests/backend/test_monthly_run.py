@@ -84,20 +84,24 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: MonthlyAuto
         "ftp_final": {"status": "completed", "profile_results": _profile_results({d: 10 for d in DISCOMS}), "total_files_found": 50},
         "drive_final": {"status": "completed", "uploaded_items": 50, "skipped_items": 0, "failed_items": 0, "message": "done"},
         "build_final": {"status": "completed", "table_rows": 1234, "data_quality": "ok", "reconciliation": {"unaccounted_rows": 0}, "build_output_path": "x.duckdb"},
-        "hold": None,
+        "hold": None,       # applies to every child unless overridden below
+        "holds": {},        # per child: {"ftp" | "drive" | "build": Event}
     }
+
+    def hold_for(kind: str) -> threading.Event | None:
+        return state["holds"].get(kind, state["hold"])
 
     def fake_ftp(**kwargs: Any) -> dict[str, str]:
         calls["ftp"].append(kwargs)
-        return _fake_child(FTPDownloadService.JOB_TYPE, state["ftp_final"], hold=state["hold"])
+        return _fake_child(FTPDownloadService.JOB_TYPE, state["ftp_final"], hold=hold_for("ftp"))
 
     def fake_drive(**kwargs: Any) -> dict[str, str]:
         calls["drive"].append(kwargs)
-        return _fake_child(GoogleDriveService.UPLOAD_JOB_TYPE, state["drive_final"], hold=state["hold"])
+        return _fake_child(GoogleDriveService.UPLOAD_JOB_TYPE, state["drive_final"], hold=hold_for("drive"))
 
     def fake_build(payload: Any) -> str:
         calls["build"].append(payload.model_dump())
-        return _fake_child(svc.FULL_PIPELINE_JOB_TYPE, state["build_final"], hold=state["hold"])["job_id"]
+        return _fake_child(svc.FULL_PIPELINE_JOB_TYPE, state["build_final"], hold=hold_for("build"))["job_id"]
 
     monkeypatch.setattr(FTPDownloadService, "start_download", staticmethod(fake_ftp))
     monkeypatch.setattr(GoogleDriveService, "start_upload", staticmethod(fake_drive))
@@ -319,9 +323,47 @@ def test_stop_cancels_the_run_and_its_children(harness: dict[str, Any]) -> None:
 
     assert final["status"] == "cancelled"
     assert final["steps"]["download"]["job_id"] == child_id
+    assert final["steps"]["download"]["status"] == "cancelled", "a stopped step must not be left showing 'running'"
     child = _wait_final(child_id)
     assert child["status"] == "cancelled"
     hold.set()
+
+
+def _wait_for_step_status(run_id: str, step: str, wanted: str, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = job_runtime.get_job(run_id) or {}
+        if ((job.get("steps") or {}).get(step) or {}).get("status") == wanted:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{step} never became {wanted}: {job_runtime.get_job(run_id)}")
+
+
+def test_a_failed_step_shows_as_failed_even_if_the_run_is_stopped_later(harness: dict[str, Any]) -> None:
+    # What happened on the first real run: the Drive upload failed at once
+    # (expired Google login) while the two-hour build carried on; the operator
+    # then pressed Stop. The upload must read "failed" with its reason, and the
+    # build "cancelled" -- not both "running" forever.
+    build_hold = threading.Event()
+    harness["state"]["holds"] = {"build": build_hold}
+    harness["state"]["drive_final"] = {
+        "status": "failed",
+        "message": "DriveLoginRequiredError: Google login is missing or has expired ...",
+        "failed_items": 1,
+    }
+
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07"))
+    _wait_for_step_status(started["job_id"], "upload", "failed")
+
+    svc.MonthlyRunService.stop(started["job_id"])
+    final = _wait_final(started["job_id"])
+    build_hold.set()
+
+    assert final["status"] == "cancelled"
+    assert final["steps"]["upload"]["status"] == "failed"
+    assert "Google login" in final["steps"]["upload"]["message"]
+    assert final["steps"]["build"]["status"] == "cancelled"
+    assert final["steps"]["download"]["status"] == "completed"
 
 
 def test_preflight_names_every_missing_prerequisite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: MonthlyAutomationConfig) -> None:
