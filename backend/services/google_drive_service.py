@@ -4,6 +4,7 @@ import mimetypes
 import os
 import re
 import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -83,6 +84,27 @@ class GoogleDriveService:
     UPLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
     DOWNLOAD_JOB_POLICY = BackgroundJobPolicy(max_attempts=1, retry_backoff_seconds=0)
     _logged_no_proxy_warning = False
+
+    #: A single stalled socket must not fail a 615-file upload. Repeating the
+    #: whole tree is cheap: anything already in Drive is skipped by name.
+    UPLOAD_NETWORK_ATTEMPTS = 3
+    UPLOAD_RETRY_DELAYS_SECONDS = (15, 45)
+    TRANSIENT_NETWORK_MARKERS = (
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection aborted",
+        "remotedisconnected",
+        "servernotfounderror",
+        "temporarily unavailable",
+        "eof occurred",
+        "incompleteread",
+        "bad status line",
+        "errno 10053",
+        "errno 10054",
+        "errno 10060",
+    )
+    _sleep = staticmethod(time.sleep)
 
     @classmethod
     def start_upload(
@@ -602,13 +624,15 @@ class GoogleDriveService:
             f"'{parent_id}' in parents and trashed = false and "
             f"mimeType = '{FOLDER_MIME}' and name = '{cls._escape_drive_query(clean_name)}'"
         )
+        # Metadata calls get the same retries as uploads: a stalled socket on
+        # one of these is where the first real monthly run died.
         result = service.files().list(
             q=query,
             fields="files(id, name)",
             pageSize=1,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
-        ).execute()
+        ).execute(num_retries=5)
         files = result.get("files", [])
         if files:
             return files[0]["id"]
@@ -616,7 +640,7 @@ class GoogleDriveService:
             body={"name": clean_name, "mimeType": FOLDER_MIME, "parents": [parent_id]},
             fields="id",
             supportsAllDrives=True,
-        ).execute()
+        ).execute(num_retries=3)
         return folder["id"]
 
     @classmethod
@@ -631,12 +655,35 @@ class GoogleDriveService:
                 pageToken=page_token,
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
-            ).execute()
+            ).execute(num_retries=5)
             names.update(item["name"] for item in result.get("files", []))
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
         return names
+
+    @classmethod
+    def _is_transient_network_error(cls, exc: BaseException) -> bool:
+        """Worth another go, as opposed to wrong input or a login that needs a person."""
+        if isinstance(exc, (_DriveJobCancelled, ValueError)):
+            return False
+        if isinstance(exc, HttpError):
+            status = getattr(exc, "status_code", None) or getattr(getattr(exc, "resp", None), "status", None)
+            return status in {429, 500, 502, 503, 504}
+        text = cls._exception_details(exc).lower()
+        return any(marker in text for marker in cls.TRANSIENT_NETWORK_MARKERS)
+
+    @classmethod
+    def _pause_unless_cancelled(cls, job_id: str, seconds: float) -> bool:
+        """Wait in short steps so Stop still works mid-pause. True if cancelled."""
+        remaining = float(seconds)
+        while remaining > 0:
+            if cls._is_cancelled(job_id):
+                return True
+            step = min(0.5, remaining)
+            cls._sleep(step)
+            remaining -= step
+        return cls._is_cancelled(job_id)
 
     @classmethod
     def _run_upload_job(
@@ -649,13 +696,15 @@ class GoogleDriveService:
         skip_existing: bool,
         max_workers: int,
         interactive: bool = True,
+        attempt: int = 1,
     ) -> None:
         try:
             cls._raise_if_cancelled(job_id)
+            prefix = f"Attempt {attempt} of {cls.UPLOAD_NETWORK_ATTEMPTS}: " if attempt > 1 else ""
             cls._update_job(
                 job_id,
                 status="running",
-                message="Opening Google login if needed..." if interactive else "Checking Google login...",
+                message=prefix + ("Opening Google login if needed..." if interactive else "Checking Google login..."),
             )
             service = cls._get_drive_service(auth, interactive=interactive)
             cls._raise_if_cancelled(job_id)
@@ -754,6 +803,31 @@ class GoogleDriveService:
         except Exception as exc:
             if cls._is_cancelled(job_id):
                 cls._finish_job(job_id, message="Upload stopped by user.")
+            elif attempt < cls.UPLOAD_NETWORK_ATTEMPTS and cls._is_transient_network_error(exc):
+                # The first real monthly run died here: a 60 s read timeout while
+                # listing one Drive folder, before a single file was sent. Nothing
+                # about that is permanent, so wait a little and run the tree again.
+                detail = cls._exception_details(exc)
+                delays = cls.UPLOAD_RETRY_DELAYS_SECONDS
+                delay = delays[min(attempt - 1, len(delays) - 1)]
+                cls._logger.warning(
+                    "Google Drive upload hit a network error (job_id=%s, attempt %s/%s): %s. Retrying in %ss.",
+                    job_id, attempt, cls.UPLOAD_NETWORK_ATTEMPTS, detail, delay,
+                )
+                cls._update_job(
+                    job_id,
+                    message=f"Network hiccup: {detail}. Retrying in {delay}s (attempt {attempt + 1} of {cls.UPLOAD_NETWORK_ATTEMPTS})...",
+                )
+                if cls._pause_unless_cancelled(job_id, delay):
+                    cls._finish_job(job_id, message="Upload stopped by user.")
+                    return
+                # Counters restart with the attempt: whatever was sent last time
+                # is now found in Drive and counted as skipped.
+                cls._update_job(job_id, processed_items=0, uploaded_items=0, skipped_items=0, failed_items=0, errors=[])
+                cls._run_upload_job(
+                    job_id, auth, source, parent_folder_id, root_folder_name,
+                    skip_existing, max_workers, interactive, attempt=attempt + 1,
+                )
             else:
                 detail = cls._exception_details(exc)
                 cls._logger.exception("Google Drive upload job failed (job_id=%s): %s", job_id, detail)
