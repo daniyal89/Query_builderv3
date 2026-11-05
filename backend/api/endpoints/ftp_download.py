@@ -3,11 +3,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.models.ftp_download import (
     FTPDownloadRequest,
+    FTPDownloadSettingsResponse,
+    FTPDownloadSettingsUpdate,
     FTPDownloadStartResponse,
     FTPDownloadStatusResponse,
     FTPProfilesSummaryResponse,
 )
 from backend.services.ftp_download_service import FTPDownloadService
+from backend.services.ftp_download_settings import (
+    effective_output_roots,
+    ftp_download_settings_path,
+    save_output_roots,
+)
 from backend.services.ftp_profiles import configured_profile_summary, resolve_profile_passwords
 from backend.utils.rate_limits import enforce_rate_limit
 
@@ -22,6 +29,31 @@ router = APIRouter()
 def get_ftp_profiles() -> FTPProfilesSummaryResponse:
     try:
         return FTPProfilesSummaryResponse(**configured_profile_summary())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get(
+    "/ftp-download/settings",
+    response_model=FTPDownloadSettingsResponse,
+    summary="Per-computer defaults for the FTP Download page",
+)
+def get_ftp_download_settings() -> FTPDownloadSettingsResponse:
+    try:
+        return FTPDownloadSettingsResponse(path=str(ftp_download_settings_path()), output_roots=effective_output_roots())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put(
+    "/ftp-download/settings",
+    response_model=FTPDownloadSettingsResponse,
+    summary="Remember output roots as this computer's defaults",
+)
+def update_ftp_download_settings(payload: FTPDownloadSettingsUpdate) -> FTPDownloadSettingsResponse:
+    try:
+        save_output_roots(payload.output_roots)
+        return FTPDownloadSettingsResponse(path=str(ftp_download_settings_path()), output_roots=effective_output_roots())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

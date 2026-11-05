@@ -40,3 +40,27 @@ export async function getFtpProfiles(): Promise<FTPProfilesSummary> {
   const response = await apiClient.get<FTPProfilesSummary>("/ftp-download/profiles");
   return response.data;
 }
+
+export interface FTPOutputRootSetting {
+  /** What this computer has saved, if anything. */
+  saved: string | null;
+  /** What the page should offer: the saved value, else a derived fallback. */
+  effective: string | null;
+}
+
+export interface FTPDownloadSettings {
+  path: string;
+  output_roots: Record<string, FTPOutputRootSetting>;
+}
+
+/** Per-computer defaults for the FTP Download page (stored beside the backend). */
+export async function getFtpDownloadSettings(): Promise<FTPDownloadSettings> {
+  const response = await apiClient.get<FTPDownloadSettings>("/ftp-download/settings");
+  return response.data;
+}
+
+/** Remember output roots as this computer's defaults. Kinds left out keep their value. */
+export async function saveFtpDownloadSettings(outputRoots: Record<string, string>): Promise<FTPDownloadSettings> {
+  const response = await apiClient.put<FTPDownloadSettings>("/ftp-download/settings", { output_roots: outputRoots });
+  return response.data;
+}

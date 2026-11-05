@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  MasterSource,
   MonthlyAutomationConfig,
   MonthlyRunMarker,
   MonthlyRunPlan,
@@ -17,11 +18,16 @@ import {
 const JOB_STORAGE_KEY = "monthly_run_job_v1";
 const POLL_MS = 2000;
 const CONFIG_RETRY_MS = 5000;
-const STEP_LABELS: Record<string, string> = {
-  download: "1 · Download from FTP",
-  upload: "2 · Upload to Google Drive",
-  build: "3 · CSV → parquet → DuckDB view",
-};
+function stepLabel(step: string, source: MasterSource): string {
+  if (step === "download") return source === "drive" ? "1 · Download from Google Drive" : "1 · Download from FTP";
+  if (step === "upload") return "2 · Upload to Google Drive";
+  return "3 · CSV → parquet → DuckDB view";
+}
+
+const SOURCE_OPTIONS: { value: MasterSource; label: string; help: string }[] = [
+  { value: "ftp", label: "FTP server", help: "Download from FTP, then upload to Google Drive." },
+  { value: "drive", label: "Google Drive", help: "Someone already uploaded this month; download it from Drive and skip the upload." },
+];
 
 function previousMonthInput(): string {
   const now = new Date();
@@ -74,6 +80,9 @@ function detailLine(step: string, detail: Record<string, unknown>): string | nul
 
 export const MonthlyRunCard: React.FC = () => {
   const [month, setMonth] = useState(previousMonthInput);
+  // Where the month comes from. Starts from this computer's saved default and
+  // is written back whenever a run starts with a different choice.
+  const [source, setSource] = useState<MasterSource>("ftp");
   const [config, setConfig] = useState<MonthlyAutomationConfig | null>(null);
   const [configDirty, setConfigDirty] = useState(false);
   const [plan, setPlan] = useState<MonthlyRunPlan | null>(null);
@@ -106,6 +115,7 @@ export const MonthlyRunCard: React.FC = () => {
         .then((loaded) => {
           if (cancelled) return;
           setConfig(loaded);
+          setSource(loaded.master_source === "drive" ? "drive" : "ftp");
           setError(null);
           return getActiveMonthlyRun().then((active) => {
             if (cancelled || !active) return;
@@ -183,11 +193,13 @@ export const MonthlyRunCard: React.FC = () => {
     setError(null);
     setMessage(null);
     try {
-      if (configDirty && config) {
-        await saveAutomationConfig(config);
+      if (config && (configDirty || (config.master_source ?? "ftp") !== source)) {
+        // The chosen source becomes this computer's default for next time.
+        const saved = await saveAutomationConfig({ ...config, master_source: source });
+        setConfig(saved);
         setConfigDirty(false);
       }
-      const started = await startMonthlyRun({ month, from_scratch: fromScratch });
+      const started = await startMonthlyRun({ month, from_scratch: fromScratch, source });
       setJobId(started.job_id);
       setMessage(started.message);
     } catch (err) {
@@ -226,6 +238,9 @@ export const MonthlyRunCard: React.FC = () => {
   };
 
   const steps = status?.steps ?? {};
+  // Labels follow the run being shown; before a run starts, the chosen source.
+  const shownSource: MasterSource = status?.source ?? source;
+  const stepCount = shownSource === "drive" ? 2 : 3;
 
   return (
     <section className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-6 shadow-sm" aria-label="Monthly master run">
@@ -233,8 +248,9 @@ export const MonthlyRunCard: React.FC = () => {
         <div>
           <h2 className="text-lg font-bold text-slate-900">Monthly master run</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Downloads the month from FTP, uploads it to Google Drive and builds it as a DuckDB view — one click, in
-            order, with each step checked before the next starts.
+            Downloads the month from FTP (or from Google Drive when someone already uploaded it), uploads it to Drive
+            when it came from FTP, and builds it as a DuckDB view — one click, in order, with each step checked before
+            the next starts.
           </p>
         </div>
         <button
@@ -258,6 +274,30 @@ export const MonthlyRunCard: React.FC = () => {
             aria-label="Month"
           />
         </label>
+        <fieldset className="block" disabled={running}>
+          <legend className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600">Get the month from</legend>
+          <div className="flex flex-wrap gap-2">
+            {SOURCE_OPTIONS.map((option) => (
+              <label
+                key={option.value}
+                title={option.help}
+                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                  source === option.value ? "border-indigo-400 bg-white font-semibold text-indigo-800" : "border-slate-300 bg-white text-slate-700"
+                } ${running ? "cursor-not-allowed opacity-60" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="monthly-run-source"
+                  value={option.value}
+                  checked={source === option.value}
+                  onChange={() => setSource(option.value)}
+                  className="accent-indigo-600"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
         {!running && completedBefore.length === 0 && (
           <button
             type="button"
@@ -276,13 +316,14 @@ export const MonthlyRunCard: React.FC = () => {
               onClick={() => run(false)}
               className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:bg-slate-300"
             >
-              Resume ({completedBefore.length} of 3 done)
+              Resume ({Math.min(completedBefore.length, stepCount)} of {stepCount} done)
             </button>
             <button
               type="button"
               disabled={busy || !config}
               onClick={() => {
-                if (window.confirm(`Run every step for ${plan?.token ?? month} again, including re-uploading to Drive?`)) run(true);
+                const again = source === "drive" ? "downloading from Drive again" : "re-uploading to Drive";
+                if (window.confirm(`Run every step for ${plan?.token ?? month} again, including ${again}?`)) run(true);
               }}
               className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
@@ -304,8 +345,8 @@ export const MonthlyRunCard: React.FC = () => {
 
       {plan && (
         <dl className="mt-3 grid gap-x-6 gap-y-1 text-xs text-slate-600 sm:grid-cols-2">
-          <div><dt className="inline font-semibold">FTP:</dt> <dd className="inline font-mono">{plan.remote_dir}</dd></div>
-          <div><dt className="inline font-semibold">Drive folder:</dt> <dd className="inline font-mono">{plan.drive_root_name}</dd></div>
+          {source === "ftp" && <div><dt className="inline font-semibold">FTP:</dt> <dd className="inline font-mono">{plan.remote_dir}</dd></div>}
+          <div><dt className="inline font-semibold">{source === "drive" ? "Drive folder (source):" : "Drive folder:"}</dt> <dd className="inline font-mono">{plan.drive_root_name}</dd></div>
           <div><dt className="inline font-semibold">CSV:</dt> <dd className="inline font-mono">{plan.csv_dir}</dd></div>
           <div><dt className="inline font-semibold">Parquet:</dt> <dd className="inline font-mono">{plan.parquet_dir}</dd></div>
           <div className="sm:col-span-2"><dt className="inline font-semibold">DuckDB object:</dt> <dd className="inline font-mono">{plan.object_name}</dd></div>
@@ -336,7 +377,8 @@ export const MonthlyRunCard: React.FC = () => {
           ))}
           <p className="text-xs text-slate-500 sm:col-span-2">
             FTP passwords are read from <span className="font-mono">config/ftp_profiles.json</span> on the server; Google
-            uses the login saved by “Upload master in Drive”.
+            uses the login saved by “Upload master in Drive”. The source chosen above is saved as this computer's default
+            when a run starts.
           </p>
           <div className="sm:col-span-2">
             <button
@@ -361,7 +403,7 @@ export const MonthlyRunCard: React.FC = () => {
             const line = shown ? detailLine(step, shown.detail ?? {}) : null;
             return (
               <li key={step} className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
-                <span className="w-56 text-sm font-semibold text-slate-800">{STEP_LABELS[step]}</span>
+                <span className="w-56 text-sm font-semibold text-slate-800">{stepLabel(step, shownSource)}</span>
                 <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${STEP_CHIP[chip] ?? STEP_CHIP.pending}`}>{chip}</span>
                 <span className="min-w-0 flex-1 truncate text-xs text-slate-600" title={shown?.message ?? ""}>
                   {shown?.message || ""}

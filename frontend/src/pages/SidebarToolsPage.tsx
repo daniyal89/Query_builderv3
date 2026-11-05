@@ -334,10 +334,10 @@ function readInitialMaterialiseState(): {
 
 function getDefaultUppclPresetPaths(): UppclPresetPaths {
   return {
-    build_db_path: "G:/MASTER/uppcl_latest.duckdb",
-    build_input_path: "G:/MASTER_PARQUET/MAR_2026/**/*.parquet",
-    parquet_input_path: "G:/MASTER/MAR_2026/*.csv.gz",
-    parquet_output_path: "G:/MASTER_PARQUET/MAR_2026",
+    build_db_path: "D:/uppcl_duckdb/uppcl_latest.duckdb",
+    build_input_path: "D:/DATA/MASTER_PARQUET/MAR_2026/**/*.parquet",
+    parquet_input_path: "D:/DATA/MASTER/MAR_2026/*.csv.gz",
+    parquet_output_path: "D:/DATA/MASTER_PARQUET/MAR_2026",
   };
 }
 
@@ -1005,19 +1005,19 @@ export const SidebarToolsPage: React.FC = () => {
           Run both steps in one click. Fill in your inputs once and the system chains CSV→Parquet then auto-builds the DuckDB table.
         </p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Field label="Input CSV/GZ path or glob" help="Source CSV files. Example: G:/MASTER/MAR_2026/*.csv.gz">
+          <Field label="Input CSV/GZ path or glob" help="Source CSV files. Example: D:/DATA/MASTER/MAR_2026/*.csv.gz">
             <div className="flex gap-2">
               <input className="w-full rounded border p-2" value={pipelineForm.input_path} onChange={(e) => setPipelineForm((p) => ({ ...p, input_path: e.target.value }))} />
               <button type="button" onClick={async () => { const folder = await pickSystemFolder(); if (folder) setPipelineForm((p) => ({ ...p, input_path: `${folder}/*.csv.gz` })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Folder...</button>
             </div>
           </Field>
-          <Field label="Parquet output folder" help="Where parquet files will be written. Example: G:/MASTER_PARQUET/MAR_2026">
+          <Field label="Parquet output folder" help="Where parquet files will be written. Example: D:/DATA/MASTER_PARQUET/MAR_2026">
             <div className="flex gap-2">
               <input className="w-full rounded border p-2" value={pipelineForm.parquet_output_path} onChange={(e) => setPipelineForm((p) => ({ ...p, parquet_output_path: e.target.value }))} />
               <button type="button" onClick={async () => { const folder = await pickSystemFolder(); if (folder) setPipelineForm((p) => ({ ...p, parquet_output_path: folder })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Folder...</button>
             </div>
           </Field>
-          <Field label="DuckDB file path" help="Target .duckdb file. Example: G:/MASTER/uppcl_latest.duckdb">
+          <Field label="DuckDB file path" help="Target .duckdb file. Example: D:/uppcl_duckdb/uppcl_latest.duckdb">
             <div className="flex gap-2">
               <input className="w-full rounded border p-2" value={pipelineForm.db_path} onChange={(e) => setPipelineForm((p) => ({ ...p, db_path: e.target.value }))} />
               <button type="button" onClick={async () => { const path = await pickSystemSavePath("monthly.duckdb", ".duckdb"); if (path) setPipelineForm((p) => ({ ...p, db_path: path })); }} className="rounded border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">Browse...</button>
@@ -1138,7 +1138,7 @@ export const SidebarToolsPage: React.FC = () => {
         <h2 className="text-lg font-semibold text-slate-900">1) Build DuckDB Table or View</h2>
         <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>build_duckdb.py</code></p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Field label="DuckDB file path" help="Full target .duckdb file path. Example: G:/MASTER/uppcl_latest.duckdb">
+          <Field label="DuckDB file path" help="Full target .duckdb file path. Example: D:/uppcl_duckdb/uppcl_latest.duckdb">
             <div className="flex gap-2">
               <input
                 className="w-full rounded border p-2"
@@ -1165,7 +1165,7 @@ export const SidebarToolsPage: React.FC = () => {
               </p>
             )}
           </Field>
-          <Field label="Input parquet/csv path or glob" help="Supports wildcards. Example: G:/MASTER_PARQUET/MAR_2026/**/*.parquet">
+          <Field label="Input parquet/csv path or glob" help="Supports wildcards. Example: D:/DATA/MASTER_PARQUET/MAR_2026/**/*.parquet">
             <div className="flex gap-2">
               <input
                 className="w-full rounded border p-2"
@@ -1313,7 +1313,7 @@ export const SidebarToolsPage: React.FC = () => {
         <h2 className="text-lg font-semibold text-slate-900">2) Convert CSV/GZ to Parquet</h2>
         <p className="mt-2 text-sm text-slate-600">Run now from UI, or use script path: <code>csv_to_parquet.py</code></p>
         <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <Field label="Input CSV/GZ path or glob" help="Example: G:/MASTER/MAR_2026/*.csv.gz">
+          <Field label="Input CSV/GZ path or glob" help="Example: D:/DATA/MASTER/MAR_2026/*.csv.gz">
             <div className="flex gap-2">
               <input
                 className="w-full rounded border p-2 md:col-span-2"
@@ -1342,7 +1342,7 @@ export const SidebarToolsPage: React.FC = () => {
               </button>
             </div>
           </Field>
-          <Field label="Output parquet folder path" help="Example: G:/MASTER_PARQUET/MAR_2026 (single file also supports .parquet path)">
+          <Field label="Output parquet folder path" help="Example: D:/DATA/MASTER_PARQUET/MAR_2026 (single file also supports .parquet path)">
             <div className="flex gap-2">
               <input
                 className="w-full rounded border p-2 md:col-span-2"

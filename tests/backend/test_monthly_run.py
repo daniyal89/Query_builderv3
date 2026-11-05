@@ -103,8 +103,33 @@ def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: MonthlyAuto
         calls["build"].append(payload.model_dump())
         return _fake_child(svc.FULL_PIPELINE_JOB_TYPE, state["build_final"], hold=hold_for("build"))["job_id"]
 
+    # The Drive source: the month folder, its DISCOM sub-folders, and one
+    # download child per DISCOM.
+    calls["drive_lookup"] = []
+    calls["drive_download"] = []
+    state["drive_month_folder"] = {"id": "month-folder", "name": "MASTER_DATA_2026_07"}
+    state["drive_subfolders"] = [{"id": f"folder-{d}", "name": d} for d in DISCOMS]
+    state["drive_download_final"] = {"status": "completed", "total_items": 10, "downloaded_items": 10, "skipped_items": 0, "failed_items": 0, "message": "done"}
+
+    def fake_find(auth: Any, parent_id: str, name: str) -> dict[str, str] | None:
+        calls["drive_lookup"].append({"parent_id": parent_id, "name": name})
+        return state["drive_month_folder"]
+
+    def fake_subfolders(auth: Any, folder_id: str) -> list[dict[str, str]]:
+        return list(state["drive_subfolders"])
+
+    def fake_drive_download(**kwargs: Any) -> dict[str, str]:
+        calls["drive_download"].append(kwargs)
+        final = state["drive_download_final"]
+        if callable(final):
+            final = final(kwargs)
+        return _fake_child(GoogleDriveService.DOWNLOAD_JOB_TYPE, final, hold=hold_for("drive_download"))
+
     monkeypatch.setattr(FTPDownloadService, "start_download", staticmethod(fake_ftp))
     monkeypatch.setattr(GoogleDriveService, "start_upload", staticmethod(fake_drive))
+    monkeypatch.setattr(GoogleDriveService, "find_child_folder", staticmethod(fake_find))
+    monkeypatch.setattr(GoogleDriveService, "list_child_folders", staticmethod(fake_subfolders))
+    monkeypatch.setattr(GoogleDriveService, "start_download", staticmethod(fake_drive_download))
     monkeypatch.setattr(svc, "start_full_pipeline_job", fake_build)
     return {"calls": calls, "state": state, "config": config}
 
@@ -468,3 +493,123 @@ def test_start_returns_409_when_a_run_is_active(harness: dict[str, Any]) -> None
     finally:
         hold.set()
         _wait_final(first["job_id"])
+
+
+# ── the Drive source ───────────────────────────────────────────────────────────
+
+
+def test_drive_source_downloads_each_discom_from_drive_and_never_uploads(harness: dict[str, Any]) -> None:
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07", source="drive"))
+    final = _wait_final(started["job_id"])
+
+    assert final["status"] == "completed", final
+    assert final["outcome"] == "completed"
+    assert final["source"] == "drive"
+    assert {s: final["steps"][s]["status"] for s in ("download", "upload", "build")} == {
+        "download": "completed", "upload": "skipped", "build": "completed",
+    }
+    assert "nothing to upload" in final["steps"]["upload"]["message"]
+    assert "from Drive" in final["message"]
+
+    calls = harness["calls"]
+    assert calls["ftp"] == [] and calls["drive"] == [], "no FTP download and no Drive upload"
+    assert calls["drive_lookup"] == [{"parent_id": "drive-parent", "name": "MASTER_DATA_2026_07"}]
+    assert [c["drive_link_or_id"] for c in calls["drive_download"]] == [f"folder-{d}" for d in DISCOMS]
+    assert all(c["output_folder"].endswith("JUL_2026") for c in calls["drive_download"]), "lands in the FTP layout"
+    assert all(c["overwrite_existing"] is False for c in calls["drive_download"]), "already-present files are kept"
+    assert len(calls["build"]) == 1
+
+    detail = final["steps"]["download"]["detail"]
+    assert detail["source"] == "drive"
+    assert detail["total_files_found"] == 50 and detail["total_downloaded_files"] == 50
+
+    marker = svc.read_marker("JUL_2026")
+    assert set(svc.completed_steps(marker)) == {"download", "build"}
+
+
+def test_saved_master_source_is_used_when_the_request_names_none(harness: dict[str, Any]) -> None:
+    svc.save_config(harness["config"].model_copy(update={"master_source": "drive"}))
+
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07"))
+    final = _wait_final(started["job_id"])
+
+    assert final["source"] == "drive"
+    assert harness["calls"]["ftp"] == []
+    assert len(harness["calls"]["drive_download"]) == len(DISCOMS)
+
+
+def test_month_not_in_drive_yet_stops_before_the_build(harness: dict[str, Any]) -> None:
+    harness["state"]["drive_month_folder"] = None
+
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07", source="drive"))
+    final = _wait_final(started["job_id"])
+
+    assert final["status"] == "completed"
+    assert final["outcome"] == "not_available_yet"
+    assert "not in Google Drive yet" in final["message"]
+    assert final["missing_discoms"] == DISCOMS
+    assert harness["calls"]["drive_download"] == [] and harness["calls"]["build"] == []
+    assert svc.read_marker("JUL_2026") is None
+
+
+def test_some_discoms_missing_in_drive_is_partial(harness: dict[str, Any]) -> None:
+    harness["state"]["drive_subfolders"] = [{"id": f"folder-{d}", "name": d} for d in ("MVVNL", "DVVNL", "PVVNL")]
+
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07", source="drive"))
+    final = _wait_final(started["job_id"])
+
+    assert final["outcome"] == "partial"
+    assert final["missing_discoms"] == ["PuVNL", "KESCO"]
+    assert "PuVNL" in final["message"] and "KESCO" in final["message"]
+    assert len(harness["calls"]["drive_download"]) == 3, "what is there is still fetched"
+    assert harness["calls"]["build"] == []
+
+
+def test_a_failed_drive_download_fails_the_run(harness: dict[str, Any]) -> None:
+    good = {"status": "completed", "total_items": 10, "downloaded_items": 10, "skipped_items": 0, "failed_items": 0}
+    bad = {"status": "completed", "total_items": 10, "downloaded_items": 8, "skipped_items": 0, "failed_items": 2, "errors": ["boom"]}
+    harness["state"]["drive_download_final"] = lambda kwargs: bad if kwargs["drive_link_or_id"] == "folder-KESCO" else good
+
+    started = svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07", source="drive"))
+    final = _wait_final(started["job_id"])
+
+    assert final["status"] == "failed"
+    assert final["steps"]["download"]["status"] == "failed"
+    assert "KESCO: 2 failed file(s); boom" in final["steps"]["download"]["message"]
+    assert harness["calls"]["build"] == []
+
+
+def test_drive_source_preflight_does_not_need_ftp_passwords(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: MonthlyAutomationConfig) -> None:
+    monkeypatch.setattr(settings, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr(ftp_profiles, "load_ftp_profiles", lambda: None)
+    monkeypatch.setattr(GoogleDriveService, "get_auth_status", classmethod(lambda cls, *a, **k: {"configured": True, "token_exists": True}))
+
+    svc.MonthlyRunService.preflight(config, svc.derive_plan("2026-07", config), "drive")  # no FTP file, no complaint
+
+    with pytest.raises(ValueError, match="FTP passwords are not configured"):
+        svc.MonthlyRunService.preflight(config, svc.derive_plan("2026-07", config), "ftp")
+
+    no_drive = config.model_copy(update={"drive_parent_folder_id": ""})
+    with pytest.raises(ValueError, match="needed to download the month from Drive"):
+        svc.MonthlyRunService.preflight(no_drive, svc.derive_plan("2026-07", no_drive), "drive")
+
+
+def test_start_endpoint_accepts_the_source_and_reports_it(harness: dict[str, Any]) -> None:
+    from fastapi.testclient import TestClient
+
+    from backend.app import app
+
+    client = TestClient(app)
+    started = client.post("/api/automation/monthly-run/start", json={"month": "2026-07", "source": "drive"})
+    assert started.status_code == 200, started.text
+    job_id = started.json()["job_id"]
+    _wait_final(job_id)
+
+    status = client.get(f"/api/automation/monthly-run/status/{job_id}").json()
+    assert status["source"] == "drive"
+    assert status["steps"]["upload"]["status"] == "skipped"
+
+    assert client.post("/api/automation/monthly-run/start", json={"month": "2026-07", "source": "usb"}).status_code == 422
+
+    saved = client.put("/api/automation/config", json={**client.get("/api/automation/config").json(), "master_source": "drive"})
+    assert saved.status_code == 200 and saved.json()["master_source"] == "drive"

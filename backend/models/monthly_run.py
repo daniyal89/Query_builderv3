@@ -13,6 +13,10 @@ MONTH_INPUT_PATTERN = re.compile(r"^(\d{4})-(\d{2})$")
 StepName = Literal["download", "upload", "build"]
 StepStatus = Literal["pending", "skipped", "running", "completed", "failed", "cancelled"]
 RunOutcome = Literal["completed", "not_available_yet", "partial", "failed", "cancelled"]
+#: Where the month's CSVs come from. ``drive`` is for a computer where someone
+#: else has already uploaded the month: it downloads from Google Drive and has
+#: nothing to upload back.
+MasterSource = Literal["ftp", "drive"]
 
 
 class MonthlyAutomationConfig(BaseModel):
@@ -33,15 +37,19 @@ class MonthlyAutomationConfig(BaseModel):
         description="Remote folder per month. {MON}=JUL, {YYYY}=2026, {MM}=07, {YY}=26.",
     )
     discoms: list[str] = Field(default_factory=lambda: ["MVVNL", "DVVNL", "PVVNL", "PuVNL", "KESCO"])
-    csv_root: str = Field(default="G:/MASTER", description="Each month downloads into <csv_root>/<MON>_<YYYY>.")
-    parquet_root: str = Field(default="G:/MASTER_PARQUET", description="Each month converts into <parquet_root>/<MON>_<YYYY>.")
-    db_path: str = Field(default="G:/MASTER/uppcl_latest.duckdb")
+    csv_root: str = Field(default="D:/DATA/MASTER", description="Each month downloads into <csv_root>/<MON>_<YYYY>.")
+    parquet_root: str = Field(default="D:/DATA/MASTER_PARQUET", description="Each month converts into <parquet_root>/<MON>_<YYYY>.")
+    db_path: str = Field(default="D:/uppcl_duckdb/uppcl_latest.duckdb")
     object_type: Literal["TABLE", "VIEW"] = Field(default="VIEW")
     compression: str = Field(default="snappy")
     drive_parent_folder_id: str = Field(default="")
     drive_root_name_template: str = Field(default="MASTER_DATA_{YYYY}_{MM}")
     drive_max_workers: int = Field(default=3, ge=1, le=8)
     ftp_max_workers: int = Field(default=3, ge=1, le=16)
+    master_source: MasterSource = Field(
+        default="ftp",
+        description="Default source for this computer: 'ftp' downloads and uploads to Drive; 'drive' downloads an already-uploaded month from Drive.",
+    )
 
     @field_validator("csv_root", "parquet_root", "db_path")
     @classmethod
@@ -65,6 +73,10 @@ class MonthlyRunStartRequest(BaseModel):
     from_scratch: bool = Field(
         default=False,
         description="Ignore the month's progress marker and run every step again.",
+    )
+    source: Optional[MasterSource] = Field(
+        default=None,
+        description="Where to get the month from for this run. Defaults to the saved master_source.",
     )
     config_override: Optional[MonthlyAutomationConfig] = Field(
         default=None,
@@ -107,6 +119,7 @@ class MonthlyRunStatusResponse(BaseModel):
     month: str = ""
     object_name: str = ""
     outcome: Optional[RunOutcome] = None
+    source: MasterSource = "ftp"
     current_step: Optional[str] = None
     steps: dict[str, MonthlyRunStepState] = Field(default_factory=dict)
     resumed_steps: list[str] = Field(default_factory=list)

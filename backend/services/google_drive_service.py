@@ -644,6 +644,38 @@ class GoogleDriveService:
         return folder["id"]
 
     @classmethod
+    def find_child_folder(cls, auth: DriveAuthConfig, parent_id: str, name: str) -> Optional[dict[str, str]]:
+        """The folder called *name* directly under *parent_id*, or None.
+
+        Never opens a browser: this is called by unattended runs, which must
+        fail with the sign-in message rather than hang on a login window.
+        """
+        service = cls._get_drive_service(auth, interactive=False)
+        query = (
+            f"'{parent_id.strip()}' in parents and trashed = false and "
+            f"mimeType = '{FOLDER_MIME}' and name = '{cls._escape_drive_query(cls._safe_name(name))}'"
+        )
+        result = service.files().list(
+            q=query,
+            fields="files(id, name)",
+            pageSize=1,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute(num_retries=5)
+        files = result.get("files", [])
+        return {"id": files[0]["id"], "name": files[0]["name"]} if files else None
+
+    @classmethod
+    def list_child_folders(cls, auth: DriveAuthConfig, folder_id: str) -> list[dict[str, str]]:
+        """Sub-folders of *folder_id* as ``{"id", "name"}``, without opening a browser."""
+        service = cls._get_drive_service(auth, interactive=False)
+        return [
+            {"id": child["id"], "name": child["name"]}
+            for child in cls._list_children(service, folder_id)
+            if child.get("mimeType") == FOLDER_MIME
+        ]
+
+    @classmethod
     def _existing_file_names(cls, service, parent_id: str) -> set[str]:
         names: set[str] = set()
         page_token = None

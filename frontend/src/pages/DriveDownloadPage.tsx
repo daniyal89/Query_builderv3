@@ -311,7 +311,7 @@ export const DriveDownloadPage: React.FC = () => {
           <label className="block text-sm font-medium text-slate-700">
             Download folder
             <div className="mt-1 flex gap-2">
-              <input className="w-full rounded-md border px-3 py-2" value={state.outputFolder} onChange={(e) => update("outputFolder", e.target.value)} placeholder="G:\\DRIVE_DOWNLOADS" />
+              <input className="w-full rounded-md border px-3 py-2" value={state.outputFolder} onChange={(e) => update("outputFolder", e.target.value)} placeholder="D:\\DATA\\DRIVE_DOWNLOADS" />
               <button type="button" className="rounded-md bg-slate-800 px-3 py-2 text-white" onClick={async () => { const path = await pickSystemFolder(); if (path) update("outputFolder", path); }}>Browse</button>
             </div>
           </label>

@@ -338,7 +338,7 @@ export const LocalDbAlterationsPage: React.FC = () => {
         </p>
 
         <div className="mt-6 grid gap-4 md:grid-cols-2">
-          <Field label="Target DuckDB file path" help="Example: G:/MASTER/uppcl_latest.duckdb">
+          <Field label="Target DuckDB file path" help="Example: D:/uppcl_duckdb/uppcl_latest.duckdb">
             <div className="flex gap-2">
               <input className="w-full rounded border p-2" value={form.db_path} onChange={(e) => updateForm({ db_path: e.target.value })} />
               <button type="button" onClick={async () => { const path = await pickSystemFile("duckdb"); if (path) updateForm({ db_path: path }); }} className="rounded border border-slate-300 bg-slate-50 px-3 text-sm font-medium hover:bg-slate-100">Browse...</button>

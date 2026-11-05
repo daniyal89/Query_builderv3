@@ -311,7 +311,7 @@ export const UploadMasterDrivePage: React.FC = () => {
           <label className="block text-sm font-medium text-slate-700">
             Local MASTER folder
             <div className="mt-1 flex gap-2">
-              <input className="w-full rounded-md border px-3 py-2" value={state.localFolder} onChange={(e) => update("localFolder", e.target.value)} placeholder="G:\\MASTER\\MAR_2026" />
+              <input className="w-full rounded-md border px-3 py-2" value={state.localFolder} onChange={(e) => update("localFolder", e.target.value)} placeholder="D:\\DATA\\MASTER\\MAR_2026" />
               <button type="button" className="rounded-md bg-slate-800 px-3 py-2 text-white" onClick={async () => { const path = await pickSystemFolder(); if (path) update("localFolder", path); }}>Browse</button>
             </div>
           </label>

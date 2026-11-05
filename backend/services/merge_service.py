@@ -14,10 +14,42 @@ import duckdb
 import pandas as pd
 
 
+def _as_text(value: Any) -> str | None:
+    """Return a scalar as text, keeping missing values as None."""
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
 class MergeService:
     """Service to handle the data logic for merge workflows."""
 
     SUPPORTED_FILE_SUFFIXES = (".csv", ".xlsx", ".xls", ".xlsb", ".gz", ".zip")
+
+    @staticmethod
+    def stringify_object_columns(frame: pd.DataFrame) -> pd.DataFrame:
+        """
+        Turn every object-dtype column into plain text before DuckDB sees it.
+
+        pandas keeps a column as ``object`` when a spreadsheet mixes numbers and
+        text (e.g. a flat number column holding 24, 25 and "24B"). DuckDB only
+        samples the first ``pandas_analyze_sample`` rows (1000 by default) of such
+        a column to pick its type; if those rows happen to be numeric it picks
+        INTEGER and the later text value fails with "Could not convert string
+        '24B' to INT32". Casting the whole column to text up front makes the type
+        unambiguous and keeps every value the user uploaded.
+        """
+        for column in frame.columns:
+            series = frame[column]
+            if series.dtype != object:
+                continue
+            frame[column] = series.map(_as_text).astype("string")
+        return frame
 
     @staticmethod
     def process_enrichment(
@@ -99,6 +131,8 @@ class MergeService:
         join_clause = " AND ".join(join_conditions)
 
         fetch_cols_str = ", ".join([f'source."{column}"' for column in fetch_columns])
+
+        merged_df = MergeService.stringify_object_columns(merged_df)
 
         try:
             conn.register("df", merged_df)

@@ -3,6 +3,8 @@ import apiClient from "./client";
 export type MonthlyRunJobStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
 export type MonthlyRunStepStatus = "pending" | "skipped" | "running" | "completed" | "failed" | "cancelled";
 export type MonthlyRunOutcome = "completed" | "not_available_yet" | "partial" | "failed" | "cancelled";
+/** Where the month's CSVs come from: the FTP server (then uploaded to Drive), or Drive itself when someone already uploaded it. */
+export type MasterSource = "ftp" | "drive";
 
 export interface MonthlyAutomationConfig {
   ftp_host: string;
@@ -18,6 +20,8 @@ export interface MonthlyAutomationConfig {
   drive_root_name_template: string;
   drive_max_workers: number;
   ftp_max_workers: number;
+  /** This computer's default source. */
+  master_source: MasterSource;
 }
 
 export interface MonthlyRunPlan {
@@ -48,6 +52,7 @@ export interface MonthlyRunStatusResponse {
   month: string;
   object_name: string;
   outcome?: MonthlyRunOutcome | null;
+  source: MasterSource;
   current_step?: string | null;
   steps: Record<string, MonthlyRunStepState>;
   resumed_steps: string[];
@@ -105,6 +110,7 @@ export async function getActiveMonthlyRun(): Promise<MonthlyRunStatusResponse | 
 export async function startMonthlyRun(payload: {
   month?: string;
   from_scratch?: boolean;
+  source?: MasterSource;
 }): Promise<MonthlyRunStartResponse> {
   const { data } = await apiClient.post<MonthlyRunStartResponse>("/automation/monthly-run/start", payload);
   return data;

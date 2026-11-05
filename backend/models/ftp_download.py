@@ -97,3 +97,23 @@ class FTPProfilesSummaryResponse(BaseModel):
     host: Optional[str] = None
     port: Optional[int] = None
     profiles: list[FTPConfiguredProfile] = Field(default_factory=list)
+
+
+class FTPOutputRootSetting(BaseModel):
+    """One preset kind's output root: what was saved, and what the page should offer."""
+
+    saved: Optional[str] = None
+    effective: Optional[str] = None
+
+
+class FTPDownloadSettingsResponse(BaseModel):
+    """Per-computer defaults for the FTP Download page."""
+
+    path: str
+    output_roots: dict[str, FTPOutputRootSetting] = Field(default_factory=dict)
+
+
+class FTPDownloadSettingsUpdate(BaseModel):
+    """Roots to remember for this computer. Kinds left out keep their saved value."""
+
+    output_roots: dict[str, str] = Field(..., min_length=1)

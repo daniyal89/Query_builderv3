@@ -54,3 +54,4 @@ test-tmp/
 runtime/
 config/ftp_profiles.json
 config/monthly_automation.json
+config/ftp_download_settings.json

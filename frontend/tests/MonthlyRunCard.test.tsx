@@ -19,6 +19,7 @@ const config = {
   drive_root_name_template: "MASTER_DATA_{YYYY}_{MM}",
   drive_max_workers: 3,
   ftp_max_workers: 3,
+  master_source: "ftp",
 };
 
 const step = (status: string, message = "") => ({ status, message, job_id: null, detail: {}, started_at: null, finished_at: null });
@@ -89,6 +90,68 @@ describe("MonthlyRunCard", () => {
 
     expect(await screen.findByText(/available as Master_0726/i, {}, { timeout: 8000 })).toBeInTheDocument();
     expect(screen.getAllByText("completed")).toHaveLength(3);
+  }, 15000);
+
+  it("choosing Google Drive remembers it for this computer, runs with it and skips the upload", async () => {
+    const started: unknown[] = [];
+    const savedConfigs: unknown[] = [];
+
+    server.use(
+      rest.get("*/api/automation/config", (_req, res, ctx) => res(ctx.json(config))),
+      rest.put("*/api/automation/config", async (req, res, ctx) => {
+        const body = await req.json();
+        savedConfigs.push(body);
+        return res(ctx.json(body));
+      }),
+      rest.get("*/api/automation/monthly-run/active", (_req, res, ctx) => res(ctx.json(null))),
+      rest.get("*/api/automation/monthly-run/plan", (_req, res, ctx) =>
+        res(ctx.json({ default_month: "2026-07", month: "2026-07", token: "JUL_2026", object_name: "Master_0726", remote_dir: "/01-MASTER_DATA/JUL_2026/", csv_dir: "", csv_glob: "", parquet_dir: "", drive_root_name: "MASTER_DATA_2026_07" })),
+      ),
+      rest.get("*/api/automation/monthly-run/marker", (_req, res, ctx) => res(ctx.json({ month: "JUL_2026", exists: false, steps: {} }))),
+      rest.post("*/api/automation/monthly-run/start", async (req, res, ctx) => {
+        started.push(await req.json());
+        return res(ctx.json({ job_id: "job-2", status: "queued", message: "queued", month: "JUL_2026", object_name: "Master_0726" }));
+      }),
+      rest.get("*/api/automation/monthly-run/status/job-2", (_req, res, ctx) =>
+        res(
+          ctx.json({
+            job_id: "job-2",
+            status: "completed",
+            message: "JUL_2026 is downloaded from Drive and available as Master_0726.",
+            month: "JUL_2026",
+            object_name: "Master_0726",
+            outcome: "completed",
+            source: "drive",
+            current_step: null,
+            steps: {
+              download: step("completed", "Downloaded 50 file(s) from Drive across 5 DISCOM(s)."),
+              upload: step("skipped", "The month is taken from Google Drive, so there is nothing to upload."),
+              build: step("completed"),
+            },
+            resumed_steps: [],
+            missing_discoms: [],
+            paths: {},
+          }),
+        ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWithAppContext(<MonthlyRunCard />, { route: "/sidebar-tools" });
+    expect(await screen.findByText("Master_0726")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /google drive/i }));
+    await user.click(await screen.findByRole("button", { name: /run monthly master/i }));
+
+    await waitFor(() => expect(started).toHaveLength(1));
+    expect(started[0]).toMatchObject({ source: "drive" });
+    expect(savedConfigs).toHaveLength(1);
+    expect(savedConfigs[0]).toMatchObject({ master_source: "drive" }, );
+
+    expect(await screen.findByText(/downloaded from Drive and available/i, {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.getByText("1 · Download from Google Drive")).toBeInTheDocument();
+    expect(screen.getByText("skipped")).toBeInTheDocument();
+    expect(screen.getByText(/nothing to upload/i)).toBeInTheDocument();
   }, 15000);
 
   it("recovers once the backend comes up instead of staying dead", async () => {

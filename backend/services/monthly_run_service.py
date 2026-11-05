@@ -1,5 +1,11 @@
 """The monthly master run: FTP download, then Drive upload and parquet/view build.
 
+The month can also come *from* Google Drive instead: on a computer where
+someone else has already run the month, the operator picks the Drive source,
+the DISCOM folders are downloaded from the month's Drive folder into the same
+CSV layout the FTP step produces, and the upload step is skipped because the
+files are already there.
+
 One job that drives three existing ones. Each step is already a persistent
 background job of its own (FTP download, Drive upload, full pipeline); this
 module starts them with the right month-derived arguments, waits for them, and
@@ -33,7 +39,7 @@ from typing import Any, Callable
 from backend.config import settings
 from backend.models.ftp_download import FTPDownloadProfile
 from backend.models.google_drive import DriveAuthConfig
-from backend.models.monthly_run import MonthlyAutomationConfig, MonthlyRunStartRequest
+from backend.models.monthly_run import MasterSource, MonthlyAutomationConfig, MonthlyRunStartRequest
 from backend.models.sidebar_tools import FullPipelineRequest
 from backend.services import ftp_profiles
 from backend.services.ftp_download_service import FTPDownloadService
@@ -294,12 +300,13 @@ class MonthlyRunService:
     def start(cls, request: MonthlyRunStartRequest) -> dict[str, Any]:
         config = request.config_override or load_config()
         plan = derive_plan(request.month, config)
+        source: MasterSource = request.source or config.master_source
 
         active = job_runtime.active_jobs(MONTHLY_RUN_JOB_TYPE)
         if active:
             raise MonthlyRunAlreadyActive(active[0]["job_id"], str(active[0].get("month") or "?"))
 
-        cls.preflight(config, plan)
+        cls.preflight(config, plan, source)
 
         marker = None if request.from_scratch else read_marker(plan.token)
         resumed = sorted(completed_steps(marker) & set(STEP_ORDER), key=STEP_ORDER.index)
@@ -316,6 +323,15 @@ class MonthlyRunService:
                     "started_at": prior.get("started_at"),
                     "finished_at": prior.get("finished_at"),
                 }
+            elif step == "upload" and source == "drive":
+                steps[step] = {
+                    "status": "skipped",
+                    "message": "The month is taken from Google Drive, so there is nothing to upload.",
+                    "job_id": None,
+                    "detail": {},
+                    "started_at": None,
+                    "finished_at": None,
+                }
             else:
                 steps[step] = {"status": "pending", "message": "", "job_id": None, "detail": {}, "started_at": None, "finished_at": None}
 
@@ -327,6 +343,7 @@ class MonthlyRunService:
             "month": plan.token,
             "object_name": plan.object_name,
             "outcome": None,
+            "source": source,
             "current_step": None,
             "steps": steps,
             "resumed_steps": resumed,
@@ -339,9 +356,9 @@ class MonthlyRunService:
             job_type=MONTHLY_RUN_JOB_TYPE,
             job_id=job_id,
             initial_snapshot=snapshot,
-            payload={"month": plan.month_input, "from_scratch": request.from_scratch, "config": config.model_dump(mode="json")},
+            payload={"month": plan.month_input, "from_scratch": request.from_scratch, "source": source, "config": config.model_dump(mode="json")},
             policy=MONTHLY_RUN_POLICY,
-            worker=lambda running_job_id: cls._run(running_job_id, plan, config, set(resumed)),
+            worker=lambda running_job_id: cls._run(running_job_id, plan, config, set(resumed), source),
         )
         return {
             "job_id": job_id,
@@ -365,22 +382,28 @@ class MonthlyRunService:
         return active[0] if active else None
 
     @classmethod
-    def preflight(cls, config: MonthlyAutomationConfig, plan: MonthPlan) -> None:
-        """Everything that would fail an hour in, checked before anything starts."""
+    def preflight(cls, config: MonthlyAutomationConfig, plan: MonthPlan, source: MasterSource = "ftp") -> None:
+        """Everything that would fail an hour in, checked before anything starts.
+
+        Google is needed either way: the FTP source uploads to Drive, the Drive
+        source downloads from it. FTP passwords matter only for the FTP source.
+        """
         problems: list[str] = []
 
-        loaded = ftp_profiles.load_ftp_profiles()
-        if loaded is None:
-            problems.append(f"FTP passwords are not configured: create {ftp_profiles.ftp_profiles_path()}.")
-        else:
-            missing = [name for name in config.discoms if loaded.find(name) is None]
-            if missing:
-                problems.append(
-                    f"FTP passwords missing for {', '.join(missing)} in {ftp_profiles.ftp_profiles_path()}."
-                )
+        if source == "ftp":
+            loaded = ftp_profiles.load_ftp_profiles()
+            if loaded is None:
+                problems.append(f"FTP passwords are not configured: create {ftp_profiles.ftp_profiles_path()}.")
+            else:
+                missing = [name for name in config.discoms if loaded.find(name) is None]
+                if missing:
+                    problems.append(
+                        f"FTP passwords missing for {', '.join(missing)} in {ftp_profiles.ftp_profiles_path()}."
+                    )
 
+        drive_purpose = "to download the month from Drive" if source == "drive" else "to upload the month to Drive"
         if not config.drive_parent_folder_id.strip():
-            problems.append("Google Drive parent folder ID is not set in the monthly run settings.")
+            problems.append(f"Google Drive parent folder ID is not set in the monthly run settings (needed {drive_purpose}).")
         auth = GoogleDriveService.get_auth_status()
         if not auth.get("configured"):
             problems.append("Google OAuth client JSON is not configured (see Upload master in Drive).")
@@ -396,22 +419,26 @@ class MonthlyRunService:
     # — worker —
 
     @classmethod
-    def _run(cls, job_id: str, plan: MonthPlan, config: MonthlyAutomationConfig, resumed: set[str]) -> None:
+    def _run(cls, job_id: str, plan: MonthPlan, config: MonthlyAutomationConfig, resumed: set[str], source: MasterSource = "ftp") -> None:
         children: dict[str, str | None] = {}
+        where = "on the FTP server" if source == "ftp" else "in Google Drive"
         try:
             job_runtime.update_job(job_id, status="running", message=f"Monthly run for {plan.token} started.")
 
             if "download" not in resumed:
-                verdict, missing = cls._step_download(job_id, plan, config)
+                if source == "drive":
+                    verdict, missing = cls._step_drive_download(job_id, plan, config)
+                else:
+                    verdict, missing = cls._step_download(job_id, plan, config)
                 if verdict in {"not_available_yet", "partial"}:
                     cls._finish(
                         job_id,
                         status="completed",
                         outcome=verdict,
                         message=(
-                            f"{plan.token} is not on the FTP server yet. Try again later."
+                            f"{plan.token} is not {where} yet. Try again later."
                             if verdict == "not_available_yet"
-                            else f"{plan.token} is only partly on the FTP server (missing {', '.join(missing)}). Try again later."
+                            else f"{plan.token} is only partly {where} (missing {', '.join(missing)}). Try again later."
                         ),
                         missing_discoms=missing,
                     )
@@ -421,8 +448,9 @@ class MonthlyRunService:
                     return
 
             # Upload and build only read the downloaded files, so they run together:
-            # upload is network-bound, conversion is CPU-bound.
-            if "upload" not in resumed:
+            # upload is network-bound, conversion is CPU-bound. A month taken from
+            # Drive is already there, so it has nothing to upload.
+            if "upload" not in resumed and source == "ftp":
                 children["upload"] = cls._start_upload(job_id, plan, config)
             if "build" not in resumed:
                 children["build"] = cls._start_build(job_id, plan, config)
@@ -454,7 +482,11 @@ class MonthlyRunService:
                 job_id,
                 status="completed",
                 outcome="completed",
-                message=f"{plan.token} is downloaded, uploaded to Drive and available as {plan.object_name}.",
+                message=(
+                    f"{plan.token} is downloaded from Drive and available as {plan.object_name}."
+                    if source == "drive"
+                    else f"{plan.token} is downloaded, uploaded to Drive and available as {plan.object_name}."
+                ),
             )
         except BackgroundJobCancelled:
             for child_id in children.values():
@@ -526,6 +558,85 @@ class MonthlyRunService:
         else:
             cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail=detail)
         return verdict, missing
+
+    @classmethod
+    def _step_drive_download(cls, job_id: str, plan: MonthPlan, config: MonthlyAutomationConfig) -> tuple[str, list[str]]:
+        """Pull the month's DISCOM folders out of Google Drive, one Drive job per DISCOM.
+
+        The upload step stores ``<csv_dir>`` as ``<drive_root_name>/<DISCOM>/…``,
+        and a Drive download recreates a folder under its own name, so
+        downloading each DISCOM folder into ``csv_dir`` lands the files exactly
+        where the FTP step would have put them. Files already present are
+        skipped, so an interrupted step picks up where it stopped.
+        """
+        auth = DriveAuthConfig(mode="oauth")
+        cls._set_step(job_id, "download", status="running", message=f"Looking for {plan.drive_root_name} in Google Drive...", started_at=_now_iso())
+        job_runtime.update_job(job_id, current_step="download")
+
+        month_folder = GoogleDriveService.find_child_folder(auth, config.drive_parent_folder_id, plan.drive_root_name)
+        if month_folder is None:
+            message = f"{plan.drive_root_name} is not in Google Drive yet (nobody has uploaded this month)."
+            cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail={"source": "drive"})
+            return "not_available_yet", list(config.discoms)
+
+        by_name = {item["name"].strip().upper(): item for item in GoogleDriveService.list_child_folders(auth, month_folder["id"])}
+        present = [discom for discom in config.discoms if discom.strip().upper() in by_name]
+        missing = [discom for discom in config.discoms if discom.strip().upper() not in by_name]
+        if not present:
+            message = f"{plan.drive_root_name} is in Google Drive but holds no DISCOM folder yet."
+            cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail={"source": "drive"})
+            return "not_available_yet", missing
+
+        totals = {"total_files_found": 0, "total_downloaded_files": 0, "total_skipped_files": 0, "total_failed_files": 0}
+        failures: list[str] = []
+        last_child_id: str | None = None
+        for index, discom in enumerate(present, start=1):
+            cls._set_step(job_id, "download", message=f"Downloading {discom} from Drive ({index}/{len(present)})...")
+            started = GoogleDriveService.start_download(
+                auth=auth,
+                drive_link_or_id=by_name[discom.strip().upper()]["id"],
+                output_folder=str(plan.csv_dir),
+                overwrite_existing=False,
+                export_google_files=False,
+            )
+            last_child_id = started["job_id"]
+            cls._set_step(job_id, "download", job_id=last_child_id)
+            result = cls._wait_all(job_id, {"download": last_child_id})["download"]
+
+            found = int(result.get("total_items", 0) or 0)
+            failed = int(result.get("failed_items", 0) or 0)
+            totals["total_files_found"] += found
+            totals["total_downloaded_files"] += int(result.get("downloaded_items", 0) or 0)
+            totals["total_skipped_files"] += int(result.get("skipped_items", 0) or 0)
+            totals["total_failed_files"] += failed
+            if result.get("status") != "completed":
+                failures.append(f"{discom}: Drive download {result.get('status')} — {result.get('message') or 'no detail'}")
+            elif failed:
+                errors = [str(err) for err in (result.get("errors") or [])]
+                failures.append(f"{discom}: {failed} failed file(s)" + (f"; {errors[0]}" if errors else ""))
+            elif found == 0:
+                missing.append(discom)
+
+        detail: dict[str, Any] = {"source": "drive", "current_profile": None, **totals}
+        if failures:
+            message = "Download finished with failures — " + "; ".join(failures)
+            cls._set_step(job_id, "download", status="failed", message=message, finished_at=_now_iso(), detail=detail)
+            return "failed", missing
+        if len(missing) == len(config.discoms):
+            message = f"{plan.drive_root_name} is in Google Drive but every DISCOM folder is empty."
+            cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail=detail)
+            return "not_available_yet", missing
+        if missing:
+            ordered = [discom for discom in config.discoms if discom in missing]
+            message = "Not every DISCOM is in Drive yet: missing " + ", ".join(ordered) + "."
+            cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail=detail)
+            return "partial", ordered
+
+        message = f"Downloaded {totals['total_files_found']:,} file(s) from Drive across {len(present)} DISCOM(s)."
+        state = {"status": "completed", "message": message, "finished_at": _now_iso(), "detail": detail}
+        cls._set_step(job_id, "download", **state)
+        record_step(plan.token, "download", {**state, "job_id": last_child_id}, job_id)
+        return "ok", []
 
     @classmethod
     def _start_upload(cls, job_id: str, plan: MonthPlan, config: MonthlyAutomationConfig) -> str:
@@ -658,6 +769,17 @@ class MonthlyRunService:
 
     @staticmethod
     def _download_detail(child: dict[str, Any]) -> dict[str, Any]:
+        if "total_items" in child:
+            # A Drive download job: same shape as the FTP numbers so the card
+            # shows one kind of progress line for either source.
+            return {
+                "source": "drive",
+                "current_profile": None,
+                "total_files_found": child.get("total_items"),
+                "total_downloaded_files": child.get("downloaded_items"),
+                "total_skipped_files": child.get("skipped_items"),
+                "total_failed_files": child.get("failed_items"),
+            }
         return {
             key: child.get(key)
             for key in (

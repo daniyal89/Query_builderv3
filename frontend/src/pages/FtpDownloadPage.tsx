@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { getFtpDownloadStatus, getFtpProfiles, startFtpDownload, stopFtpDownload } from "../api/ftpApi";
+import { getFtpDownloadSettings, getFtpDownloadStatus, getFtpProfiles, saveFtpDownloadSettings, startFtpDownload, stopFtpDownload } from "../api/ftpApi";
 import { pickSystemFolder } from "../api/systemApi";
 import type {
   FTPDownloadProfile,
@@ -146,8 +146,16 @@ function buildPeriodProfiles(presetKind: PresetKind, masterMonthInput: string, b
   }));
 }
 
-function defaultOutputRootForPreset(presetKind: PresetKind): string {
-  return presetKind === "master" ? "G:\\MASTER" : "G:\\BILLED";
+// Roots that earlier builds compiled in. A form still holding one of these has
+// not been set by the operator, so the per-computer default may replace it.
+const LEGACY_OUTPUT_ROOTS = new Set(["G:\\MASTER", "G:\\BILLED", "G:/MASTER", "G:/BILLED", "D:\\DATA\\MASTER", "D:\\DATA\\BILLED"]);
+
+type OutputRootDefaults = Record<PresetKind, string | null>;
+
+function isUnsetOutputRoot(value: string, defaults: OutputRootDefaults): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || LEGACY_OUTPUT_ROOTS.has(trimmed)) return true;
+  return trimmed === defaults.master || trimmed === defaults.billed;
 }
 
 const EMPTY_PROFILE: FTPDownloadProfile = {
@@ -222,7 +230,8 @@ function getDefaultFormState(): PageFormState {
   return {
     host: "ftp.uppclonline.com",
     port: 21,
-    outputRoot: defaultOutputRootForPreset("master"),
+    // Filled from the server's per-computer settings once they load.
+    outputRoot: "",
     fileSuffix: ".gz",
     maxWorkers: 3,
     maxRetries: 3,
@@ -313,6 +322,51 @@ export const FtpDownloadPage: React.FC = () => {
   // those the form may leave the password blank; the backend fills it in.
   const [serverProfileNames, setServerProfileNames] = useState<Set<string>>(new Set());
   const [serverProfilesPath, setServerProfilesPath] = useState<string | null>(null);
+  // Output roots differ per computer (data drives are not the same everywhere),
+  // so they live in a settings file beside the backend, not in the bundle.
+  const [outputRootDefaults, setOutputRootDefaults] = useState<OutputRootDefaults>({ master: null, billed: null });
+  const [settingsPath, setSettingsPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getFtpDownloadSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        const defaults: OutputRootDefaults = {
+          master: settings.output_roots.master?.effective ?? null,
+          billed: settings.output_roots.billed?.effective ?? null,
+        };
+        setOutputRootDefaults(defaults);
+        setSettingsPath(settings.path);
+        const preferred = defaults[initialState.selectedPresetKind];
+        if (preferred) {
+          setOutputRoot((current) => (isUnsetOutputRoot(current, defaults) ? preferred : current));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSettingsPath(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const rememberOutputRoot = async (presetKind: PresetKind, value: string): Promise<boolean> => {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    try {
+      const settings = await saveFtpDownloadSettings({ [presetKind]: trimmed });
+      setOutputRootDefaults({
+        master: settings.output_roots.master?.effective ?? null,
+        billed: settings.output_roots.billed?.effective ?? null,
+      });
+      setSettingsPath(settings.path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -428,13 +482,9 @@ export const FtpDownloadPage: React.FC = () => {
   };
 
   const applyOutputRootDefault = (presetKind: PresetKind) => {
-    setOutputRoot((current) => {
-      const trimmed = current.trim();
-      if (!trimmed || trimmed === defaultOutputRootForPreset("master") || trimmed === defaultOutputRootForPreset("billed")) {
-        return defaultOutputRootForPreset(presetKind);
-      }
-      return current;
-    });
+    const preferred = outputRootDefaults[presetKind];
+    if (!preferred) return;
+    setOutputRoot((current) => (isUnsetOutputRoot(current, outputRootDefaults) ? preferred : current));
   };
 
   const applyPeriodPreset = (
@@ -488,7 +538,10 @@ export const FtpDownloadPage: React.FC = () => {
     const currentOverrides = getStoredPresetOverrides();
     const nextOverrides: PresetOverrides = { ...currentOverrides, [presetType]: cloneProfiles(profiles) };
     window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(nextOverrides));
-    setMessage(`${presetType === "master" ? "Master" : "Billed"} preset saved locally on this system.`);
+    const label = presetType === "master" ? "Master" : "Billed";
+    void rememberOutputRoot(presetType, outputRoot).then((saved) => {
+      setMessage(saved ? `${label} preset and output root saved as this computer's defaults.` : `${label} preset saved locally on this system.`);
+    });
   };
 
   const resetPresetOverride = (presetType: "master" | "billed") => {
@@ -496,6 +549,8 @@ export const FtpDownloadPage: React.FC = () => {
     const nextOverrides: PresetOverrides = { ...currentOverrides };
     delete nextOverrides[presetType];
     window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(nextOverrides));
+    const preferredRoot = outputRootDefaults[presetType];
+    if (preferredRoot) setOutputRoot(preferredRoot);
     if (presetType === "master") applyPeriodPreset("master", masterMonthInput, billedDateInput, billedLocalMonthInput, "Master preset reset to default values for the selected month.");
     else applyPeriodPreset("billed", masterMonthInput, billedDateInput, billedLocalMonthInput, "Billed preset reset to default values for the selected date.");
   };
@@ -543,6 +598,10 @@ export const FtpDownloadPage: React.FC = () => {
       });
       setJobId(response.job_id);
       setMessage(`FTP download job started. Job ID: ${response.job_id}`);
+      // The root that was just used becomes this computer's default for next time.
+      void rememberOutputRoot(selectedPresetKind, outputRoot).then((saved) => {
+        if (saved) setMessage(`FTP download job started. Job ID: ${response.job_id}. Output root saved as this computer's default.`);
+      });
     } catch (err) {
       setError(getErrorMessage(err));
       setIsLoading(false);
@@ -682,7 +741,7 @@ export const FtpDownloadPage: React.FC = () => {
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <div><label className="mb-2 block text-sm font-semibold text-gray-800">FTP host</label><input type="text" value={host} onChange={(event) => setHost(event.target.value)} className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
             <div><label className="mb-2 block text-sm font-semibold text-gray-800">Port</label><input type="number" value={port} onChange={(event) => setPort(Number(event.target.value) || 21)} className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
-            <div className="md:col-span-2"><label className="mb-2 block text-sm font-semibold text-gray-800">Output root folder</label><div className="flex flex-col gap-3 md:flex-row"><input type="text" value={outputRoot} onChange={(event) => setOutputRoot(event.target.value)} placeholder="Example: G:\\MASTER or G:\\BILLED" className="w-full rounded-lg border border-gray-300 px-4 py-3 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /><button type="button" onClick={async () => { const path = await pickSystemFolder(); if (path) setOutputRoot(path); }} disabled={isLoading} className="rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60">Browse folder</button></div></div>
+            <div className="md:col-span-2"><label className="mb-2 block text-sm font-semibold text-gray-800">Output root folder</label><div className="flex flex-col gap-3 md:flex-row"><input type="text" value={outputRoot} onChange={(event) => setOutputRoot(event.target.value)} placeholder="Example: D:\\DATA\\MASTER or D:\\DATA\\BILLED" className="w-full rounded-lg border border-gray-300 px-4 py-3 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /><button type="button" onClick={async () => { const path = await pickSystemFolder(); if (path) setOutputRoot(path); }} disabled={isLoading} className="rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60">Browse folder</button></div><p className="mt-1 text-xs text-gray-500">Remembered per computer: starting a download saves this folder as the default for the {selectedPresetKind === "master" ? "Master" : "Billed"} preset{settingsPath ? ` (${settingsPath})` : ""}.</p></div>
             <div><label className="mb-2 block text-sm font-semibold text-gray-800">File suffix</label><input type="text" value={fileSuffix} onChange={(event) => setFileSuffix(event.target.value)} className="w-full rounded-lg border border-gray-300 px-4 py-3 font-mono text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
             <div><label className="mb-2 block text-sm font-semibold text-gray-800">Workers per profile</label><input type="number" min={1} max={16} value={maxWorkers} onChange={(event) => setMaxWorkers(Math.max(1, Number(event.target.value) || 1))} className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
             <div><label className="mb-2 block text-sm font-semibold text-gray-800">Retries</label><input type="number" min={1} max={10} value={maxRetries} onChange={(event) => setMaxRetries(Math.max(1, Number(event.target.value) || 1))} className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm text-gray-700 focus:border-sky-500 focus:outline-none" /></div>
