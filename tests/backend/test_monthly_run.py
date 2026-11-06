@@ -594,6 +594,49 @@ def test_drive_source_preflight_does_not_need_ftp_passwords(tmp_path: Path, monk
         svc.MonthlyRunService.preflight(no_drive, svc.derive_plan("2026-07", no_drive), "drive")
 
 
+def test_drive_steps_use_the_configured_emergency_proxy(harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    original_find = GoogleDriveService.find_child_folder
+
+    def spy_find(auth: Any, parent_id: str, name: str) -> Any:
+        seen.append(auth)
+        return original_find(auth, parent_id, name)
+
+    monkeypatch.setattr(GoogleDriveService, "find_child_folder", staticmethod(spy_find))
+    svc.save_config(harness["config"].model_copy(update={
+        "drive_enable_emergency_proxy": True,
+        "drive_emergency_proxy_host": "10.96.5.20",
+        "drive_emergency_proxy_port": 80,
+    }))
+
+    _wait_final(svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07", source="drive"))["job_id"])
+    assert seen and seen[0].enable_emergency_proxy is True
+    assert seen[0].emergency_proxy_host == "10.96.5.20" and seen[0].emergency_proxy_port == 80
+    download_auth = harness["calls"]["drive_download"][0]["auth"]
+    assert download_auth.enable_emergency_proxy is True, "every DISCOM download goes through the proxy too"
+
+    _wait_final(svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-08", source="ftp"))["job_id"])
+    upload_auth = harness["calls"]["drive"][0]["auth"]
+    assert upload_auth.enable_emergency_proxy is True, "the FTP source's upload uses the same proxy"
+
+
+def test_unreachable_google_is_explained_with_the_proxy_hint(harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    class ServerNotFoundError(Exception):
+        pass
+
+    def unreachable(auth: Any, parent_id: str, name: str) -> Any:
+        raise ServerNotFoundError("Unable to find the server at www.googleapis.com")
+
+    monkeypatch.setattr(GoogleDriveService, "find_child_folder", staticmethod(unreachable))
+
+    final = _wait_final(svc.MonthlyRunService.start(MonthlyRunStartRequest(month="2026-07", source="drive"))["job_id"])
+
+    assert final["status"] == "failed"
+    assert "emergency proxy" in final["message"]
+    assert "www.googleapis.com" in final["message"]
+    assert final["steps"]["download"]["status"] == "failed"
+
+
 def test_start_endpoint_accepts_the_source_and_reports_it(harness: dict[str, Any]) -> None:
     from fastapi.testclient import TestClient
 

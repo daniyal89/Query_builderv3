@@ -50,6 +50,15 @@ class MonthlyAutomationConfig(BaseModel):
         default="ftp",
         description="Default source for this computer: 'ftp' downloads and uploads to Drive; 'drive' downloads an already-uploaded month from Drive.",
     )
+    # The Drive pages carry the browser's emergency-proxy choice with every
+    # job. An unattended run has no browser, so the choice lives here, per
+    # computer, and is used for both the Drive download and the Drive upload.
+    drive_enable_emergency_proxy: bool = Field(
+        default=False,
+        description="Route Google Drive traffic through the emergency proxy, as the Drive pages do when their checkbox is on.",
+    )
+    drive_emergency_proxy_host: Optional[str] = Field(default=None, description="Emergency proxy host; blank uses the built-in default.")
+    drive_emergency_proxy_port: Optional[int] = Field(default=None, ge=1, le=65535, description="Emergency proxy port; blank uses the built-in default.")
 
     @field_validator("csv_root", "parquet_root", "db_path")
     @classmethod

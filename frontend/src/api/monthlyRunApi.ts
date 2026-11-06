@@ -22,6 +22,10 @@ export interface MonthlyAutomationConfig {
   ftp_max_workers: number;
   /** This computer's default source. */
   master_source: MasterSource;
+  /** Route Google Drive traffic through the emergency proxy, as the Drive pages do with their checkbox. */
+  drive_enable_emergency_proxy: boolean;
+  drive_emergency_proxy_host?: string | null;
+  drive_emergency_proxy_port?: number | null;
 }
 
 export interface MonthlyRunPlan {

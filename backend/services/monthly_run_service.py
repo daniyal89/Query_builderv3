@@ -559,6 +559,32 @@ class MonthlyRunService:
             cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail=detail)
         return verdict, missing
 
+    @staticmethod
+    def _drive_auth(config: MonthlyAutomationConfig) -> DriveAuthConfig:
+        """The same Google connection the Drive pages make, proxy choice included."""
+        return DriveAuthConfig(
+            mode="oauth",
+            enable_emergency_proxy=config.drive_enable_emergency_proxy,
+            emergency_proxy_host=(config.drive_emergency_proxy_host or "").strip() or None,
+            emergency_proxy_port=config.drive_emergency_proxy_port,
+        )
+
+    @staticmethod
+    def _explain_unreachable_google(exc: Exception, config: MonthlyAutomationConfig) -> Exception:
+        """A DNS failure on www.googleapis.com almost always means "no proxy"."""
+        if type(exc).__name__ != "ServerNotFoundError":
+            return exc
+        hint = (
+            "Google could not be reached from this computer (www.googleapis.com did not resolve). "
+            + (
+                "The emergency proxy is on but did not help; check its host and port in the monthly run settings."
+                if config.drive_enable_emergency_proxy
+                else "If the Drive Download page works here with its emergency proxy on, turn on "
+                "\"Route Google through the emergency proxy\" in the monthly run settings."
+            )
+        )
+        return ValueError(f"{hint} ({exc})")
+
     @classmethod
     def _step_drive_download(cls, job_id: str, plan: MonthPlan, config: MonthlyAutomationConfig) -> tuple[str, list[str]]:
         """Pull the month's DISCOM folders out of Google Drive, one Drive job per DISCOM.
@@ -569,17 +595,21 @@ class MonthlyRunService:
         where the FTP step would have put them. Files already present are
         skipped, so an interrupted step picks up where it stopped.
         """
-        auth = DriveAuthConfig(mode="oauth")
+        auth = cls._drive_auth(config)
         cls._set_step(job_id, "download", status="running", message=f"Looking for {plan.drive_root_name} in Google Drive...", started_at=_now_iso())
         job_runtime.update_job(job_id, current_step="download")
 
-        month_folder = GoogleDriveService.find_child_folder(auth, config.drive_parent_folder_id, plan.drive_root_name)
-        if month_folder is None:
-            message = f"{plan.drive_root_name} is not in Google Drive yet (nobody has uploaded this month)."
-            cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail={"source": "drive"})
-            return "not_available_yet", list(config.discoms)
+        try:
+            month_folder = GoogleDriveService.find_child_folder(auth, config.drive_parent_folder_id, plan.drive_root_name)
+            if month_folder is None:
+                message = f"{plan.drive_root_name} is not in Google Drive yet (nobody has uploaded this month)."
+                cls._set_step(job_id, "download", status="pending", message=message, finished_at=_now_iso(), detail={"source": "drive"})
+                return "not_available_yet", list(config.discoms)
+            subfolders = GoogleDriveService.list_child_folders(auth, month_folder["id"])
+        except Exception as exc:  # noqa: BLE001 - re-raised, only reworded
+            raise cls._explain_unreachable_google(exc, config) from exc
 
-        by_name = {item["name"].strip().upper(): item for item in GoogleDriveService.list_child_folders(auth, month_folder["id"])}
+        by_name = {item["name"].strip().upper(): item for item in subfolders}
         present = [discom for discom in config.discoms if discom.strip().upper() in by_name]
         missing = [discom for discom in config.discoms if discom.strip().upper() not in by_name]
         if not present:
@@ -642,7 +672,7 @@ class MonthlyRunService:
     def _start_upload(cls, job_id: str, plan: MonthPlan, config: MonthlyAutomationConfig) -> str:
         cls._set_step(job_id, "upload", status="running", message="Starting Drive upload...", started_at=_now_iso())
         started = GoogleDriveService.start_upload(
-            auth=DriveAuthConfig(mode="oauth"),
+            auth=cls._drive_auth(config),
             local_folder=str(plan.csv_dir),
             parent_folder_id=config.drive_parent_folder_id,
             root_folder_name=plan.drive_root_name,

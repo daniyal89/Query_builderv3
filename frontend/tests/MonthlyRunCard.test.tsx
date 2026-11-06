@@ -20,6 +20,9 @@ const config = {
   drive_max_workers: 3,
   ftp_max_workers: 3,
   master_source: "ftp",
+  drive_enable_emergency_proxy: false,
+  drive_emergency_proxy_host: null,
+  drive_emergency_proxy_port: null,
 };
 
 const step = (status: string, message = "") => ({ status, message, job_id: null, detail: {}, started_at: null, finished_at: null });

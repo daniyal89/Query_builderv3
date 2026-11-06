@@ -16,6 +16,22 @@ import {
 } from "../../api/monthlyRunApi";
 
 const JOB_STORAGE_KEY = "monthly_run_job_v1";
+// The Drive Download / Upload pages keep the browser's emergency-proxy choice
+// under this key. A fresh monthly config borrows it, so a computer where those
+// pages already need the proxy does not fail its first unattended run.
+const EMERGENCY_PROXY_STORAGE_KEY = "dashboard_emergency_proxy_settings_v1";
+
+function proxyChoiceFromDrivePages(): { enable: boolean; host: string; port: number | null } | null {
+  try {
+    const raw = window.localStorage.getItem(EMERGENCY_PROXY_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { enable?: boolean; host?: string; port?: string };
+    const port = Number(parsed.port || 0) || null;
+    return { enable: Boolean(parsed.enable), host: (parsed.host ?? "").trim(), port };
+  } catch {
+    return null;
+  }
+}
 const POLL_MS = 2000;
 const CONFIG_RETRY_MS = 5000;
 function stepLabel(step: string, source: MasterSource): string {
@@ -114,7 +130,20 @@ export const MonthlyRunCard: React.FC = () => {
       getAutomationConfig()
         .then((loaded) => {
           if (cancelled) return;
-          setConfig(loaded);
+          const borrowed = loaded.drive_enable_emergency_proxy ? null : proxyChoiceFromDrivePages();
+          if (borrowed?.enable) {
+            // Saved with the next run or "Save settings", like any other edit.
+            setConfig({
+              ...loaded,
+              drive_enable_emergency_proxy: true,
+              drive_emergency_proxy_host: borrowed.host || loaded.drive_emergency_proxy_host || null,
+              drive_emergency_proxy_port: borrowed.port ?? loaded.drive_emergency_proxy_port ?? null,
+            });
+            setConfigDirty(true);
+            setMessage("Using the emergency proxy the Drive pages use on this computer; it is saved when a run starts.");
+          } else {
+            setConfig(loaded);
+          }
           setSource(loaded.master_source === "drive" ? "drive" : "ftp");
           setError(null);
           return getActiveMonthlyRun().then((active) => {
@@ -375,6 +404,43 @@ export const MonthlyRunCard: React.FC = () => {
               />
             </label>
           ))}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 sm:col-span-2">
+            <label className="flex items-center gap-2 text-sm text-slate-800">
+              <input
+                type="checkbox"
+                checked={config.drive_enable_emergency_proxy}
+                onChange={(e) => updateConfig("drive_enable_emergency_proxy", e.target.checked)}
+                className="accent-indigo-600"
+              />
+              Route Google through the emergency proxy
+            </label>
+            <p className="mt-1 text-xs text-slate-500">
+              Turn this on where the Drive Download page only works with its emergency proxy checkbox on. Used for the
+              Drive download and the Drive upload steps.
+            </p>
+            {config.drive_enable_emergency_proxy && (
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <input
+                  type="text"
+                  value={config.drive_emergency_proxy_host ?? ""}
+                  onChange={(e) => updateConfig("drive_emergency_proxy_host", e.target.value || null)}
+                  placeholder="Proxy host (blank = default 10.96.5.20)"
+                  aria-label="Emergency proxy host"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
+                />
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={config.drive_emergency_proxy_port ?? ""}
+                  onChange={(e) => updateConfig("drive_emergency_proxy_port", e.target.value ? Number(e.target.value) : null)}
+                  placeholder="Proxy port (blank = default 80)"
+                  aria-label="Emergency proxy port"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm"
+                />
+              </div>
+            )}
+          </div>
           <p className="text-xs text-slate-500 sm:col-span-2">
             FTP passwords are read from <span className="font-mono">config/ftp_profiles.json</span> on the server; Google
             uses the login saved by “Upload master in Drive”. The source chosen above is saved as this computer's default
