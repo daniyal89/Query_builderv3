@@ -946,6 +946,17 @@ class GoogleDriveService:
         job_runtime.update_job(job_id, errors=[], failed_items=0, processed_items=0)
 
     @staticmethod
+    def _drive_size(metadata: dict[str, Any]) -> Optional[int]:
+        """Drive reports binary file sizes as a string; Google-native files have none."""
+        raw = metadata.get("size")
+        if raw in (None, ""):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _get_metadata(service, file_id: str) -> dict[str, Any]:
         return service.files().get(
             fileId=file_id,
@@ -1022,33 +1033,54 @@ class GoogleDriveService:
                 request_obj = service.files().export_media(fileId=file_id, mimeType=export_mime)
             else:
                 if target_path.exists() and not overwrite_existing:
-                    cls._increment_job(job_id, processed_items=1, skipped_items=1)
-                    return
+                    # "Already there" is only true when it is all there. A
+                    # download that was cut off left a shorter file under the
+                    # final name, and the build then died on its last half-row.
+                    expected = cls._drive_size(metadata)
+                    actual = target_path.stat().st_size
+                    if expected is None or expected == actual:
+                        cls._increment_job(job_id, processed_items=1, skipped_items=1)
+                        return
+                    cls._logger.warning(
+                        "Local file %s is %s bytes but Drive has %s bytes; downloading it again (job_id=%s).",
+                        target_path,
+                        actual,
+                        expected,
+                        job_id,
+                    )
                 request_obj = service.files().get_media(fileId=file_id, supportsAllDrives=True)
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            with target_path.open("wb") as fh:
-                downloader = MediaIoBaseDownload(fh, request_obj, chunksize=5 * 1024 * 1024)
-                done = False
-                transient_errors = (ConnectionResetError, TimeoutError, OSError)
-                consecutive_failures = 0
-                while not done:
-                    cls._raise_if_cancelled(job_id)
-                    try:
-                        _, done = downloader.next_chunk(num_retries=5)
-                        consecutive_failures = 0
-                    except transient_errors as exc:
-                        consecutive_failures += 1
-                        if consecutive_failures >= 3:
-                            raise
-                        cls._logger.warning(
-                            "Transient Drive download error; retrying chunk (job_id=%s, file_id=%s, name=%s, attempt=%s): %s",
-                            job_id,
-                            file_id,
-                            name,
-                            consecutive_failures,
-                            cls._exception_details(exc),
-                        )
+            # Written under a temporary name and renamed only once complete, so a
+            # stopped or failed download never leaves a partial file that a later
+            # run would mistake for the real one.
+            part_path = target_path.with_name(target_path.name + ".part")
+            try:
+                with part_path.open("wb") as fh:
+                    downloader = MediaIoBaseDownload(fh, request_obj, chunksize=5 * 1024 * 1024)
+                    done = False
+                    transient_errors = (ConnectionResetError, TimeoutError, OSError)
+                    consecutive_failures = 0
+                    while not done:
+                        cls._raise_if_cancelled(job_id)
+                        try:
+                            _, done = downloader.next_chunk(num_retries=5)
+                            consecutive_failures = 0
+                        except transient_errors as exc:
+                            consecutive_failures += 1
+                            if consecutive_failures >= 3:
+                                raise
+                            cls._logger.warning(
+                                "Transient Drive download error; retrying chunk (job_id=%s, file_id=%s, name=%s, attempt=%s): %s",
+                                job_id,
+                                file_id,
+                                name,
+                                consecutive_failures,
+                                cls._exception_details(exc),
+                            )
+                os.replace(part_path, target_path)
+            finally:
+                part_path.unlink(missing_ok=True)
             cls._increment_job(job_id, processed_items=1, downloaded_items=1)
         except _DriveJobCancelled:
             raise
