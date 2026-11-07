@@ -503,9 +503,9 @@ class DuckDBService:
         header_sql = "true" if header else "false"
 
         if extension == ".csv":
-            return f"read_csv_auto({path_sql}, header = {header_sql}, null_padding = true, ignore_errors = true)"
+            return f"read_csv_auto({path_sql}, header = {header_sql})"
         if extension == ".tsv":
-            return f"read_csv_auto({path_sql}, delim = '\t', header = {header_sql}, null_padding = true, ignore_errors = true)"
+            return f"read_csv_auto({path_sql}, delim = '\t', header = {header_sql})"
         if extension == ".xlsx":
             self._load_excel_extension_unlocked()
             options = [f"header = {header_sql}"]

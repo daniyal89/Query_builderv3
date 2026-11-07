@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import re
 import glob
+import csv
+import gzip
+import io
 import json
+import zlib
 import os
 import uuid
 from contextlib import contextmanager
@@ -892,7 +896,7 @@ def _resolve_relation_sql(input_path: str, *, _cached_files: list[str] | None = 
             return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true, hive_partitioning = false)"
         return f"read_parquet({input_path_sql}, union_by_name = true, hive_partitioning = false)"
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
-        return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true, null_padding = true, ignore_errors = true)"
+        return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
     matches = _cached_files or [
         item for item in glob.glob(input_path, recursive=True)
@@ -908,7 +912,7 @@ def _resolve_relation_sql(input_path: str, *, _cached_files: list[str] | None = 
             or sample.endswith(".tsv")
             or sample.endswith(".gz")
         ):
-            return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true, null_padding = true, ignore_errors = true)"
+            return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
 
     raise ValueError(f"No readable files matched '{input_path}'.")
 
@@ -1015,6 +1019,105 @@ def _is_gzip_file(path: Path) -> bool:
         return False
 
 
+# DuckDB names the offending file on its own line in most CSV errors, and in
+# the query text (read_csv('...')) when sniffing fails before a line is read.
+_CSV_ERROR_FILE_PATTERNS = (
+    re.compile(r"^\s*file = (.+?)\s*$", re.MULTILINE),
+    re.compile(r"read_csv(?:_auto)?\('((?:[^']|'')+)'"),
+)
+
+
+def _gzip_damage(path: Path) -> str | None:
+    """How a ``.gz`` source is incomplete, or None when nothing is wrong with it.
+
+    Returns ``"download"`` when the gzip stream itself stops early (the copy on
+    this computer was cut off), ``"export"`` when the gzip is whole but the CSV
+    inside ends part-way through its last row (the file was already cut off
+    when it was produced), or ``"damaged: ..."`` for a corrupt archive.
+
+    Decompresses the whole file, so it is only called after a read has already
+    failed: the cost is one file, and it turns a column-count error into an
+    instruction the operator can act on.
+    """
+    header = b""
+    tail = b""
+    try:
+        with gzip.open(path, "rb") as handle:
+            while True:
+                block = handle.read(1 << 20)
+                if not block:
+                    break
+                if not header:
+                    header = block.split(b"\n", 1)[0]
+                tail = (tail + block)[-(1 << 16):]
+    except EOFError:
+        return "download"
+    except (OSError, zlib.error) as exc:
+        return f"damaged: {exc}"
+
+    lines = [line for line in tail.rstrip(b"\r\n").split(b"\n") if line.strip()]
+    if not header or len(lines) < 2:
+        return None
+    expected = _field_count(header)
+    last = _field_count(lines[-1])
+    if expected and last and last < expected:
+        return "export"
+    return None
+
+
+def _field_count(line: bytes) -> int:
+    try:
+        row = next(csv.reader(io.StringIO(line.decode("utf-8", errors="replace"))), [])
+    except csv.Error:
+        return 0
+    return len(row)
+
+
+def _failed_source_file(text: str) -> Path | None:
+    for pattern in _CSV_ERROR_FILE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return Path(match.group(1).replace("''", "'"))
+    return None
+
+
+def _explain_read_failure(exc: BaseException, current_file: str | None = None) -> str:
+    """The DuckDB CSV error, or a plain statement of which file is incomplete and why.
+
+    A file that ends mid-row is reported by DuckDB as "Expected Number of
+    Columns: 154 Found: 88" on its last line. That reads like bad data and
+    invites ``ignore_errors``, which would silently drop the row and break the
+    source == written row ledger, so say what actually happened instead.
+    """
+    text = str(exc)
+    if "CSV Error" not in text and "Expected Number of Columns" not in text and "sniffing file" not in text:
+        return text
+    source = _failed_source_file(text)
+    # DuckDB shortens a long query in its sniffing error, so the path read back
+    # from the message can be a stub; the job knows which file it was reading.
+    if (source is None or not source.is_file()) and current_file:
+        source = Path(current_file)
+    if source is None or source.suffix.lower() != ".gz" or not source.is_file() or not _is_gzip_file(source):
+        return text
+    damage = _gzip_damage(source)
+    if damage is None:
+        return text
+    if damage == "download":
+        return (
+            f"{source} is incomplete: the copy on this computer stops part-way, so its download was cut off. "
+            "Delete it and download it again (FTP Download and Drive Download fetch it again once it is gone), "
+            "then run the build again. Nothing was built for this month."
+        )
+    if damage == "export":
+        return (
+            f"{source} is a whole gzip file, but the CSV inside ends part-way through its last row: it was "
+            "already cut off when it was produced, so downloading it again will not help. Ask for this file to "
+            "be exported again, or move it out of the month folder to build without it. Nothing was built for "
+            "this month."
+        )
+    return f"{source} is {damage}. Delete it and download it again, then run the build again. Nothing was built for this month."
+
+
 def _source_compression(path: Path) -> str:
     """Compression to read *path* with: 'gzip' or 'none'.
 
@@ -1106,8 +1209,7 @@ def _resolve_csv_parquet_read_sql(input_path: str) -> str:
     compression = _source_compression(Path(input_path))
     return (
         f"read_csv({input_path_sql}, union_by_name = true, filename = true, auto_detect = true, "
-        f"all_varchar = true, null_padding = true, ignore_errors = true, "
-        f"compression = {_sql_string_literal(compression)})"
+        f"all_varchar = true, compression = {_sql_string_literal(compression)})"
     )
 
 
@@ -2210,7 +2312,10 @@ def _run_csv_to_parquet_job(job_id: str, payload: CsvToParquetRequest) -> None:
                 finished_at=datetime.now().isoformat(timespec="seconds"),
             )
             return
-        _update_csv_job(job_id, message=str(exc), current_file=None)
+        explained = _explain_read_failure(exc, (job_runtime.get_job(job_id) or {}).get("current_file"))
+        _update_csv_job(job_id, message=explained, current_file=None)
+        if explained != str(exc):
+            raise ValueError(explained) from exc
         raise
 
 
@@ -2673,10 +2778,13 @@ def _run_full_pipeline_job(job_id: str, payload: FullPipelineRequest) -> None:
                 finished_at=datetime.now().isoformat(timespec="seconds"),
             )
             return
+        explained = _explain_read_failure(exc, (job_runtime.get_job(job_id) or {}).get("parquet_current_file"))
         _update(
             status="failed",
-            message=str(exc),
+            message=explained,
             overall_progress_percent=100,
             finished_at=datetime.now().isoformat(timespec="seconds"),
         )
+        if explained != str(exc):
+            raise ValueError(explained) from exc
         raise
