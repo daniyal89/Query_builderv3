@@ -892,7 +892,7 @@ def _resolve_relation_sql(input_path: str, *, _cached_files: list[str] | None = 
             return f"read_parquet({_sql_string_list_literal(sorted(matches))}, union_by_name = true, hive_partitioning = false)"
         return f"read_parquet({input_path_sql}, union_by_name = true, hive_partitioning = false)"
     if ".csv" in lowered or ".tsv" in lowered or lowered.endswith(".gz") or ".gz" in lowered:
-        return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
+        return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true, null_padding = true, ignore_errors = true)"
 
     matches = _cached_files or [
         item for item in glob.glob(input_path, recursive=True)
@@ -908,7 +908,7 @@ def _resolve_relation_sql(input_path: str, *, _cached_files: list[str] | None = 
             or sample.endswith(".tsv")
             or sample.endswith(".gz")
         ):
-            return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true)"
+            return f"read_csv_auto({input_path_sql}, union_by_name = true, filename = true, null_padding = true, ignore_errors = true)"
 
     raise ValueError(f"No readable files matched '{input_path}'.")
 
@@ -1106,7 +1106,8 @@ def _resolve_csv_parquet_read_sql(input_path: str) -> str:
     compression = _source_compression(Path(input_path))
     return (
         f"read_csv({input_path_sql}, union_by_name = true, filename = true, auto_detect = true, "
-        f"all_varchar = true, compression = {_sql_string_literal(compression)})"
+        f"all_varchar = true, null_padding = true, ignore_errors = true, "
+        f"compression = {_sql_string_literal(compression)})"
     )
 
 
